@@ -82,8 +82,19 @@ export function ApplicationDetailPage() {
   useEffect(() => { void load(); const timer = window.setInterval(() => void load(), runtimeConfig.dashboard.refreshIntervalSeconds * 1000); return () => window.clearInterval(timer); }, [load]);
   if (error) return <Alert type="error" showIcon message={error} action={<Button onClick={load}>{t('retry')}</Button>} />;
   if (!app) return <Skeleton active paragraph={{ rows: 10 }} />;
+  const historyAvailable = runtimeConfig.historyServer.enabled && !!runtimeConfig.historyServer.baseUrl && !!app.eventLogEnabled && !!app.sparkApplicationId && isTerminalState(app.state);
+  const openSparkUI = () => {
+    if (app.state === 'RUNNING' && app.sparkUiAvailable) {
+      navigate(`/applications/${encodeURIComponent(app.namespace)}/${encodeURIComponent(app.name)}/spark-ui`);
+      return;
+    }
+    if (historyAvailable) {
+      window.open(`${runtimeConfig.historyServer.baseUrl}/${encodeURIComponent(app.sparkApplicationId!)}/jobs/`, '_blank', 'noopener,noreferrer');
+    }
+  };
+  const sparkUITooltip = app.state === 'RUNNING' ? (app.sparkUiAvailable ? t('sparkUiLive') : t('sparkUiUnavailable')) : (historyAvailable ? t('sparkHistory') : t('sparkHistoryUnavailable'));
   return <>
-    <PageHeader back={{ label: t('applications'), to: '/applications' }} title={<Space wrap>{app.name}<StatusTag state={app.state} /></Space>} subtitle={`${app.namespace} · ${app.cluster} · ${formatDuration(app)}`} extra={<Space><Button icon={<ReloadOutlined />} onClick={load}>{t('refresh')}</Button>{runtimeConfig.features.sparkUi && <Button icon={<LinkOutlined />}>Spark UI</Button>}{runtimeConfig.features.kill && app.state === 'RUNNING' && <Button danger icon={<StopOutlined />} disabled={!canKill(session?.role ?? 'viewer')} onClick={() => setOperation('kill')}>{t('kill')}</Button>}{runtimeConfig.features.kill && isTerminalState(app.state) && <Button danger icon={<DeleteOutlined />} disabled={!canDelete(session?.role ?? 'viewer')} onClick={() => setOperation('delete')}>{t('delete')}</Button>}</Space>} />
+    <PageHeader back={{ label: t('applications'), to: '/applications' }} title={<Space wrap>{app.name}<StatusTag state={app.state} /></Space>} subtitle={`${app.namespace} · ${app.cluster} · ${formatDuration(app)}`} extra={<Space><Button icon={<ReloadOutlined />} onClick={load}>{t('refresh')}</Button>{runtimeConfig.features.sparkUi && <Tooltip title={sparkUITooltip}><Button icon={<LinkOutlined />} disabled={app.state === 'RUNNING' ? !app.sparkUiAvailable : !historyAvailable} onClick={openSparkUI}>{app.state === 'RUNNING' ? 'Spark UI' : 'Spark History'}</Button></Tooltip>}{runtimeConfig.features.kill && app.state === 'RUNNING' && <Button danger icon={<StopOutlined />} disabled={!canKill(session?.role ?? 'viewer')} onClick={() => setOperation('kill')}>{t('kill')}</Button>}{runtimeConfig.features.kill && isTerminalState(app.state) && <Button danger icon={<DeleteOutlined />} disabled={!canDelete(session?.role ?? 'viewer')} onClick={() => setOperation('delete')}>{t('delete')}</Button>}</Space>} />
     {app.errorMessage && <Alert className="detail-alert" type="error" showIcon icon={<ExclamationCircleOutlined />} message="Application failure detected" description={app.errorMessage} />}
     <Row gutter={[16, 16]} className="detail-overview"><Col xs={24} xl={16}><Card className="panel-card"><Descriptions column={{ xs: 1, sm: 2, lg: 3 }} items={[
       { key: 'owner', label: t('owner'), children: app.owner }, { key: 'team', label: t('team'), children: app.team }, { key: 'started', label: t('startedAt'), children: app.startedAt ? dayjs(app.startedAt).format('YYYY-MM-DD HH:mm:ss') : '—' },
@@ -95,6 +106,6 @@ export function ApplicationDetailPage() {
       { key: 'scheduling', label: t('scheduling'), children: <SchedulingTab app={app} /> }, { key: 'logs', label: t('logs'), children: <LogsTab app={app} /> },
       { key: 'events', label: `${t('events')} (${app.events.length})`, children: <EventsTab app={app} /> }, { key: 'yaml', label: t('yaml'), children: <YamlTab app={app} /> },
     ]} />
-    {operation && <ApplicationOperationModal application={app} operation={operation} open onClose={() => setOperation(undefined)} onCompleted={() => navigate('/applications')} />}
+    {operation && <ApplicationOperationModal application={app} operation={operation} open onClose={() => setOperation(undefined)} onCompleted={() => { if (operation === 'delete') navigate('/applications'); else void load(); }} />}
   </>;
 }

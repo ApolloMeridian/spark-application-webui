@@ -25,18 +25,24 @@ export interface RuntimeConfig {
     refreshIntervalSeconds: number;
     defaultHistoryDays: number;
   };
+  historyServer: {
+    enabled: boolean;
+    baseUrl: string;
+  };
   features: {
     kill: boolean;
     audit: boolean;
     sparkUi: boolean;
+    submit: boolean;
   };
 }
 
-export type RuntimeConfigInput = Partial<Omit<RuntimeConfig, 'api' | 'auth' | 'cluster' | 'dashboard' | 'features'>> & {
+export type RuntimeConfigInput = Partial<Omit<RuntimeConfig, 'api' | 'auth' | 'cluster' | 'dashboard' | 'historyServer' | 'features'>> & {
   api?: Partial<RuntimeConfig['api']>;
   auth?: Partial<Omit<RuntimeConfig['auth'], 'oidc'>> & { oidc?: Partial<RuntimeConfig['auth']['oidc']> };
   cluster?: Partial<RuntimeConfig['cluster']>;
   dashboard?: Partial<RuntimeConfig['dashboard']>;
+  historyServer?: Partial<RuntimeConfig['historyServer']>;
   features?: Partial<RuntimeConfig['features']>;
 };
 
@@ -53,7 +59,8 @@ const defaults: RuntimeConfig = {
   },
   cluster: { name: 'gke-prod-cn', namespaces: ['spark-prod', 'spark-ml', 'spark-streaming', 'spark-sandbox'] },
   dashboard: { refreshIntervalSeconds: 10, defaultHistoryDays: 7 },
-  features: { kill: true, audit: true, sparkUi: true },
+  historyServer: { enabled: false, baseUrl: '' },
+  features: { kill: true, audit: true, sparkUi: true, submit: true },
 };
 
 function normalizeBaseUrl(value: string) {
@@ -73,6 +80,7 @@ export function resolveRuntimeConfig(input: RuntimeConfigInput = {}): RuntimeCon
     },
     cluster: { ...defaults.cluster, ...input.cluster },
     dashboard: { ...defaults.dashboard, ...input.dashboard },
+    historyServer: { ...defaults.historyServer, ...input.historyServer, baseUrl: normalizeBaseUrl(input.historyServer?.baseUrl ?? defaults.historyServer.baseUrl) },
     features: { ...defaults.features, ...input.features },
   };
 }

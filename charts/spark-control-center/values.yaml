@@ -34,10 +34,14 @@ runtimeConfig:
   dashboard:
     refreshIntervalSeconds: 10
     defaultHistoryDays: 7
+  historyServer:
+    enabled: false
+    baseUrl: ""
   features:
     kill: true
     audit: true
     sparkUi: true
+    submit: true
 
 # Same-origin /api reverse proxy. Enable when backend.enabled=true or supply an upstream URL.
 apiProxy:

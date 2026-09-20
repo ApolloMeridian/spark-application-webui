@@ -82,7 +82,9 @@ The `api.baseUrl` prefix is omitted below. JSON uses the TypeScript models in `s
 | `GET` | `/v1/dashboard/summary?from={RFC3339}&to={RFC3339}` | Live `DashboardSummary` plus PostgreSQL-backed historical submissions/failures |
 | `GET` | `/v1/applications` | `SparkApplication[]`; accepts keyword/state/owner/namespace |
 | `GET` | `/v1/namespaces/{namespace}/applications/{name}` | Complete `SparkApplication` detail |
-| `POST` | `/v1/namespaces/{namespace}/applications/{name}/kill` | Kill a `RUNNING` application; `OperationAudit`; body `{ reason, requestedBy }` |
+| `POST` | `/v1/namespaces/{namespace}/applications` | Validate and create a SparkApplication from body `{ yaml }` |
+| `POST` | `/v1/namespaces/{namespace}/applications/{name}/kill` | Force-terminate a `RUNNING` application while retaining its CR; `OperationAudit`; body `{ reason, requestedBy }` |
+| `GET` | `/v1/namespaces/{namespace}/applications/{name}/spark-ui/{path...}` | Same-origin reverse proxy to the in-cluster Driver UI Service |
 | `DELETE` | `/v1/namespaces/{namespace}/applications/{name}` | Delete a terminal application; `OperationAudit`; body `{ reason, requestedBy }` |
 | `GET` | `/v1/audit` | `OperationAudit[]` |
 | `GET` | `/v1/auth/login?returnUrl=...` | Temporary admin-bypass login redirect |
@@ -93,7 +95,11 @@ The `api.baseUrl` prefix is omitted below. JSON uses the TypeScript models in `s
 
 With `backend.auth.adminBypass=true`, `/v1/auth/me` reports every caller as `admin`; the API is not protected and must remain on a trusted test network. Login/logout only create and clear a placeholder HttpOnly cookie and validate return URLs. If bypass is disabled before real OIDC is implemented, the backend deliberately rejects authentication instead of silently falling back.
 
-Kill/delete state guards are enforced by the backend as well as the UI. Kubernetes has no generic SparkApplication kill subresource, so Kill uses foreground deletion of a `RUNNING` CR to terminate its Driver and Executors; Delete exposes the same Kubernetes deletion mechanism only for terminal CR cleanup. They remain distinct API and audit operations.
+Kill/delete state guards are enforced by the backend as well as the UI. Kubernetes has no generic SparkApplication kill subresource. Kill first patches `spec.restartPolicy.type` to `Never`, then deletes the Driver and correlated Executor Pods with `gracePeriodSeconds: 0`; it does not delete the SparkApplication CR. This is the Kubernetes equivalent of a forced process termination, although the exact final state and timing are determined by Spark Operator reconciliation. Delete removes only a terminal CR. They remain distinct API and audit operations.
+
+The submission API accepts at most 1 MiB, requires the configured SparkApplication API version and kind, removes server-owned metadata/status, and rejects a manifest namespace that differs from the selected, allow-listed namespace. The backend ServiceAccount gets namespace-scoped `sparkapplications.create` when `runtimeConfig.features.submit=true`.
+
+For a running application, the UI embeds Driver Spark UI through the backend proxy using `status.driverInfo.webUIServiceName` and `webUIPort`; no `pods/exec` permission or local port-forward is used. The proxy rewrites redirects, absolute in-cluster Service URLs, and root-relative HTML links so the browser never has to resolve `*.svc` DNS. For terminal applications, the button opens `${runtimeConfig.historyServer.baseUrl}/<Spark ID>/jobs/` only when the history server is enabled and both `spark.eventLog.enabled=true` and `spark.eventLog.dir` are present in `spec.sparkConf`.
 
 ## Backend environment contract
 
@@ -113,6 +119,7 @@ Use `backend.extraEnv`, `extraVolumes`, and `extraVolumeMounts` for provider-spe
 - `runtimeConfig.*` is public and appears in the browser. Client IDs and issuer URLs are safe here; secrets are not.
 - `database.credentials.*` and `oidcSecret.*` are backend-only Secret references.
 - `rbac.clusterWide=false` creates namespace-scoped Roles. Use cluster-wide RBAC only for a genuine multi-namespace/multi-tenant requirement.
+- `runtimeConfig.historyServer.enabled/baseUrl` controls terminal-job links. The production example enables `https://shs.k8s.automatic.local/history`.
 - The chart does not install PostgreSQL, Prometheus, Keycloak, or Spark Operator.
 
 ## Real data behavior

@@ -14,8 +14,16 @@ describe('mock application service', () => {
     await sparkService.killApplication(before.namespace, before.name, 'tester', 'test kill');
     const after = await sparkService.getApplication(before.namespace, before.name);
     const audit = await sparkService.getAudit();
-    expect(after.state).toBe('KILLED');
+    expect(after.state).toBe('FAILED');
+    expect(after.executors).toHaveLength(0);
     expect(audit[0]).toMatchObject({ applicationName: before.name, operator: 'tester', result: 'SUCCESS', reason: 'test kill' });
+  });
+  it('submits a SparkApplication YAML and records audit', async () => {
+    const yaml = 'apiVersion: sparkoperator.k8s.io/v1beta2\nkind: SparkApplication\nmetadata:\n  name: submitted-demo\n  namespace: spark-prod\nspec:\n  image: spark:3.5\n';
+    const app = await sparkService.submitApplication('spark-prod', yaml, 'operator');
+    expect(app).toMatchObject({ name: 'submitted-demo', namespace: 'spark-prod', state: 'SUBMITTED' });
+    expect(await sparkService.getApplication('spark-prod', 'submitted-demo')).toBeTruthy();
+    expect((await sparkService.getAudit())[0]).toMatchObject({ operation: 'SUBMIT', applicationName: 'submitted-demo' });
   });
   it('rejects killing an inactive application', async () => {
     await expect(sparkService.killApplication('spark-prod', 'can-merge-hourly', 'tester')).rejects.toThrow('Only RUNNING');

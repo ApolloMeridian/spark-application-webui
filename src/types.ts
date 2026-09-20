@@ -55,7 +55,7 @@ export interface OperationAudit {
   applicationName: string;
   namespace: string;
   operator: string;
-  operation: 'KILL' | 'DELETE';
+  operation: 'KILL' | 'DELETE' | 'SUBMIT';
   reason?: string;
   timestamp: string;
   result: 'SUCCESS' | 'FAILED';
@@ -76,6 +76,8 @@ export interface SparkApplication {
   image: string;
   sparkVersion: string;
   sparkApplicationId?: string;
+  sparkUiAvailable?: boolean;
+  eventLogEnabled?: boolean;
   submissionId: string;
   driverPod: string;
   driverNode?: string;
@@ -114,6 +116,7 @@ export interface SparkApplicationService {
   getSummary(filters?: ApplicationFilters): Promise<DashboardSummary>;
   listApplications(filters?: ApplicationFilters): Promise<SparkApplication[]>;
   getApplication(namespace: string, name: string): Promise<SparkApplication>;
+  submitApplication(namespace: string, yaml: string, operator: string): Promise<SparkApplication>;
   getAudit(): Promise<OperationAudit[]>;
   killApplication(namespace: string, name: string, operator: string, reason?: string): Promise<OperationAudit>;
   deleteApplication(namespace: string, name: string, operator: string, reason?: string): Promise<OperationAudit>;

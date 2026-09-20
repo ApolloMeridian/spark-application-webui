@@ -1,4 +1,4 @@
-import { AppstoreOutlined, AuditOutlined, CloudServerOutlined, DeploymentUnitOutlined, GlobalOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UserOutlined } from '@ant-design/icons';
+import { AppstoreOutlined, AuditOutlined, CloudServerOutlined, DeploymentUnitOutlined, FileAddOutlined, GlobalOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UserOutlined } from '@ant-design/icons';
 import { Avatar, Button, Dropdown, Layout, Menu, Select, Space, Tag, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
@@ -15,10 +15,11 @@ export function AppShell() {
   const location = useLocation(); const navigate = useNavigate();
   const { session, logout, setRole } = useAuth(); const { t, locale, setLocale } = useI18n();
   useEffect(() => { const onResize = () => window.innerWidth < 960 && setCollapsed(true); window.addEventListener('resize', onResize); return () => window.removeEventListener('resize', onResize); }, []);
-  const selected = location.pathname.startsWith('/applications') ? '/applications' : location.pathname.startsWith('/audit') ? '/audit' : '/overview';
+  const selected = location.pathname.startsWith('/applications') ? '/applications' : location.pathname.startsWith('/submit') ? '/submit' : location.pathname.startsWith('/audit') ? '/audit' : '/overview';
   const menuItems = useMemo(() => [
     { key: '/overview', icon: <AppstoreOutlined />, label: t('overview') },
     { key: '/applications', icon: <DeploymentUnitOutlined />, label: t('applications') },
+    ...(runtimeConfig.features.submit ? [{ key: '/submit', icon: <FileAddOutlined />, label: t('submitApplication') }] : []),
     ...(runtimeConfig.features.audit && session?.role === 'admin' ? [{ key: '/audit', icon: <AuditOutlined />, label: t('audit') }] : []),
   ], [session?.role, t]);
   return (

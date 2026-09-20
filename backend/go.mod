@@ -2,7 +2,10 @@ module spark-control-center/backend
 
 go 1.23.0
 
-require github.com/jackc/pgx/v5 v5.7.6
+require (
+	github.com/jackc/pgx/v5 v5.7.6
+	sigs.k8s.io/yaml v1.4.0
+)
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect

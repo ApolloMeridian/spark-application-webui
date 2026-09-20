@@ -128,6 +128,26 @@ func (c *Client) GetSparkApplication(ctx context.Context, namespace, name string
 	return response, nil
 }
 
+func (c *Client) CreateSparkApplication(ctx context.Context, namespace string, object Object) (Object, error) {
+	if err := c.ensureNamespace(namespace); err != nil {
+		return nil, err
+	}
+	var response Object
+	if err := c.doJSON(ctx, http.MethodPost, c.sparkCollectionPath(namespace), object, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+func (c *Client) DisableSparkApplicationRestart(ctx context.Context, namespace, name string) error {
+	if err := c.ensureNamespace(namespace); err != nil {
+		return err
+	}
+	patch := map[string]any{"spec": map[string]any{"restartPolicy": map[string]any{"type": "Never"}}}
+	_, err := c.do(ctx, http.MethodPatch, c.sparkObjectPath(namespace, name), patch, "application/merge-patch+json")
+	return err
+}
+
 func (c *Client) DeleteSparkApplication(ctx context.Context, namespace, name string) error {
 	if err := c.ensureNamespace(namespace); err != nil {
 		return err
@@ -135,6 +155,24 @@ func (c *Client) DeleteSparkApplication(ctx context.Context, namespace, name str
 	body := map[string]any{"apiVersion": "v1", "kind": "DeleteOptions", "propagationPolicy": "Foreground"}
 	var response Object
 	return c.doJSON(ctx, http.MethodDelete, c.sparkObjectPath(namespace, name), body, &response)
+}
+
+func (c *Client) ForceDeletePod(ctx context.Context, namespace, name string) error {
+	if err := c.ensureNamespace(namespace); err != nil {
+		return err
+	}
+	body := map[string]any{
+		"apiVersion": "v1", "kind": "DeleteOptions", "gracePeriodSeconds": 0, "propagationPolicy": "Background",
+	}
+	var response Object
+	err := c.doJSON(ctx, http.MethodDelete, "/api/v1/namespaces/"+url.PathEscape(namespace)+"/pods/"+url.PathEscape(name), body, &response)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return nil
+		}
+	}
+	return err
 }
 
 func (c *Client) ListPods(ctx context.Context, namespace string) ([]Pod, error) {
@@ -239,7 +277,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body, target a
 	return nil
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body any, accept string) ([]byte, error) {
+func (c *Client) do(ctx context.Context, method, path string, body any, contentType string) ([]byte, error) {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -257,11 +295,14 @@ func (c *Client) do(ctx context.Context, method, path string, body any, accept s
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	if accept != "" {
-		req.Header.Set("Accept", accept)
+	if contentType != "" {
+		req.Header.Set("Accept", "application/json")
 	}
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		if contentType == "" {
+			contentType = "application/json"
+		}
+		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

@@ -39,6 +39,7 @@ function makeApp(index: number, name: string, state: ApplicationState, namespace
     state, createdAt: base.subtract(index * 17 + 28, 'minute').toISOString(), startedAt, finishedAt: finish,
     image: 'registry.internal/spark-runtime:3.5.3-java17', sparkVersion: '3.5.3',
     sparkApplicationId: pending ? undefined : `spark-20260915-${String(index + 1).padStart(4, '0')}`,
+    sparkUiAvailable: state === 'RUNNING', eventLogEnabled: !running && !pending,
     submissionId: `sub-${(70184 + index * 97).toString(16)}`, driverPod,
     driverNode: pending ? undefined : 'gke-data-base-01', driverNodePool: pending ? undefined : 'baseline',
     driver: {
@@ -59,7 +60,7 @@ function makeApp(index: number, name: string, state: ApplicationState, namespace
       ...(errorMessage ? [`2026-09-15 09:46:14 ERROR YarnAllocator: ${errorMessage}`, '2026-09-15 09:46:14 WARN TaskSetManager: Lost task 18.0 in stage 9.0'] : []),
       '2026-09-15 09:48:02 INFO MemoryStore: Block broadcast_28 stored as values in memory',
     ],
-    yaml: `apiVersion: sparkoperator.k8s.io/v1beta2\nkind: SparkApplication\nmetadata:\n  name: ${name}\n  namespace: ${namespace}\nspec:\n  type: Scala\n  mode: cluster\n  image: registry.internal/spark-runtime:3.5.3-java17\n  sparkVersion: 3.5.3\n  driver:\n    cores: 2\n    memory: 8g\n  executor:\n    instances: ${executorCount}\n    cores: 4\n    memory: 24g\nstatus:\n  applicationState:\n    state: ${state}\n`,
+    yaml: `apiVersion: sparkoperator.k8s.io/v1beta2\nkind: SparkApplication\nmetadata:\n  name: ${name}\n  namespace: ${namespace}\nspec:\n  type: Scala\n  mode: cluster\n  image: registry.internal/spark-runtime:3.5.3-java17\n  sparkVersion: 3.5.3\n  sparkConf:\n    spark.eventLog.enabled: "${!running && !pending}"\n    spark.eventLog.dir: s3a://spark-history/event-logs\n  driver:\n    cores: 2\n    memory: 8g\n  executor:\n    instances: ${executorCount}\n    cores: 4\n    memory: 24g\nstatus:\n  applicationState:\n    state: ${state}\n`,
   };
 }
 

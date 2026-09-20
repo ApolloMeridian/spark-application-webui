@@ -55,6 +55,8 @@ type SparkApplication struct {
 	Image              string            `json:"image"`
 	SparkVersion       string            `json:"sparkVersion"`
 	SparkApplicationID string            `json:"sparkApplicationId,omitempty"`
+	SparkUIAvailable   bool              `json:"sparkUiAvailable"`
+	EventLogEnabled    bool              `json:"eventLogEnabled"`
 	SubmissionID       string            `json:"submissionId"`
 	DriverPod          string            `json:"driverPod"`
 	DriverNode         string            `json:"driverNode,omitempty"`

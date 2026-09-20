@@ -10,6 +10,8 @@ import { OverviewPage } from './pages/OverviewPage';
 import { ApplicationsPage } from './pages/ApplicationsPage';
 import { ApplicationDetailPage } from './pages/ApplicationDetailPage';
 import { AuditPage } from './pages/AuditPage';
+import { SubmitApplicationPage } from './pages/SubmitApplicationPage';
+import { SparkUIPage } from './pages/SparkUIPage';
 
 function ProtectedRoute() {
   const { session, loading } = useAuth();
@@ -36,6 +38,8 @@ function ThemedApp() {
                 <Route path="/overview" element={<OverviewPage />} />
                 <Route path="/applications" element={<ApplicationsPage />} />
                 <Route path="/applications/:namespace/:name" element={<ApplicationDetailPage />} />
+                <Route path="/applications/:namespace/:name/spark-ui" element={<SparkUIPage />} />
+                <Route path="/submit" element={<SubmitApplicationPage />} />
                 <Route path="/audit" element={<AuditPage />} />
               </Route>
             </Route>

@@ -46,12 +46,34 @@ export class MockSparkApplicationService implements SparkApplicationService {
     return { total: apps.length, byState, requested, used, capacity: { cpu: 288, memoryGiB: 2458 }, metricsAvailable: true, nodePools: { baseline, autoscale, pending }, history: { submitted, failed, from: from.toISOString(), to: to.toISOString() } };
   }
   async getAudit() { await wait(150); return readAudit().sort((a, b) => b.timestamp.localeCompare(a.timestamp)); }
+  async submitApplication(namespace: string, yaml: string, operator: string) {
+    await wait(450);
+    if (!/^apiVersion:\s*sparkoperator\.k8s\.io\/v1beta2\s*$/m.test(yaml) || !/^kind:\s*SparkApplication\s*$/m.test(yaml)) throw new Error('YAML must be a sparkoperator.k8s.io/v1beta2 SparkApplication');
+    const metadata = yaml.match(/^metadata:\s*\n((?:[ \t]+.*\n?)*)/m)?.[1] ?? '';
+    const name = metadata.match(/^\s+name:\s*["']?([^\s"']+)["']?\s*$/m)?.[1];
+    const manifestNamespace = metadata.match(/^\s+namespace:\s*["']?([^\s"']+)["']?\s*$/m)?.[1];
+    if (!name) throw new Error('YAML metadata.name is required');
+    if (manifestNamespace && manifestNamespace !== namespace) throw new Error('YAML metadata.namespace must match the selected namespace');
+    const apps = readApps();
+    if (apps.some((app) => app.namespace === namespace && app.name === name)) throw new Error('SparkApplication already exists');
+    const now = new Date().toISOString();
+    const app: SparkApplication = {
+      ...cloneSeed()[0], id: `${namespace}/${name}`, name, namespace, cluster: runtimeConfig.cluster.name,
+      state: 'SUBMITTED', createdAt: now, startedAt: undefined, finishedAt: undefined,
+      sparkApplicationId: undefined, sparkUiAvailable: false, eventLogEnabled: false, submissionId: `mock-${Date.now()}`, driverPod: `${name}-driver`,
+      driverNode: undefined, driverNodePool: undefined, executors: [], metrics: [], events: [], logs: [],
+      yaml, pendingReason: undefined, errorMessage: undefined,
+    };
+    const audit: OperationAudit = { id: `op-${Date.now()}`, applicationName: name, namespace, operator, operation: 'SUBMIT', timestamp: now, result: 'SUCCESS', message: 'SparkApplication created by Kubernetes API (mock)' };
+    apps.unshift(app); localStorage.setItem(APPS_KEY, JSON.stringify(apps)); localStorage.setItem(AUDIT_KEY, JSON.stringify([audit, ...readAudit()]));
+    return app;
+  }
   async killApplication(namespace: string, name: string, operator: string, reason?: string) {
     await wait(550); const apps = readApps(); const app = apps.find((item) => item.namespace === namespace && item.name === name);
     if (!app) throw new Error('Application not found');
     if (app.state !== 'RUNNING') throw new Error('Only RUNNING applications can be killed');
-    const audit: OperationAudit = { id: `op-${Date.now()}`, applicationName: name, namespace, operator, operation: 'KILL', reason, timestamp: new Date().toISOString(), result: 'SUCCESS', message: 'SparkApplication deletion accepted by Kubernetes API (mock)' };
-    app.state = 'KILLED'; app.finishedAt = new Date().toISOString(); app.executors = app.executors.map((executor) => ({ ...executor, state: executor.state === 'PENDING' ? 'FAILED' : 'SUCCEEDED', resources: { ...executor.resources, current: undefined } })); app.driver.current = undefined;
+    const audit: OperationAudit = { id: `op-${Date.now()}`, applicationName: name, namespace, operator, operation: 'KILL', reason, timestamp: new Date().toISOString(), result: 'SUCCESS', message: 'Driver pod force deleted and executor pods cleaned; SparkApplication retained (mock)' };
+    app.state = 'FAILED'; app.finishedAt = new Date().toISOString(); app.errorMessage = 'Driver pod was force deleted by the operator'; app.sparkUiAvailable = false; app.executors = []; app.driver.current = undefined;
     localStorage.setItem(APPS_KEY, JSON.stringify(apps)); localStorage.setItem(AUDIT_KEY, JSON.stringify([audit, ...readAudit()])); return audit;
   }
   async deleteApplication(namespace: string, name: string, operator: string, reason?: string) {
@@ -101,6 +123,11 @@ export class ApiSparkApplicationService implements SparkApplicationService {
   listApplications(filters: ApplicationFilters = {}) { return this.request<SparkApplication[]>(`/v1/applications${this.query(filters)}`); }
   getSummary(filters: ApplicationFilters = {}) { return this.request<DashboardSummary>(`/v1/dashboard/summary${this.query(filters)}`); }
   getApplication(namespace: string, name: string) { return this.request<SparkApplication>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications/${encodeURIComponent(name)}`); }
+  submitApplication(namespace: string, yaml: string, operator: string) {
+    return this.request<SparkApplication>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications`, {
+      method: 'POST', body: JSON.stringify({ yaml, requestedBy: operator }),
+    });
+  }
   getAudit() { return this.request<OperationAudit[]>('/v1/audit'); }
   killApplication(namespace: string, name: string, operator: string, reason?: string) {
     return this.request<OperationAudit>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications/${encodeURIComponent(name)}/kill`, {

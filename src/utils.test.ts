@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canDelete, canKill, formatCpu, formatMemory, isTerminalState, stateColor, sumResources } from './utils';
+import { canDelete, canKill, canSubmit, formatCpu, formatMemory, isTerminalState, stateColor, sumResources } from './utils';
 import { seedApplications } from './mockData';
 
 describe('formatters and permissions', () => {
@@ -20,6 +20,8 @@ describe('formatters and permissions', () => {
     expect(canKill('admin')).toBe(true);
     expect(canDelete('operator')).toBe(false);
     expect(canDelete('admin')).toBe(true);
+    expect(canSubmit('viewer')).toBe(false);
+    expect(canSubmit('operator')).toBe(true);
     expect(isTerminalState('COMPLETED')).toBe(true);
     expect(isTerminalState('RUNNING')).toBe(false);
   });

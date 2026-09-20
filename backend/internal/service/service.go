@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"sigs.k8s.io/yaml"
 	"spark-control-center/backend/internal/config"
 	"spark-control-center/backend/internal/domain"
 	"spark-control-center/backend/internal/kube"
@@ -24,7 +25,10 @@ type Kubernetes interface {
 	Ready(context.Context, string) error
 	ListSparkApplications(context.Context, string) ([]kube.Object, error)
 	GetSparkApplication(context.Context, string, string) (kube.Object, error)
+	CreateSparkApplication(context.Context, string, kube.Object) (kube.Object, error)
+	DisableSparkApplicationRestart(context.Context, string, string) error
 	DeleteSparkApplication(context.Context, string, string) error
+	ForceDeletePod(context.Context, string, string) error
 	ListPods(context.Context, string) ([]kube.Pod, error)
 	PodLog(context.Context, string, string, int) ([]string, error)
 	ListEvents(context.Context, string) ([]domain.KubernetesEvent, error)
@@ -136,6 +140,31 @@ func (s *Service) GetApplication(ctx context.Context, namespace, name string) (d
 	return app, nil
 }
 
+func (s *Service) SparkUIProxyTarget(ctx context.Context, namespace, name string) (string, error) {
+	if !s.config.NamespaceAllowed(namespace) {
+		return "", &kube.APIError{StatusCode: 403, Message: "namespace is not configured for this service"}
+	}
+	object, err := s.kubernetes.GetSparkApplication(ctx, namespace, name)
+	if err != nil {
+		return "", err
+	}
+	if normalizedState(kube.String(object, "status", "applicationState", "state")) != "RUNNING" {
+		return "", &kube.APIError{StatusCode: 409, Message: "Spark UI proxy is available only for RUNNING applications"}
+	}
+	serviceName := strings.TrimSpace(kube.String(object, "status", "driverInfo", "webUIServiceName"))
+	if !validDNSLabel(serviceName) {
+		return "", &kube.APIError{StatusCode: 404, Message: "Spark driver UI Service is not available"}
+	}
+	port := int(kube.Int64(object, "status", "driverInfo", "webUIPort"))
+	if port <= 0 {
+		port = 4040
+	}
+	if port > 65535 {
+		return "", &kube.APIError{StatusCode: 502, Message: "Spark driver UI Service has an invalid port"}
+	}
+	return fmt.Sprintf("http://%s.%s.svc:%d", serviceName, namespace, port), nil
+}
+
 func (s *Service) Summary(ctx context.Context, from, to time.Time) (domain.DashboardSummary, error) {
 	apps, err := s.ListApplications(ctx)
 	if err != nil {
@@ -223,16 +252,89 @@ func (s *Service) KillApplication(ctx context.Context, namespace, name, reason s
 		s.persistAudit(ctx, audit)
 		return audit, err
 	}
-	if err := s.kubernetes.DeleteSparkApplication(ctx, namespace, name); err != nil {
-		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "FAILED", "Kubernetes termination failed: "+err.Error())
+	pods, err := s.kubernetes.ListPods(ctx, namespace)
+	if err != nil {
+		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "FAILED", "Kubernetes pod lookup failed: "+err.Error())
 		s.persistAudit(ctx, audit)
 		return audit, err
 	}
-	audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "SUCCESS", "SparkApplication termination accepted by Kubernetes API")
+	if err := s.kubernetes.DisableSparkApplicationRestart(ctx, namespace, name); err != nil {
+		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "FAILED", "Could not disable SparkApplication restart policy: "+err.Error())
+		s.persistAudit(ctx, audit)
+		return audit, err
+	}
+	driverPod := firstNonEmpty(kube.String(object, "status", "driverInfo", "podName"), name+"-driver")
+	if err := s.kubernetes.ForceDeletePod(ctx, namespace, driverPod); err != nil {
+		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "FAILED", "Driver force deletion failed: "+err.Error())
+		s.persistAudit(ctx, audit)
+		return audit, err
+	}
+	executorsDeleted := 0
+	for _, pod := range relatedPods(object, pods) {
+		if pod.Role != "executor" {
+			continue
+		}
+		if err := s.kubernetes.ForceDeletePod(ctx, namespace, pod.Name); err != nil {
+			audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "FAILED", "Executor cleanup failed for "+pod.Name+": "+err.Error())
+			s.persistAudit(ctx, audit)
+			return audit, err
+		}
+		executorsDeleted++
+	}
+	audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "SUCCESS", fmt.Sprintf("Driver pod force deleted and %d executor pods cleaned; SparkApplication retained", executorsDeleted))
 	if err := s.persistAudit(ctx, audit); err != nil {
-		return audit, fmt.Errorf("SparkApplication was terminated but audit persistence failed: %w", err)
+		return audit, fmt.Errorf("SparkApplication pods were terminated but audit persistence failed: %w", err)
 	}
 	return audit, nil
+}
+
+func (s *Service) SubmitApplication(ctx context.Context, namespace, manifest string) (domain.SparkApplication, error) {
+	const operator = "admin"
+	if !s.config.NamespaceAllowed(namespace) {
+		return domain.SparkApplication{}, &kube.APIError{StatusCode: 403, Message: "namespace is not configured for this service"}
+	}
+	var object kube.Object
+	if err := yaml.Unmarshal([]byte(manifest), &object); err != nil {
+		return domain.SparkApplication{}, &kube.APIError{StatusCode: 400, Message: "invalid SparkApplication YAML: " + err.Error()}
+	}
+	if kube.String(object, "apiVersion") != s.config.SparkAPIVersion || kube.String(object, "kind") != "SparkApplication" {
+		return domain.SparkApplication{}, &kube.APIError{StatusCode: 400, Message: "YAML must contain kind SparkApplication with apiVersion " + s.config.SparkAPIVersion}
+	}
+	metadata, ok := kube.Map(object, "metadata")
+	if !ok {
+		return domain.SparkApplication{}, &kube.APIError{StatusCode: 400, Message: "YAML metadata is required"}
+	}
+	name := strings.TrimSpace(fmt.Sprint(metadata["name"]))
+	if name == "" || name == "<nil>" {
+		return domain.SparkApplication{}, &kube.APIError{StatusCode: 400, Message: "YAML metadata.name is required"}
+	}
+	manifestNamespace := strings.TrimSpace(fmt.Sprint(metadata["namespace"]))
+	if manifestNamespace == "<nil>" {
+		manifestNamespace = ""
+	}
+	if manifestNamespace != "" && manifestNamespace != namespace {
+		return domain.SparkApplication{}, &kube.APIError{StatusCode: 400, Message: "YAML metadata.namespace must match the selected namespace"}
+	}
+	metadata["namespace"] = namespace
+	for _, field := range []string{"uid", "resourceVersion", "generation", "creationTimestamp", "managedFields", "deletionTimestamp"} {
+		delete(metadata, field)
+	}
+	delete(object, "status")
+	created, err := s.kubernetes.CreateSparkApplication(ctx, namespace, object)
+	if err != nil {
+		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "SUBMIT", "", "FAILED", "Kubernetes create failed: "+err.Error())
+		s.persistAudit(ctx, audit)
+		return domain.SparkApplication{}, err
+	}
+	application := s.mapApplication(created, nil, map[string]metrics.PodUsage{})
+	if err := s.audits.UpsertApplications(ctx, []domain.SparkApplication{application}); err != nil {
+		s.logger.Warn("could not persist submitted SparkApplication history", "namespace", namespace, "application", name, "error", err)
+	}
+	audit := domain.NewOperationAudit(newID(), namespace, name, operator, "SUBMIT", "", "SUCCESS", "SparkApplication created by Kubernetes API")
+	if err := s.persistAudit(ctx, audit); err != nil {
+		return application, fmt.Errorf("SparkApplication was created but audit persistence failed: %w", err)
+	}
+	return application, nil
 }
 
 func (s *Service) DeleteApplication(ctx context.Context, namespace, name, reason string) (domain.OperationAudit, error) {
@@ -306,8 +408,10 @@ func (s *Service) mapApplication(object kube.Object, pods []kube.Pod, usage map[
 		StartedAt:  firstNonEmpty(kube.String(object, "status", "lastSubmissionAttemptTime"), kube.String(object, "status", "applicationState", "stateTransitionTime")),
 		FinishedAt: kube.String(object, "status", "terminationTime"), Image: firstNonEmpty(kube.String(object, "spec", "image"), kube.String(object, "spec", "driver", "image")),
 		SparkVersion: kube.String(object, "spec", "sparkVersion"), SparkApplicationID: kube.String(object, "status", "sparkApplicationId"),
-		SubmissionID: firstNonEmpty(kube.String(object, "status", "submissionID"), kube.String(object, "status", "submissionId"), kube.String(object, "metadata", "uid")),
-		DriverPod:    driverPodName, Metrics: []domain.MetricPoint{}, Events: []domain.KubernetesEvent{}, Logs: []string{}, YAML: "",
+		SparkUIAvailable: state == "RUNNING" && validDNSLabel(kube.String(object, "status", "driverInfo", "webUIServiceName")),
+		EventLogEnabled:  eventLogEnabled(object),
+		SubmissionID:     firstNonEmpty(kube.String(object, "status", "submissionID"), kube.String(object, "status", "submissionId"), kube.String(object, "metadata", "uid")),
+		DriverPod:        driverPodName, Metrics: []domain.MetricPoint{}, Events: []domain.KubernetesEvent{}, Logs: []string{}, YAML: "",
 		ErrorMessage: firstNonEmpty(kube.String(object, "status", "applicationState", "errorMessage"), kube.String(object, "status", "errorMessage")),
 	}
 	driverFallback := resourceFromSpec(object, "driver")
@@ -365,6 +469,28 @@ func (s *Service) mapApplication(object kube.Object, pods []kube.Pod, usage map[
 	}
 	sort.Slice(app.Executors, func(i, j int) bool { return app.Executors[i].Name < app.Executors[j].Name })
 	return app
+}
+
+func eventLogEnabled(object kube.Object) bool {
+	sparkConf, ok := kube.Map(object, "spec", "sparkConf")
+	if !ok {
+		return false
+	}
+	enabled := strings.EqualFold(strings.TrimSpace(fmt.Sprint(sparkConf["spark.eventLog.enabled"])), "true")
+	directory := strings.TrimSpace(fmt.Sprint(sparkConf["spark.eventLog.dir"]))
+	return enabled && directory != "" && directory != "<nil>"
+}
+
+func validDNSLabel(value string) bool {
+	if value == "" || len(value) > 63 || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func relatedPods(object kube.Object, pods []kube.Pod) []kube.Pod {

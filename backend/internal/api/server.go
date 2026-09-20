@@ -1,11 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"runtime/debug"
 	"strconv"
@@ -22,6 +25,8 @@ type ApplicationService interface {
 	Ready(context.Context) error
 	ListApplications(context.Context) ([]domain.SparkApplication, error)
 	GetApplication(context.Context, string, string) (domain.SparkApplication, error)
+	SubmitApplication(context.Context, string, string) (domain.SparkApplication, error)
+	SparkUIProxyTarget(context.Context, string, string) (string, error)
 	Summary(context.Context, time.Time, time.Time) (domain.DashboardSummary, error)
 	KillApplication(context.Context, string, string, string) (domain.OperationAudit, error)
 	DeleteApplication(context.Context, string, string, string) (domain.OperationAudit, error)
@@ -48,6 +53,9 @@ func New(cfg config.Config, applicationService ApplicationService, logger *slog.
 	mux.HandleFunc("GET /v1/applications", server.listApplications)
 	mux.HandleFunc("GET /v1/dashboard/summary", server.summary)
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}", server.getApplication)
+	mux.HandleFunc("POST /v1/namespaces/{namespace}/applications", server.submitApplication)
+	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/spark-ui", server.sparkUIProxy)
+	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/spark-ui/{path...}", server.sparkUIProxy)
 	mux.HandleFunc("POST /v1/namespaces/{namespace}/applications/{name}/kill", server.killApplication)
 	mux.HandleFunc("DELETE /v1/namespaces/{namespace}/applications/{name}", server.deleteApplication)
 	mux.HandleFunc("GET /v1/audit", server.listAudit)
@@ -141,6 +149,134 @@ func (s *Server) getApplication(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, app)
+}
+
+func (s *Server) submitApplication(w http.ResponseWriter, r *http.Request) {
+	if !s.config.AdminBypass {
+		s.writeError(w, http.StatusUnauthorized, fmt.Errorf("authentication is required"))
+		return
+	}
+	var body struct {
+		YAML string `json:"yaml"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body"))
+		return
+	}
+	if strings.TrimSpace(body.YAML) == "" {
+		s.writeError(w, http.StatusBadRequest, fmt.Errorf("yaml is required"))
+		return
+	}
+	app, err := s.service.SubmitApplication(r.Context(), r.PathValue("namespace"), body.YAML)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, app)
+}
+
+func (s *Server) sparkUIProxy(w http.ResponseWriter, r *http.Request) {
+	if !s.config.AdminBypass {
+		s.writeError(w, http.StatusUnauthorized, fmt.Errorf("authentication is required"))
+		return
+	}
+	targetValue, err := s.service.SparkUIProxyTarget(r.Context(), r.PathValue("namespace"), r.PathValue("name"))
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	target, err := url.Parse(targetValue)
+	if err != nil {
+		s.writeError(w, http.StatusBadGateway, fmt.Errorf("invalid Spark UI target"))
+		return
+	}
+	basePath := strings.TrimSuffix(r.URL.Path, "/"+r.PathValue("path"))
+	if r.PathValue("path") == "" {
+		basePath = strings.TrimSuffix(r.URL.Path, "/")
+	}
+	externalPrefix := strings.TrimRight(r.Header.Get("X-Forwarded-Prefix"), "/") + basePath
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := proxy.Director
+	proxy.Director = func(request *http.Request) {
+		originalDirector(request)
+		request.URL.Path = "/" + r.PathValue("path")
+		request.URL.RawPath = ""
+		request.Host = target.Host
+		request.Header.Del("Accept-Encoding")
+		request.Header.Set("X-Forwarded-Prefix", externalPrefix)
+		request.Header.Set("X-Forwarded-Context", externalPrefix)
+	}
+	proxy.ModifyResponse = func(response *http.Response) error {
+		if location := response.Header.Get("Location"); location != "" {
+			response.Header.Set("Location", rewriteSparkUILocation(location, target, externalPrefix))
+		}
+		if !strings.Contains(response.Header.Get("Content-Type"), "text/html") {
+			return nil
+		}
+		data, readErr := io.ReadAll(io.LimitReader(response.Body, 16<<20))
+		if readErr != nil {
+			return readErr
+		}
+		_ = response.Body.Close()
+		data = rewriteSparkUIHTML(data, target, externalPrefix)
+		response.Body = io.NopCloser(bytes.NewReader(data))
+		response.ContentLength = int64(len(data))
+		response.Header.Set("Content-Length", strconv.Itoa(len(data)))
+		return nil
+	}
+	proxy.ErrorHandler = func(writer http.ResponseWriter, _ *http.Request, proxyErr error) {
+		s.logger.Warn("Spark UI proxy failed", "namespace", r.PathValue("namespace"), "application", r.PathValue("name"), "error", proxyErr)
+		s.writeError(writer, http.StatusBadGateway, fmt.Errorf("Spark driver UI is unavailable"))
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+func rewriteSparkUILocation(location string, target *url.URL, externalPrefix string) string {
+	reference, err := url.Parse(location)
+	if err != nil {
+		return location
+	}
+	if reference.Host != "" {
+		if !strings.EqualFold(reference.Host, target.Host) {
+			return location
+		}
+		path := reference.EscapedPath()
+		if path == "" {
+			path = "/"
+		}
+		rewritten := externalPrefix + path
+		if reference.RawQuery != "" {
+			rewritten += "?" + reference.RawQuery
+		}
+		if reference.Fragment != "" {
+			rewritten += "#" + reference.Fragment
+		}
+		return rewritten
+	}
+	if strings.HasPrefix(location, "/") && location != externalPrefix && !strings.HasPrefix(location, externalPrefix+"/") {
+		return externalPrefix + location
+	}
+	return location
+}
+
+func rewriteSparkUIHTML(data []byte, target *url.URL, externalPrefix string) []byte {
+	const protectedDouble = "__SPARK_UI_PROXY_DOUBLE__"
+	const protectedSingle = "__SPARK_UI_PROXY_SINGLE__"
+	for _, attribute := range []string{"href", "src", "action"} {
+		data = bytes.ReplaceAll(data, []byte(attribute+"=\""+externalPrefix+"/"), []byte(attribute+"=\""+protectedDouble))
+		data = bytes.ReplaceAll(data, []byte(attribute+"='"+externalPrefix+"/"), []byte(attribute+"='"+protectedSingle))
+		data = bytes.ReplaceAll(data, []byte(attribute+"=\"/"), []byte(attribute+"=\""+externalPrefix+"/"))
+		data = bytes.ReplaceAll(data, []byte(attribute+"='/"), []byte(attribute+"='"+externalPrefix+"/"))
+		data = bytes.ReplaceAll(data, []byte(attribute+"=\""+protectedDouble), []byte(attribute+"=\""+externalPrefix+"/"))
+		data = bytes.ReplaceAll(data, []byte(attribute+"='"+protectedSingle), []byte(attribute+"='"+externalPrefix+"/"))
+	}
+	for _, internalBase := range []string{"http://" + target.Host, "https://" + target.Host, "//" + target.Host} {
+		data = bytes.ReplaceAll(data, []byte(internalBase+"/"), []byte(externalPrefix+"/"))
+		data = bytes.ReplaceAll(data, []byte(internalBase+"\""), []byte(externalPrefix+"\""))
+		data = bytes.ReplaceAll(data, []byte(internalBase+"'"), []byte(externalPrefix+"'"))
+	}
+	return data
 }
 
 func (s *Server) killApplication(w http.ResponseWriter, r *http.Request) {

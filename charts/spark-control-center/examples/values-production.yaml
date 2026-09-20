@@ -4,7 +4,8 @@
 image:
   repository: 10.0.32.115:5000/library/platform/spark-control-center
   tag: "0.1.3"
-  pullPolicy: IfNotPresent
+  # 0.1.3 is intentionally reused during this test phase, so always refresh it from the registry.
+  pullPolicy: Always
 
 replicaCount: 1
 
@@ -31,10 +32,14 @@ runtimeConfig:
     # The UI refreshes live resource values every 10 seconds. Historical cards default to seven days.
     refreshIntervalSeconds: 10
     defaultHistoryDays: 7
+  historyServer:
+    enabled: true
+    baseUrl: https://shs.k8s.automatic.local/history
   features:
     kill: true
     audit: true
     sparkUi: true
+    submit: true
 
 # The UI's nginx forwards /api to the backend only when this is enabled.
 apiProxy:
@@ -47,7 +52,7 @@ backend:
   image:
     repository: 10.0.32.115:5000/library/platform/spark-control-center-backend
     tag: "0.1.3"
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   service:
     port: 8081
   sparkApplicationAPIVersion: sparkoperator.k8s.io/v1beta2
@@ -82,7 +87,8 @@ oidcSecret:
   existingSecret: spark-console-oidc
   clientSecretKey: client-secret
 
-# When the backend is enabled, grant access only to SparkApplications in spark.
+# Grant the backend get/list/watch/create/patch/delete access to SparkApplications in spark,
+# plus pod deletion for force termination. No pods/exec permission is required.
 rbac:
   create: true
   clusterWide: false

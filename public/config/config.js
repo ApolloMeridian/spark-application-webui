@@ -25,9 +25,14 @@ window.__SPARK_CONTROL_CENTER_CONFIG__ = {
     refreshIntervalSeconds: 10,
     defaultHistoryDays: 7,
   },
+  historyServer: {
+    enabled: false,
+    baseUrl: '',
+  },
   features: {
     kill: true,
     audit: true,
     sparkUi: true,
+    submit: true,
   },
 };

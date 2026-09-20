@@ -1,8 +1,13 @@
 package kube
 
 import (
+	"context"
+	"encoding/json"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestResourceQuantityParsing(t *testing.T) {
@@ -23,6 +28,47 @@ func TestResourceQuantityParsing(t *testing.T) {
 				t.Fatalf("got %f, want %f", test.got, test.want)
 			}
 		})
+	}
+}
+
+func TestMutatingRequestsUseExpectedKubernetesSemantics(t *testing.T) {
+	var requests []struct {
+		method, path, contentType string
+		body                      map[string]any
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entry := struct {
+			method, path, contentType string
+			body                      map[string]any
+		}{method: r.Method, path: r.URL.Path, contentType: r.Header.Get("Content-Type")}
+		_ = json.NewDecoder(r.Body).Decode(&entry.body)
+		requests = append(requests, entry)
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"metadata":{"name":"demo","namespace":"spark"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"kind":"Status","status":"Success"}`))
+	}))
+	defer server.Close()
+	client := &Client{baseURL: server.URL, token: "token", http: &http.Client{Timeout: time.Second}, apiGroup: "sparkoperator.k8s.io", apiVersion: "v1beta2", resourcePath: "sparkapplications", allowedLookup: map[string]bool{"spark": true}}
+	if _, err := client.CreateSparkApplication(context.Background(), "spark", Object{"apiVersion": "sparkoperator.k8s.io/v1beta2", "kind": "SparkApplication"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.DisableSparkApplicationRestart(context.Background(), "spark", "demo"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ForceDeletePod(context.Background(), "spark", "demo-driver"); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 3 || requests[0].method != http.MethodPost || requests[1].method != http.MethodPatch || requests[2].method != http.MethodDelete {
+		t.Fatalf("unexpected requests: %#v", requests)
+	}
+	if requests[1].contentType != "application/merge-patch+json" || String(Object(requests[1].body), "spec", "restartPolicy", "type") != "Never" {
+		t.Fatalf("unexpected restart patch: %#v", requests[1])
+	}
+	if requests[2].body["gracePeriodSeconds"] != float64(0) || requests[2].body["propagationPolicy"] != "Background" {
+		t.Fatalf("unexpected pod deletion: %#v", requests[2])
 	}
 }
 

@@ -61,6 +61,10 @@ export function canDelete(role: UserRole): boolean {
   return role === 'admin';
 }
 
+export function canSubmit(role: UserRole): boolean {
+  return role === 'operator' || role === 'admin';
+}
+
 export function isTerminalState(state: ApplicationState): boolean {
   return ['COMPLETED', 'FAILED', 'SUBMISSION_FAILED', 'KILLED'].includes(state);
 }
