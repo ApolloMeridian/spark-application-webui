@@ -38,7 +38,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer audits.Close()
-	prometheus := metrics.New(cfg.PrometheusURL, cfg.PrometheusTimeout, cfg.MetricsLookback)
+	prometheus := metrics.New(cfg.PrometheusURL, cfg.PrometheusTimeout, cfg.MetricsLookback, cfg.MetricsQueryStep, cfg.MetricsCPURateWindow)
 	applicationService := service.New(cfg, kubernetes, prometheus, audits, logger)
 	server := &http.Server{
 		Addr: cfg.HTTPAddr, Handler: api.New(cfg, applicationService, logger),

@@ -55,7 +55,7 @@ export interface OperationAudit {
   applicationName: string;
   namespace: string;
   operator: string;
-  operation: 'KILL';
+  operation: 'KILL' | 'DELETE';
   reason?: string;
   timestamp: string;
   result: 'SUCCESS' | 'FAILED';
@@ -98,6 +98,7 @@ export interface DashboardSummary {
   capacity: ResourceAmount;
   metricsAvailable: boolean;
   nodePools: { baseline: number; autoscale: number; pending: number };
+  history: { submitted: number; failed: number; from: string; to: string };
 }
 
 export interface ApplicationFilters {
@@ -105,6 +106,8 @@ export interface ApplicationFilters {
   state?: ApplicationState;
   owner?: string;
   namespace?: string;
+  from?: string;
+  to?: string;
 }
 
 export interface SparkApplicationService {
@@ -113,5 +116,6 @@ export interface SparkApplicationService {
   getApplication(namespace: string, name: string): Promise<SparkApplication>;
   getAudit(): Promise<OperationAudit[]>;
   killApplication(namespace: string, name: string, operator: string, reason?: string): Promise<OperationAudit>;
+  deleteApplication(namespace: string, name: string, operator: string, reason?: string): Promise<OperationAudit>;
   reset(): Promise<void>;
 }

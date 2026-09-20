@@ -23,9 +23,11 @@ type PodUsage struct {
 }
 
 type Client struct {
-	baseURL  string
-	http     *http.Client
-	lookback time.Duration
+	baseURL      string
+	http         *http.Client
+	lookback     time.Duration
+	queryStep    time.Duration
+	cpuRateRange time.Duration
 }
 
 type apiResponse struct {
@@ -52,8 +54,11 @@ type rangeResult struct {
 	podLabel string
 }
 
-func New(baseURL string, timeout, lookback time.Duration) *Client {
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: &http.Client{Timeout: timeout}, lookback: lookback}
+func New(baseURL string, timeout, lookback, queryStep, cpuRateRange time.Duration) *Client {
+	return &Client{
+		baseURL: strings.TrimRight(baseURL, "/"), http: &http.Client{Timeout: timeout}, lookback: lookback,
+		queryStep: queryStep, cpuRateRange: cpuRateRange,
+	}
 }
 
 func (c *Client) Usage(ctx context.Context, namespace string, podNames []string) (map[string]PodUsage, []domain.MetricPoint, error) {
@@ -66,7 +71,7 @@ func (c *Client) Usage(ctx context.Context, namespace string, podNames []string)
 		podRegex = append(podRegex, regexp.QuoteMeta(podName))
 	}
 	regex := strings.Join(podRegex, "|")
-	queries := [][]queryCandidate{usageQueryCandidates(namespace, regex, true), usageQueryCandidates(namespace, regex, false)}
+	queries := [][]queryCandidate{c.usageQueryCandidates(namespace, regex, true), c.usageQueryCandidates(namespace, regex, false)}
 	type result struct {
 		index int
 		data  rangeResult
@@ -149,7 +154,7 @@ func (c *Client) Usage(ctx context.Context, namespace string, podNames []string)
 	return usage, metrics, nil
 }
 
-func usageQueryCandidates(namespace, podRegex string, cpu bool) []queryCandidate {
+func (c *Client) usageQueryCandidates(namespace, podRegex string, cpu bool) []queryCandidate {
 	type labels struct {
 		namespace string
 		pod       string
@@ -162,7 +167,7 @@ func usageQueryCandidates(namespace, podRegex string, cpu bool) []queryCandidate
 		for _, selector := range []string{preciseSelector, broadSelector} {
 			query := fmt.Sprintf(`sum by (%s) (container_memory_working_set_bytes{%s}) / 1073741824`, set.pod, selector)
 			if cpu {
-				query = fmt.Sprintf(`sum by (%s) (rate(container_cpu_usage_seconds_total{%s}[5m]))`, set.pod, selector)
+				query = fmt.Sprintf(`sum by (%s) (rate(container_cpu_usage_seconds_total{%s}[%s]))`, set.pod, selector, prometheusDuration(c.cpuRateRange))
 			}
 			result = append(result, queryCandidate{query: query, podLabel: set.pod})
 		}
@@ -224,15 +229,24 @@ func (c *Client) query(ctx context.Context, query string) (apiResponse, error) {
 }
 
 func (c *Client) queryRange(ctx context.Context, query string, start, end time.Time) (apiResponse, error) {
-	step := c.lookback / 60
-	if step < 15*time.Second {
-		step = 15 * time.Second
-	}
 	params := url.Values{
 		"query": {query}, "start": {strconv.FormatInt(start.Unix(), 10)}, "end": {strconv.FormatInt(end.Unix(), 10)},
-		"step": {strconv.FormatInt(int64(step.Seconds()), 10)},
+		"step": {strconv.FormatFloat(c.queryStep.Seconds(), 'f', -1, 64)},
 	}
 	return c.get(ctx, "/api/v1/query_range?"+params.Encode())
+}
+
+func prometheusDuration(value time.Duration) string {
+	if value%time.Hour == 0 {
+		return strconv.FormatInt(int64(value/time.Hour), 10) + "h"
+	}
+	if value%time.Minute == 0 {
+		return strconv.FormatInt(int64(value/time.Minute), 10) + "m"
+	}
+	if value%time.Second == 0 {
+		return strconv.FormatInt(int64(value/time.Second), 10) + "s"
+	}
+	return strconv.FormatInt(value.Milliseconds(), 10) + "ms"
 }
 
 func (c *Client) get(ctx context.Context, path string) (apiResponse, error) {

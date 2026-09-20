@@ -22,6 +22,9 @@ type Config struct {
 	PrometheusURL        string
 	PrometheusTimeout    time.Duration
 	MetricsLookback      time.Duration
+	MetricsQueryStep     time.Duration
+	MetricsCPURateWindow time.Duration
+	HistoryDefaultDays   int
 	DatabaseURL          string
 	DatabaseHost         string
 	DatabasePort         int
@@ -46,6 +49,9 @@ func Load() (Config, error) {
 		PrometheusURL:        strings.TrimRight(env("PROMETHEUS_URL", "http://prometheus-server.prometheus.svc:80"), "/"),
 		PrometheusTimeout:    durationEnv("PROMETHEUS_QUERY_TIMEOUT", 15*time.Second),
 		MetricsLookback:      durationEnv("PROMETHEUS_LOOKBACK", time.Hour),
+		MetricsQueryStep:     durationEnv("PROMETHEUS_QUERY_STEP", 15*time.Second),
+		MetricsCPURateWindow: durationEnv("PROMETHEUS_CPU_RATE_WINDOW", time.Minute),
+		HistoryDefaultDays:   intEnv("HISTORY_DEFAULT_DAYS", 7),
 		DatabaseURL:          os.Getenv("DATABASE_URL"),
 		DatabaseHost:         env("DATABASE_HOST", "spark-postgres.spark-console.svc"),
 		DatabasePort:         intEnv("DATABASE_PORT", 5432),
@@ -58,6 +64,12 @@ func Load() (Config, error) {
 	}
 	if len(cfg.Namespaces) == 0 {
 		return Config{}, fmt.Errorf("WATCH_NAMESPACES must contain at least one namespace")
+	}
+	if cfg.MetricsQueryStep <= 0 || cfg.MetricsCPURateWindow <= 0 || cfg.MetricsLookback <= 0 {
+		return Config{}, fmt.Errorf("Prometheus lookback, query step, and CPU rate window must be positive durations")
+	}
+	if cfg.HistoryDefaultDays <= 0 {
+		return Config{}, fmt.Errorf("HISTORY_DEFAULT_DAYS must be positive")
 	}
 	if cfg.DatabaseURL == "" && (cfg.DatabaseUsername == "" || cfg.DatabasePassword == "") {
 		return Config{}, fmt.Errorf("DATABASE_USERNAME and DATABASE_PASSWORD are required when DATABASE_URL is empty")

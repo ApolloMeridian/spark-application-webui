@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canKill, formatCpu, formatMemory, stateColor, sumResources } from './utils';
+import { canDelete, canKill, formatCpu, formatMemory, isTerminalState, stateColor, sumResources } from './utils';
 import { seedApplications } from './mockData';
 
 describe('formatters and permissions', () => {
@@ -18,6 +18,10 @@ describe('formatters and permissions', () => {
     expect(canKill('viewer')).toBe(false);
     expect(canKill('operator')).toBe(true);
     expect(canKill('admin')).toBe(true);
+    expect(canDelete('operator')).toBe(false);
+    expect(canDelete('admin')).toBe(true);
+    expect(isTerminalState('COMPLETED')).toBe(true);
+    expect(isTerminalState('RUNNING')).toBe(false);
   });
   it('aggregates driver and executor resources', () => {
     const app = seedApplications[0];

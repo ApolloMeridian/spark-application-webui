@@ -18,6 +18,12 @@ describe('mock application service', () => {
     expect(audit[0]).toMatchObject({ applicationName: before.name, operator: 'tester', result: 'SUCCESS', reason: 'test kill' });
   });
   it('rejects killing an inactive application', async () => {
-    await expect(sparkService.killApplication('spark-prod', 'can-merge-hourly', 'tester')).rejects.toThrow('no longer active');
+    await expect(sparkService.killApplication('spark-prod', 'can-merge-hourly', 'tester')).rejects.toThrow('Only RUNNING');
+  });
+  it('deletes only terminal applications and records a DELETE audit', async () => {
+    await sparkService.deleteApplication('spark-prod', 'can-merge-hourly', 'admin', 'cleanup');
+    await expect(sparkService.getApplication('spark-prod', 'can-merge-hourly')).rejects.toThrow('not found');
+    expect((await sparkService.getAudit())[0]).toMatchObject({ operation: 'DELETE', result: 'SUCCESS', reason: 'cleanup' });
+    await expect(sparkService.deleteApplication('spark-prod', 'parquet-to-iceberg', 'admin')).rejects.toThrow('terminal');
   });
 });

@@ -21,10 +21,13 @@ window.__SPARK_CONTROL_CENTER_CONFIG__ = {
     name: 'gke-prod-cn',
     namespaces: ['spark-prod', 'spark-ml', 'spark-streaming', 'spark-sandbox'],
   },
+  dashboard: {
+    refreshIntervalSeconds: 10,
+    defaultHistoryDays: 7,
+  },
   features: {
     kill: true,
     audit: true,
-    demoReset: true,
     sparkUi: true,
   },
 };

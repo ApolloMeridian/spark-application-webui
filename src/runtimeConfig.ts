@@ -21,18 +21,22 @@ export interface RuntimeConfig {
     name: string;
     namespaces: string[];
   };
+  dashboard: {
+    refreshIntervalSeconds: number;
+    defaultHistoryDays: number;
+  };
   features: {
     kill: boolean;
     audit: boolean;
-    demoReset: boolean;
     sparkUi: boolean;
   };
 }
 
-export type RuntimeConfigInput = Partial<Omit<RuntimeConfig, 'api' | 'auth' | 'cluster' | 'features'>> & {
+export type RuntimeConfigInput = Partial<Omit<RuntimeConfig, 'api' | 'auth' | 'cluster' | 'dashboard' | 'features'>> & {
   api?: Partial<RuntimeConfig['api']>;
   auth?: Partial<Omit<RuntimeConfig['auth'], 'oidc'>> & { oidc?: Partial<RuntimeConfig['auth']['oidc']> };
   cluster?: Partial<RuntimeConfig['cluster']>;
+  dashboard?: Partial<RuntimeConfig['dashboard']>;
   features?: Partial<RuntimeConfig['features']>;
 };
 
@@ -48,7 +52,8 @@ const defaults: RuntimeConfig = {
     },
   },
   cluster: { name: 'gke-prod-cn', namespaces: ['spark-prod', 'spark-ml', 'spark-streaming', 'spark-sandbox'] },
-  features: { kill: true, audit: true, demoReset: true, sparkUi: true },
+  dashboard: { refreshIntervalSeconds: 10, defaultHistoryDays: 7 },
+  features: { kill: true, audit: true, sparkUi: true },
 };
 
 function normalizeBaseUrl(value: string) {
@@ -67,6 +72,7 @@ export function resolveRuntimeConfig(input: RuntimeConfigInput = {}): RuntimeCon
       oidc: { ...defaults.auth.oidc, ...input.auth?.oidc },
     },
     cluster: { ...defaults.cluster, ...input.cluster },
+    dashboard: { ...defaults.dashboard, ...input.dashboard },
     features: { ...defaults.features, ...input.features },
   };
 }

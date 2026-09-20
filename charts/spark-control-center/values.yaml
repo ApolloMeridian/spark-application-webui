@@ -1,7 +1,7 @@
 # Spark Control Center frontend image built from this repository.
 image:
   repository: spark-control-center
-  tag: "0.1.2"
+  tag: "0.1.3"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -31,10 +31,12 @@ runtimeConfig:
   cluster:
     name: gke-prod-cn
     namespaces: [spark-prod, spark-ml, spark-streaming, spark-sandbox]
+  dashboard:
+    refreshIntervalSeconds: 10
+    defaultHistoryDays: 7
   features:
     kill: true
     audit: true
-    demoReset: true
     sparkUi: true
 
 # Same-origin /api reverse proxy. Enable when backend.enabled=true or supply an upstream URL.
@@ -148,6 +150,8 @@ prometheus:
   url: http://prometheus-operated.monitoring.svc:9090
   queryTimeout: 15s
   lookback: 1h
+  queryStep: 15s
+  cpuRateWindow: 1m
 
 # Existing PostgreSQL is recommended. This chart does not install a database.
 database:

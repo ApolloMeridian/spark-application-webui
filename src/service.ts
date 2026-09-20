@@ -34,19 +34,33 @@ export class MockSparkApplicationService implements SparkApplicationService {
     const byState: DashboardSummary['byState'] = {}; let baseline = 0; let autoscale = 0; let pending = 0;
     apps.forEach((app) => {
       byState[app.state] = (byState[app.state] ?? 0) + 1;
+      if (app.state !== 'RUNNING') return;
       const totals = sumResources(app); requested.cpu += totals.requested.cpu; requested.memoryGiB += totals.requested.memoryGiB;
       used.cpu += totals.used.cpu; used.memoryGiB += totals.used.memoryGiB;
-      app.executors.forEach((executor) => { if (!executor.node) pending += 1; else if (executor.nodePool === 'baseline') baseline += 1; else autoscale += 1; });
+      app.executors.filter((executor) => ['RUNNING', 'PENDING'].includes(executor.state)).forEach((executor) => { if (!executor.node) pending += 1; else if (executor.nodePool === 'baseline') baseline += 1; else autoscale += 1; });
     });
-    return { total: apps.length, byState, requested, used, capacity: { cpu: 288, memoryGiB: 2458 }, metricsAvailable: true, nodePools: { baseline, autoscale, pending } };
+    const to = filters.to ? new Date(filters.to) : new Date();
+    const from = filters.from ? new Date(filters.from) : new Date(to.getTime() - runtimeConfig.dashboard.defaultHistoryDays * 86400000);
+    const submitted = apps.filter((app) => { const time = new Date(app.createdAt); return time >= from && time <= to; }).length;
+    const failed = apps.filter((app) => ['FAILED', 'SUBMISSION_FAILED'].includes(app.state) && app.finishedAt && new Date(app.finishedAt) >= from && new Date(app.finishedAt) <= to).length;
+    return { total: apps.length, byState, requested, used, capacity: { cpu: 288, memoryGiB: 2458 }, metricsAvailable: true, nodePools: { baseline, autoscale, pending }, history: { submitted, failed, from: from.toISOString(), to: to.toISOString() } };
   }
   async getAudit() { await wait(150); return readAudit().sort((a, b) => b.timestamp.localeCompare(a.timestamp)); }
   async killApplication(namespace: string, name: string, operator: string, reason?: string) {
     await wait(550); const apps = readApps(); const app = apps.find((item) => item.namespace === namespace && item.name === name);
     if (!app) throw new Error('Application not found');
-    if (!['RUNNING', 'PENDING', 'SUBMITTED', 'FAILING'].includes(app.state)) throw new Error('Application is no longer active');
+    if (app.state !== 'RUNNING') throw new Error('Only RUNNING applications can be killed');
     const audit: OperationAudit = { id: `op-${Date.now()}`, applicationName: name, namespace, operator, operation: 'KILL', reason, timestamp: new Date().toISOString(), result: 'SUCCESS', message: 'SparkApplication deletion accepted by Kubernetes API (mock)' };
     app.state = 'KILLED'; app.finishedAt = new Date().toISOString(); app.executors = app.executors.map((executor) => ({ ...executor, state: executor.state === 'PENDING' ? 'FAILED' : 'SUCCEEDED', resources: { ...executor.resources, current: undefined } })); app.driver.current = undefined;
+    localStorage.setItem(APPS_KEY, JSON.stringify(apps)); localStorage.setItem(AUDIT_KEY, JSON.stringify([audit, ...readAudit()])); return audit;
+  }
+  async deleteApplication(namespace: string, name: string, operator: string, reason?: string) {
+    await wait(350); const apps = readApps(); const index = apps.findIndex((item) => item.namespace === namespace && item.name === name);
+    if (index < 0) throw new Error('Application not found');
+    const app = apps[index];
+    if (!['COMPLETED', 'FAILED', 'SUBMISSION_FAILED', 'KILLED'].includes(app.state)) throw new Error('Only terminal applications can be deleted');
+    const audit: OperationAudit = { id: `op-${Date.now()}`, applicationName: name, namespace, operator, operation: 'DELETE', reason, timestamp: new Date().toISOString(), result: 'SUCCESS', message: 'Terminal SparkApplication deletion accepted by Kubernetes API (mock)' };
+    apps.splice(index, 1);
     localStorage.setItem(APPS_KEY, JSON.stringify(apps)); localStorage.setItem(AUDIT_KEY, JSON.stringify([audit, ...readAudit()])); return audit;
   }
   async reset() { await wait(120); localStorage.setItem(APPS_KEY, JSON.stringify(cloneSeed())); localStorage.removeItem(AUDIT_KEY); }
@@ -89,6 +103,11 @@ export class ApiSparkApplicationService implements SparkApplicationService {
   getApplication(namespace: string, name: string) { return this.request<SparkApplication>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications/${encodeURIComponent(name)}`); }
   getAudit() { return this.request<OperationAudit[]>('/v1/audit'); }
   killApplication(namespace: string, name: string, operator: string, reason?: string) {
+    return this.request<OperationAudit>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications/${encodeURIComponent(name)}/kill`, {
+      method: 'POST', body: JSON.stringify({ reason, requestedBy: operator }),
+    });
+  }
+  deleteApplication(namespace: string, name: string, operator: string, reason?: string) {
     return this.request<OperationAudit>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications/${encodeURIComponent(name)}`, {
       method: 'DELETE', body: JSON.stringify({ reason, requestedBy: operator }),
     });

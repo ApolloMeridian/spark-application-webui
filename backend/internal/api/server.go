@@ -22,8 +22,9 @@ type ApplicationService interface {
 	Ready(context.Context) error
 	ListApplications(context.Context) ([]domain.SparkApplication, error)
 	GetApplication(context.Context, string, string) (domain.SparkApplication, error)
-	Summary(context.Context) (domain.DashboardSummary, error)
+	Summary(context.Context, time.Time, time.Time) (domain.DashboardSummary, error)
 	KillApplication(context.Context, string, string, string) (domain.OperationAudit, error)
+	DeleteApplication(context.Context, string, string, string) (domain.OperationAudit, error)
 	ListAudit(context.Context) ([]domain.OperationAudit, error)
 }
 
@@ -47,7 +48,8 @@ func New(cfg config.Config, applicationService ApplicationService, logger *slog.
 	mux.HandleFunc("GET /v1/applications", server.listApplications)
 	mux.HandleFunc("GET /v1/dashboard/summary", server.summary)
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}", server.getApplication)
-	mux.HandleFunc("DELETE /v1/namespaces/{namespace}/applications/{name}", server.killApplication)
+	mux.HandleFunc("POST /v1/namespaces/{namespace}/applications/{name}/kill", server.killApplication)
+	mux.HandleFunc("DELETE /v1/namespaces/{namespace}/applications/{name}", server.deleteApplication)
 	mux.HandleFunc("GET /v1/audit", server.listAudit)
 	return server.middleware(mux)
 }
@@ -119,7 +121,12 @@ func (s *Server) listApplications(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) summary(w http.ResponseWriter, r *http.Request) {
-	summary, err := s.service.Summary(r.Context())
+	from, to, err := s.historyRange(r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	summary, err := s.service.Summary(r.Context(), from, to)
 	if err != nil {
 		s.writeServiceError(w, err)
 		return
@@ -141,20 +148,72 @@ func (s *Server) killApplication(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusUnauthorized, fmt.Errorf("authentication is required"))
 		return
 	}
-	var body struct {
-		Reason string `json:"reason"`
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		s.writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body"))
+	reason, err := decodeOperationReason(w, r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	audit, err := s.service.KillApplication(r.Context(), r.PathValue("namespace"), r.PathValue("name"), strings.TrimSpace(body.Reason))
+	audit, err := s.service.KillApplication(r.Context(), r.PathValue("namespace"), r.PathValue("name"), reason)
 	if err != nil {
 		s.writeServiceError(w, err)
 		return
 	}
 	s.writeJSON(w, http.StatusOK, audit)
+}
+
+func (s *Server) deleteApplication(w http.ResponseWriter, r *http.Request) {
+	if !s.config.AdminBypass {
+		s.writeError(w, http.StatusUnauthorized, fmt.Errorf("authentication is required"))
+		return
+	}
+	reason, err := decodeOperationReason(w, r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	audit, err := s.service.DeleteApplication(r.Context(), r.PathValue("namespace"), r.PathValue("name"), reason)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, audit)
+}
+
+func decodeOperationReason(w http.ResponseWriter, r *http.Request) (string, error) {
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		return "", fmt.Errorf("invalid JSON body")
+	}
+	return strings.TrimSpace(body.Reason), nil
+}
+
+func (s *Server) historyRange(r *http.Request) (time.Time, time.Time, error) {
+	to := time.Now().UTC()
+	days := s.config.HistoryDefaultDays
+	if days <= 0 {
+		days = 7
+	}
+	from := to.Add(-time.Duration(days) * 24 * time.Hour)
+	var err error
+	if value := strings.TrimSpace(r.URL.Query().Get("from")); value != "" {
+		from, err = time.Parse(time.RFC3339, value)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid from timestamp; expected RFC3339")
+		}
+	}
+	if value := strings.TrimSpace(r.URL.Query().Get("to")); value != "" {
+		to, err = time.Parse(time.RFC3339, value)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("invalid to timestamp; expected RFC3339")
+		}
+	}
+	if !from.Before(to) {
+		return time.Time{}, time.Time{}, fmt.Errorf("from timestamp must be before to timestamp")
+	}
+	return from.UTC(), to.UTC(), nil
 }
 
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {

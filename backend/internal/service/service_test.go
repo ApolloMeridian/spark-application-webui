@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"spark-control-center/backend/internal/config"
 	"spark-control-center/backend/internal/domain"
@@ -54,9 +55,13 @@ func (f *fakeStore) Insert(_ context.Context, row domain.OperationAudit) error {
 	f.rows = append(f.rows, row)
 	return nil
 }
-func (f *fakeStore) List(context.Context, int) ([]domain.OperationAudit, error) { return f.rows, nil }
-func (f *fakeStore) Ping(context.Context) error                                 { return nil }
-func (f *fakeStore) Close()                                                     {}
+func (f *fakeStore) List(context.Context, int) ([]domain.OperationAudit, error)          { return f.rows, nil }
+func (f *fakeStore) UpsertApplications(context.Context, []domain.SparkApplication) error { return nil }
+func (f *fakeStore) HistorySummary(_ context.Context, from, to time.Time) (domain.HistorySummary, error) {
+	return domain.HistorySummary{Submitted: 1, From: from.UTC().Format(time.RFC3339), To: to.UTC().Format(time.RFC3339)}, nil
+}
+func (f *fakeStore) Ping(context.Context) error { return nil }
+func (f *fakeStore) Close()                     {}
 
 func runningObject() kube.Object {
 	return kube.Object{
@@ -100,6 +105,9 @@ func TestKillDeletesAndAudits(t *testing.T) {
 	if err != nil || !kubernetes.deleted || audit.Result != "SUCCESS" || len(store.rows) != 1 {
 		t.Fatalf("unexpected kill result: deleted=%v audit=%#v rows=%d err=%v", kubernetes.deleted, audit, len(store.rows), err)
 	}
+	if audit.Operation != "KILL" {
+		t.Fatalf("expected KILL audit, got %#v", audit)
+	}
 }
 
 func TestKillFailureIsAudited(t *testing.T) {
@@ -116,7 +124,7 @@ func TestSummaryExcludesCompletedApplicationResources(t *testing.T) {
 	kubernetes := &fakeKubernetes{object: completedObject()}
 	store := &fakeStore{}
 	svc := New(config.Config{ClusterName: "kubernetes", Namespaces: []string{"spark"}}, kubernetes, fakePrometheus{}, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	summary, err := svc.Summary(context.Background())
+	summary, err := svc.Summary(context.Background(), time.Now().Add(-7*24*time.Hour), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +149,7 @@ func TestSummaryExcludesHistoricalExecutorsOfRunningApplication(t *testing.T) {
 		{Name: "demo-exec-3", Namespace: "spark", Role: "executor", Phase: "RUNNING", Node: "worker-2", NodePool: "baseline", Request: domain.ResourceAmount{CPU: 2, MemoryGiB: 4}, Labels: map[string]string{"sparkoperator.k8s.io/app-name": "demo"}},
 	}}
 	svc := New(config.Config{ClusterName: "kubernetes", Namespaces: []string{"spark"}}, kubernetes, fakePrometheus{}, &fakeStore{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	summary, err := svc.Summary(context.Background())
+	summary, err := svc.Summary(context.Background(), time.Now().Add(-7*24*time.Hour), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,6 +158,26 @@ func TestSummaryExcludesHistoricalExecutorsOfRunningApplication(t *testing.T) {
 	}
 	if summary.NodePools.Baseline != 1 || summary.NodePools.Pending != 0 {
 		t.Fatalf("historical executors must not contribute to node pools: %#v", summary.NodePools)
+	}
+}
+
+func TestDeleteTerminalApplicationAndAudit(t *testing.T) {
+	kubernetes := &fakeKubernetes{object: completedObject()}
+	store := &fakeStore{}
+	svc := New(config.Config{Namespaces: []string{"spark"}}, kubernetes, fakePrometheus{}, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	audit, err := svc.DeleteApplication(context.Background(), "spark", "demo", "cleanup")
+	if err != nil || !kubernetes.deleted || audit.Operation != "DELETE" || audit.Result != "SUCCESS" {
+		t.Fatalf("unexpected delete result: deleted=%v audit=%#v err=%v", kubernetes.deleted, audit, err)
+	}
+}
+
+func TestDeleteRejectsRunningApplication(t *testing.T) {
+	kubernetes := &fakeKubernetes{object: runningObject()}
+	store := &fakeStore{}
+	svc := New(config.Config{Namespaces: []string{"spark"}}, kubernetes, fakePrometheus{}, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	audit, err := svc.DeleteApplication(context.Background(), "spark", "demo", "cleanup")
+	if err == nil || kubernetes.deleted || audit.Operation != "DELETE" || audit.Result != "FAILED" {
+		t.Fatalf("expected terminal-state guard, deleted=%v audit=%#v err=%v", kubernetes.deleted, audit, err)
 	}
 }
 

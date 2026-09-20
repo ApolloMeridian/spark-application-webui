@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -50,7 +51,7 @@ func TestUsageAndCapacity(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL, 2*time.Second, time.Hour)
+	client := New(server.URL, 2*time.Second, time.Hour, 15*time.Second, time.Minute)
 	usage, history, err := client.Usage(context.Background(), "spark", []string{"demo-driver"})
 	if err != nil {
 		t.Fatal(err)
@@ -82,12 +83,47 @@ func TestUsageFallsBackToPodNameLabel(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL, 2*time.Second, time.Hour)
+	client := New(server.URL, 2*time.Second, time.Hour, 15*time.Second, time.Minute)
 	usage, _, err := client.Usage(context.Background(), "spark", []string{"demo-driver"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if usage["demo-driver"].Current.CPU != 0.5 || usage["demo-driver"].Current.MemoryGiB != 0.5 {
 		t.Fatalf("pod_name fallback did not populate usage: %#v", usage)
+	}
+}
+
+func TestUsageUsesConfiguredResolutionAndRateWindow(t *testing.T) {
+	var mu sync.Mutex
+	queries := []string{}
+	steps := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queries = append(queries, r.URL.Query().Get("query"))
+		steps = append(steps, r.URL.Query().Get("step"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"pod":"demo-driver"},"values":[[100,"0.5"],[115,"0.7"]]}]}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL, 2*time.Second, time.Hour, 15*time.Second, time.Minute)
+	_, _, err := client.Usage(context.Background(), "spark", []string{"demo-driver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range steps {
+		if step != "15" {
+			t.Fatalf("expected 15 second query step, got %q", step)
+		}
+	}
+	foundRateWindow := false
+	for _, query := range queries {
+		if strings.Contains(query, "[1m]") {
+			foundRateWindow = true
+		}
+	}
+	if !foundRateWindow {
+		t.Fatalf("expected configured CPU rate window, got %q", queries)
 	}
 }

@@ -12,8 +12,8 @@ npm run dev
 打开 Vite 输出的本地地址。登录页可选择模拟角色：
 
 - `viewer`：只读
-- `operator`：可终止活跃作业
-- `admin`：可终止作业并查看审计页
+- `operator`：可终止运行中的作业
+- `admin`：可终止运行中的作业、删除终态作业并查看审计页
 
 ## 验证
 
@@ -22,7 +22,7 @@ npm run test
 npm run build
 ```
 
-Mock 数据、登录角色、筛选条件和语言选择保存在 `localStorage`。侧边栏底部的“重置演示数据”可恢复初始作业并清空审计记录。
+Mock 数据、登录角色、筛选条件和语言选择保存在 `localStorage`。
 
 API 模式由 Helm 运行时配置启用，前端与后端共用 `src/types.ts` 中定义的 JSON 契约。
 
@@ -31,8 +31,8 @@ API 模式由 Helm 运行时配置启用，前端与后端共用 `src/types.ts` 
 项目包含多阶段、非 root Nginx 镜像和可配置 Helm Chart：
 
 ```bash
-docker build -t spark-control-center:0.1.2 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:0.1.2 .
+docker build -t spark-control-center:0.1.3 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:0.1.3 .
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace
 ```

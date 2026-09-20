@@ -1,10 +1,9 @@
-import { AppstoreOutlined, AuditOutlined, CloudServerOutlined, DeploymentUnitOutlined, GlobalOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, ReloadOutlined, UserOutlined } from '@ant-design/icons';
-import { App, Avatar, Button, Dropdown, Layout, Menu, Select, Space, Tag, Tooltip, Typography } from 'antd';
+import { AppstoreOutlined, AuditOutlined, CloudServerOutlined, DeploymentUnitOutlined, GlobalOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, UserOutlined } from '@ant-design/icons';
+import { Avatar, Button, Dropdown, Layout, Menu, Select, Space, Tag, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth';
 import { useI18n } from '../i18n';
-import { sparkService } from '../service';
 import { runtimeConfig } from '../runtimeConfig';
 import type { Locale, UserRole } from '../types';
 
@@ -13,7 +12,7 @@ const { Header, Sider, Content } = Layout;
 export function AppShell() {
   const [collapsed, setCollapsed] = useState(() => window.innerWidth < 1100);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const location = useLocation(); const navigate = useNavigate(); const { message } = App.useApp();
+  const location = useLocation(); const navigate = useNavigate();
   const { session, logout, setRole } = useAuth(); const { t, locale, setLocale } = useI18n();
   useEffect(() => { const onResize = () => window.innerWidth < 960 && setCollapsed(true); window.addEventListener('resize', onResize); return () => window.removeEventListener('resize', onResize); }, []);
   const selected = location.pathname.startsWith('/applications') ? '/applications' : location.pathname.startsWith('/audit') ? '/audit' : '/overview';
@@ -22,7 +21,6 @@ export function AppShell() {
     { key: '/applications', icon: <DeploymentUnitOutlined />, label: t('applications') },
     ...(runtimeConfig.features.audit && session?.role === 'admin' ? [{ key: '/audit', icon: <AuditOutlined />, label: t('audit') }] : []),
   ], [session?.role, t]);
-  const reset = async () => { await sparkService.reset(); message.success(t('resetDone')); window.dispatchEvent(new Event('mock-data-reset')); };
   return (
     <Layout className="app-layout">
       <Sider width={236} collapsedWidth={72} collapsed={collapsed} trigger={null} className="app-sider">
@@ -32,9 +30,6 @@ export function AppShell() {
         </div>
         <div className="environment-pill"><span className="live-dot" />{!collapsed && (runtimeConfig.dataMode === 'mock' ? t('mocked') : runtimeConfig.cluster.name)}</div>
         <Menu theme="dark" mode="inline" selectedKeys={[selected]} items={menuItems} onClick={({ key }) => navigate(key)} />
-        <div className="sider-footer">
-          {runtimeConfig.features.demoReset && <Tooltip title={t('reset')} placement="right"><Button type="text" icon={<ReloadOutlined />} onClick={reset}>{!collapsed && t('reset')}</Button></Tooltip>}
-        </div>
       </Sider>
       <Layout>
         <Header className="topbar">

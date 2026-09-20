@@ -1,19 +1,19 @@
-import { CopyOutlined, DeleteOutlined, DownloadOutlined, ExclamationCircleOutlined, LinkOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { CopyOutlined, DeleteOutlined, DownloadOutlined, ExclamationCircleOutlined, LinkOutlined, ReloadOutlined, SearchOutlined, StopOutlined } from '@ant-design/icons';
 import { Alert, App, Button, Card, Col, Descriptions, Empty, Input, Progress, Row, Segmented, Skeleton, Space, Table, Tabs, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import ReactECharts from 'echarts-for-react';
 import dayjs from 'dayjs';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../auth';
-import { KillModal } from '../components/KillModal';
+import { ApplicationOperationModal } from '../components/KillModal';
 import { PageHeader } from '../components/PageHeader';
 import { StatusTag } from '../components/StatusTag';
 import { useI18n } from '../i18n';
 import { sparkService } from '../service';
 import { runtimeConfig } from '../runtimeConfig';
 import type { ExecutorPod, KubernetesEvent, SparkApplication } from '../types';
-import { canKill, formatCpu, formatDuration, formatMemory, sumResources } from '../utils';
+import { canDelete, canKill, formatCpu, formatDuration, formatMemory, isTerminalState, sumResources } from '../utils';
 
 function ResourceSummary({ app }: { app: SparkApplication }) {
   const { t } = useI18n(); const totals = sumResources(app);
@@ -35,7 +35,7 @@ function ResourcesTab({ app }: { app: SparkApplication }) {
     yAxis: { type: 'value', name: metric === 'cpu' ? 'cores' : 'GiB', splitLine: { lineStyle: { color: '#edf1f6' } } },
     series: [{ name: metric === 'cpu' ? 'CPU used' : 'Memory used', type: 'line', smooth: true, showSymbol: false, data: app.metrics.map((p) => p[metric]), lineStyle: { width: 3, color: metric === 'cpu' ? '#2868f0' : '#7a58e8' }, areaStyle: { color: metric === 'cpu' ? 'rgba(40,104,240,.11)' : 'rgba(122,88,232,.11)' } }],
   }), [app.metrics, metric]);
-  return <div className="tab-stack"><ResourceSummary app={app} /><Card className="panel-card" title="Historical usage · last 50 min" extra={<Segmented value={metric} onChange={(value) => setMetric(value as 'cpu' | 'memoryGiB')} options={[{ value: 'cpu', label: 'CPU' }, { value: 'memoryGiB', label: 'Memory' }]} />}>{app.metrics.length ? <ReactECharts option={option} style={{ height: 310 }} /> : <Empty description="No time-series metrics for this application" />}</Card></div>;
+  return <div className="tab-stack"><ResourceSummary app={app} /><Card className="panel-card" title="Historical usage · last 1 hour" extra={<Segmented value={metric} onChange={(value) => setMetric(value as 'cpu' | 'memoryGiB')} options={[{ value: 'cpu', label: 'CPU' }, { value: 'memoryGiB', label: 'Memory' }]} />}>{app.metrics.length ? <ReactECharts option={option} style={{ height: 310 }} /> : <Empty description="No time-series metrics for this application" />}</Card></div>;
 }
 
 function ExecutorsTab({ app }: { app: SparkApplication }) {
@@ -77,14 +77,13 @@ function YamlTab({ app }: { app: SparkApplication }) {
 }
 
 export function ApplicationDetailPage() {
-  const { namespace = '', name = '' } = useParams(); const { t } = useI18n(); const { session } = useAuth(); const [app, setApp] = useState<SparkApplication>(); const [error, setError] = useState(''); const [killOpen, setKillOpen] = useState(false);
-  const load = useCallback(async () => { setError(''); setApp(undefined); try { setApp(await sparkService.getApplication(namespace, name)); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load'); } }, [namespace, name]);
-  useEffect(() => { void load(); }, [load]);
+  const { namespace = '', name = '' } = useParams(); const navigate = useNavigate(); const { t } = useI18n(); const { session } = useAuth(); const [app, setApp] = useState<SparkApplication>(); const [error, setError] = useState(''); const [operation, setOperation] = useState<'kill' | 'delete'>();
+  const load = useCallback(async () => { setError(''); try { setApp(await sparkService.getApplication(namespace, name)); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load'); } }, [namespace, name]);
+  useEffect(() => { void load(); const timer = window.setInterval(() => void load(), runtimeConfig.dashboard.refreshIntervalSeconds * 1000); return () => window.clearInterval(timer); }, [load]);
   if (error) return <Alert type="error" showIcon message={error} action={<Button onClick={load}>{t('retry')}</Button>} />;
   if (!app) return <Skeleton active paragraph={{ rows: 10 }} />;
-  const active = ['RUNNING', 'PENDING', 'SUBMITTED', 'FAILING'].includes(app.state);
   return <>
-    <PageHeader back={{ label: t('applications'), to: '/applications' }} title={<Space wrap>{app.name}<StatusTag state={app.state} /></Space>} subtitle={`${app.namespace} · ${app.cluster} · ${formatDuration(app)}`} extra={<Space><Button icon={<ReloadOutlined />} onClick={load}>{t('refresh')}</Button>{runtimeConfig.features.sparkUi && <Button icon={<LinkOutlined />}>Spark UI</Button>}{runtimeConfig.features.kill && active && <Button danger icon={<DeleteOutlined />} disabled={!canKill(session?.role ?? 'viewer')} onClick={() => setKillOpen(true)}>{t('kill')}</Button>}</Space>} />
+    <PageHeader back={{ label: t('applications'), to: '/applications' }} title={<Space wrap>{app.name}<StatusTag state={app.state} /></Space>} subtitle={`${app.namespace} · ${app.cluster} · ${formatDuration(app)}`} extra={<Space><Button icon={<ReloadOutlined />} onClick={load}>{t('refresh')}</Button>{runtimeConfig.features.sparkUi && <Button icon={<LinkOutlined />}>Spark UI</Button>}{runtimeConfig.features.kill && app.state === 'RUNNING' && <Button danger icon={<StopOutlined />} disabled={!canKill(session?.role ?? 'viewer')} onClick={() => setOperation('kill')}>{t('kill')}</Button>}{runtimeConfig.features.kill && isTerminalState(app.state) && <Button danger icon={<DeleteOutlined />} disabled={!canDelete(session?.role ?? 'viewer')} onClick={() => setOperation('delete')}>{t('delete')}</Button>}</Space>} />
     {app.errorMessage && <Alert className="detail-alert" type="error" showIcon icon={<ExclamationCircleOutlined />} message="Application failure detected" description={app.errorMessage} />}
     <Row gutter={[16, 16]} className="detail-overview"><Col xs={24} xl={16}><Card className="panel-card"><Descriptions column={{ xs: 1, sm: 2, lg: 3 }} items={[
       { key: 'owner', label: t('owner'), children: app.owner }, { key: 'team', label: t('team'), children: app.team }, { key: 'started', label: t('startedAt'), children: app.startedAt ? dayjs(app.startedAt).format('YYYY-MM-DD HH:mm:ss') : '—' },
@@ -96,6 +95,6 @@ export function ApplicationDetailPage() {
       { key: 'scheduling', label: t('scheduling'), children: <SchedulingTab app={app} /> }, { key: 'logs', label: t('logs'), children: <LogsTab app={app} /> },
       { key: 'events', label: `${t('events')} (${app.events.length})`, children: <EventsTab app={app} /> }, { key: 'yaml', label: t('yaml'), children: <YamlTab app={app} /> },
     ]} />
-    <KillModal application={app} open={killOpen} onClose={() => setKillOpen(false)} onKilled={load} />
+    {operation && <ApplicationOperationModal application={app} operation={operation} open onClose={() => setOperation(undefined)} onCompleted={() => navigate('/applications')} />}
   </>;
 }

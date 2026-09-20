@@ -30,6 +30,7 @@ data:
         name: {{ .Values.runtimeConfig.cluster.name | quote }},
         namespaces: {{ .Values.runtimeConfig.cluster.namespaces | toJson }}
       },
+      dashboard: {{ .Values.runtimeConfig.dashboard | toJson }},
       features: {{ .Values.runtimeConfig.features | toJson }}
     };
   default.conf: |

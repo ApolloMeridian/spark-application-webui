@@ -56,3 +56,11 @@ export function sumResources(app: SparkApplication): { requested: ResourceAmount
 export function canKill(role: UserRole): boolean {
   return role === 'operator' || role === 'admin';
 }
+
+export function canDelete(role: UserRole): boolean {
+  return role === 'admin';
+}
+
+export function isTerminalState(state: ApplicationState): boolean {
+  return ['COMPLETED', 'FAILED', 'SUBMISSION_FAILED', 'KILLED'].includes(state);
+}

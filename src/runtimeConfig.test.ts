@@ -18,6 +18,7 @@ describe('runtime configuration', () => {
     const config = resolveRuntimeConfig();
     expect(config.dataMode).toBe('mock');
     expect(config.auth.mode).toBe('mock');
-    expect(config.features.demoReset).toBe(true);
+    expect(config.dashboard.refreshIntervalSeconds).toBe(10);
+    expect(config.dashboard.defaultHistoryDays).toBe(7);
   });
 });

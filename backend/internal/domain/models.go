@@ -81,6 +81,14 @@ type DashboardSummary struct {
 		Autoscale int `json:"autoscale"`
 		Pending   int `json:"pending"`
 	} `json:"nodePools"`
+	History HistorySummary `json:"history"`
+}
+
+type HistorySummary struct {
+	Submitted int    `json:"submitted"`
+	Failed    int    `json:"failed"`
+	From      string `json:"from"`
+	To        string `json:"to"`
 }
 
 type OperationAudit struct {
@@ -96,9 +104,13 @@ type OperationAudit struct {
 }
 
 func NewAudit(id, namespace, application, operator, reason, result, message string) OperationAudit {
+	return NewOperationAudit(id, namespace, application, operator, "KILL", reason, result, message)
+}
+
+func NewOperationAudit(id, namespace, application, operator, operation, reason, result, message string) OperationAudit {
 	return OperationAudit{
 		ID: id, Namespace: namespace, ApplicationName: application, Operator: operator,
-		Operation: "KILL", Reason: reason, Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		Operation: operation, Reason: reason, Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		Result: result, Message: message,
 	}
 }

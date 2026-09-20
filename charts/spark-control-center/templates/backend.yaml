@@ -62,6 +62,12 @@ spec:
               value: {{ .Values.prometheus.queryTimeout | quote }}
             - name: PROMETHEUS_LOOKBACK
               value: {{ .Values.prometheus.lookback | quote }}
+            - name: PROMETHEUS_QUERY_STEP
+              value: {{ .Values.prometheus.queryStep | quote }}
+            - name: PROMETHEUS_CPU_RATE_WINDOW
+              value: {{ .Values.prometheus.cpuRateWindow | quote }}
+            - name: HISTORY_DEFAULT_DAYS
+              value: {{ .Values.runtimeConfig.dashboard.defaultHistoryDays | quote }}
             - name: DATABASE_HOST
               value: {{ .Values.database.host | quote }}
             - name: DATABASE_PORT

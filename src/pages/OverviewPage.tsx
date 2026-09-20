@@ -1,6 +1,7 @@
-import { ArrowRightOutlined, ClockCircleOutlined, ExclamationCircleOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { Alert, Button, Card, Col, Progress, Row, Skeleton, Space, Statistic, Table, Typography } from 'antd';
+import { ArrowRightOutlined, ClockCircleOutlined, ExclamationCircleOutlined, HistoryOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Col, DatePicker, Progress, Row, Skeleton, Space, Statistic, Table, Typography } from 'antd';
 import ReactECharts from 'echarts-for-react';
+import dayjs, { type Dayjs } from 'dayjs';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useI18n } from '../i18n';
@@ -17,21 +18,23 @@ function UsageCard({ title, used, requested, capacity, formatter, accent, metric
 }
 
 export function OverviewPage() {
-  const { t } = useI18n(); const navigate = useNavigate(); const [summary, setSummary] = useState<DashboardSummary>(); const [apps, setApps] = useState<SparkApplication[]>([]); const [error, setError] = useState('');
-  const load = useCallback(async () => { setError(''); try { const [s, list] = await Promise.all([sparkService.getSummary(), sparkService.listApplications()]); setSummary(s); setApps(list); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load'); } }, []);
-  useEffect(() => { void load(); const reset = () => void load(); window.addEventListener('mock-data-reset', reset); return () => window.removeEventListener('mock-data-reset', reset); }, [load]);
+  const { t } = useI18n(); const navigate = useNavigate(); const [summary, setSummary] = useState<DashboardSummary>(); const [apps, setApps] = useState<SparkApplication[]>([]); const [error, setError] = useState(''); const [lastUpdated, setLastUpdated] = useState<Dayjs>();
+  const [historyRange, setHistoryRange] = useState<[Dayjs, Dayjs]>(() => [dayjs().subtract(runtimeConfig.dashboard.defaultHistoryDays, 'day'), dayjs()]);
+  const load = useCallback(async () => { setError(''); try { const [s, list] = await Promise.all([sparkService.getSummary({ from: historyRange[0].toISOString(), to: historyRange[1].toISOString() }), sparkService.listApplications()]); setSummary(s); setApps(list); setLastUpdated(dayjs()); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load'); } }, [historyRange]);
+  useEffect(() => { void load(); const timer = window.setInterval(() => void load(), runtimeConfig.dashboard.refreshIntervalSeconds * 1000); return () => window.clearInterval(timer); }, [load]);
   if (error) return <Alert type="error" showIcon message={error} action={<Button onClick={load}>{t('retry')}</Button>} />;
   const failures = apps.filter((app) => ['FAILED', 'SUBMISSION_FAILED', 'FAILING'].includes(app.state)).slice(0, 4);
   const statusData = ['RUNNING', 'PENDING', 'FAILED', 'COMPLETED'].map((state) => ({ value: summary?.byState[state as keyof typeof summary.byState] ?? 0, name: state, itemStyle: { color: stateColor[state as keyof typeof stateColor] } }));
   const chartOption = { animation: false, tooltip: { trigger: 'item' }, legend: { bottom: 0, icon: 'circle', itemWidth: 8, textStyle: { color: '#647087' } }, series: [{ type: 'pie', radius: ['58%', '78%'], center: ['50%', '43%'], label: { show: false }, data: statusData }] };
   return <>
-    <PageHeader title={t('overview')} subtitle={`${runtimeConfig.cluster.name} · Updated just now`} extra={<Button onClick={load}>{t('refresh')}</Button>} />
+    <PageHeader title={t('overview')} subtitle={`${runtimeConfig.cluster.name} · ${lastUpdated ? lastUpdated.format('HH:mm:ss') : '—'}`} extra={<Space wrap><DatePicker.RangePicker aria-label={t('historyRange')} allowClear={false} value={historyRange} presets={[{ label: '24h', value: [dayjs().subtract(1, 'day'), dayjs()] }, { label: '7d', value: [dayjs().subtract(7, 'day'), dayjs()] }, { label: '30d', value: [dayjs().subtract(30, 'day'), dayjs()] }, { label: '90d', value: [dayjs().subtract(90, 'day'), dayjs()] }]} onChange={(value) => { if (value?.[0] && value[1]) setHistoryRange([value[0].startOf('day'), value[1].endOf('day')]); }} /><Button onClick={load}>{t('refresh')}</Button></Space>} />
     {!summary ? <Skeleton active /> : <>
       <Row gutter={[16, 16]} className="status-grid">
         {[
           ['RUNNING', t('running'), summary.byState.RUNNING ?? 0, '#12a878'], ['PENDING', t('pending'), (summary.byState.PENDING ?? 0) + (summary.byState.SUBMITTED ?? 0), '#e5a11a'],
           ['FAILED', t('failed'), (summary.byState.FAILED ?? 0) + (summary.byState.SUBMISSION_FAILED ?? 0), '#e44c55'], ['COMPLETED', t('completed'), summary.byState.COMPLETED ?? 0, '#2878ff'],
-        ].map(([key, label, value, color]) => <Col xs={12} lg={6} key={key as string}><Card className="stat-card" onClick={() => navigate(`/applications?state=${key}`)}><div className="stat-accent" style={{ background: color as string }} /><Statistic title={label} value={value as number} suffix={<ArrowRightOutlined />} /></Card></Col>)}
+          ['HISTORY', t('historicalSubmitted'), summary.history.submitted, '#7a58e8'], ['HISTORY_FAILED', t('historicalFailed'), summary.history.failed, '#c9323d'],
+        ].map(([key, label, value, color]) => <Col xs={12} lg={8} xl={4} key={key as string}><Card className="stat-card" onClick={() => key === 'HISTORY_FAILED' ? navigate('/applications?state=FAILED') : key !== 'HISTORY' && navigate(`/applications?state=${key}`)}><div className="stat-accent" style={{ background: color as string }} /><Statistic title={<Space size={6}>{String(key).startsWith('HISTORY') && <HistoryOutlined />}{label}</Space>} value={value as number} suffix={!String(key).startsWith('HISTORY') ? <ArrowRightOutlined /> : undefined} /></Card></Col>)}
       </Row>
       <Row gutter={[16, 16]} className="dashboard-row">
         <Col xs={24} xl={16}><Row gutter={[16, 16]}><Col xs={24} md={12}><UsageCard title={t('cpu')} used={summary.used.cpu} requested={summary.requested.cpu} capacity={summary.capacity.cpu} formatter={formatCpu} accent="#2868f0" metricsAvailable={summary.metricsAvailable} /></Col><Col xs={24} md={12}><UsageCard title={t('memory')} used={summary.used.memoryGiB} requested={summary.requested.memoryGiB} capacity={summary.capacity.memoryGiB} formatter={formatMemory} accent="#7a58e8" metricsAvailable={summary.metricsAvailable} /></Col></Row>

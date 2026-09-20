@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"spark-control-center/backend/internal/config"
 	"spark-control-center/backend/internal/domain"
@@ -21,11 +22,14 @@ func (fakeService) ListApplications(context.Context) ([]domain.SparkApplication,
 func (fakeService) GetApplication(context.Context, string, string) (domain.SparkApplication, error) {
 	return domain.SparkApplication{}, nil
 }
-func (fakeService) Summary(context.Context) (domain.DashboardSummary, error) {
+func (fakeService) Summary(context.Context, time.Time, time.Time) (domain.DashboardSummary, error) {
 	return domain.DashboardSummary{}, nil
 }
 func (fakeService) KillApplication(context.Context, string, string, string) (domain.OperationAudit, error) {
 	return domain.OperationAudit{Result: "SUCCESS"}, nil
+}
+func (fakeService) DeleteApplication(context.Context, string, string, string) (domain.OperationAudit, error) {
+	return domain.OperationAudit{Operation: "DELETE", Result: "SUCCESS"}, nil
 }
 func (fakeService) ListAudit(context.Context) ([]domain.OperationAudit, error) {
 	return []domain.OperationAudit{}, nil

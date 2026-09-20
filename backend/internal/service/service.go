@@ -81,6 +81,9 @@ func (s *Service) ListApplications(ctx context.Context) ([]domain.SparkApplicati
 		}
 	}
 	sort.Slice(applications, func(i, j int) bool { return applications[i].CreatedAt > applications[j].CreatedAt })
+	if err := s.audits.UpsertApplications(ctx, applications); err != nil {
+		s.logger.Warn("could not persist SparkApplication history", "error", err)
+	}
 	return applications, nil
 }
 
@@ -133,7 +136,7 @@ func (s *Service) GetApplication(ctx context.Context, namespace, name string) (d
 	return app, nil
 }
 
-func (s *Service) Summary(ctx context.Context) (domain.DashboardSummary, error) {
+func (s *Service) Summary(ctx context.Context, from, to time.Time) (domain.DashboardSummary, error) {
 	apps, err := s.ListApplications(ctx)
 	if err != nil {
 		return domain.DashboardSummary{}, err
@@ -193,6 +196,12 @@ func (s *Service) Summary(ctx context.Context) (domain.DashboardSummary, error) 
 		capacity.MemoryGiB = max(summary.Requested.MemoryGiB, 1)
 	}
 	summary.Capacity = capacity
+	history, historyErr := s.audits.HistorySummary(ctx, from, to)
+	if historyErr != nil {
+		s.logger.Warn("application history query failed; deriving history from current Kubernetes objects", "error", historyErr)
+		history = currentHistorySummary(apps, from, to)
+	}
+	summary.History = history
 	return summary, nil
 }
 
@@ -208,18 +217,52 @@ func (s *Service) KillApplication(ctx context.Context, namespace, name, reason s
 		return audit, err
 	}
 	state := normalizedState(kube.String(object, "status", "applicationState", "state"))
-	if !activeState(state) {
-		err = &kube.APIError{StatusCode: 409, Message: "SparkApplication is no longer active"}
-		audit := domain.NewAudit(newID(), namespace, name, operator, reason, "FAILED", err.Error())
+	if state != "RUNNING" {
+		err = &kube.APIError{StatusCode: 409, Message: "only RUNNING SparkApplications can be killed"}
+		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "FAILED", err.Error())
 		s.persistAudit(ctx, audit)
 		return audit, err
 	}
 	if err := s.kubernetes.DeleteSparkApplication(ctx, namespace, name); err != nil {
-		audit := domain.NewAudit(newID(), namespace, name, operator, reason, "FAILED", "Kubernetes delete failed: "+err.Error())
+		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "FAILED", "Kubernetes termination failed: "+err.Error())
 		s.persistAudit(ctx, audit)
 		return audit, err
 	}
-	audit := domain.NewAudit(newID(), namespace, name, operator, reason, "SUCCESS", "SparkApplication deletion accepted by Kubernetes API")
+	audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "SUCCESS", "SparkApplication termination accepted by Kubernetes API")
+	if err := s.persistAudit(ctx, audit); err != nil {
+		return audit, fmt.Errorf("SparkApplication was terminated but audit persistence failed: %w", err)
+	}
+	return audit, nil
+}
+
+func (s *Service) DeleteApplication(ctx context.Context, namespace, name, reason string) (domain.OperationAudit, error) {
+	const operator = "admin"
+	if !s.config.NamespaceAllowed(namespace) {
+		return domain.OperationAudit{}, &kube.APIError{StatusCode: 403, Message: "namespace is not configured for this service"}
+	}
+	object, err := s.kubernetes.GetSparkApplication(ctx, namespace, name)
+	if err != nil {
+		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "DELETE", reason, "FAILED", "SparkApplication lookup failed: "+err.Error())
+		s.persistAudit(ctx, audit)
+		return audit, err
+	}
+	state := normalizedState(kube.String(object, "status", "applicationState", "state"))
+	if !terminalState(state) {
+		err = &kube.APIError{StatusCode: 409, Message: "only terminal SparkApplications can be deleted"}
+		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "DELETE", reason, "FAILED", err.Error())
+		s.persistAudit(ctx, audit)
+		return audit, err
+	}
+	terminalApplication := s.mapApplication(object, nil, map[string]metrics.PodUsage{})
+	if err := s.audits.UpsertApplications(ctx, []domain.SparkApplication{terminalApplication}); err != nil {
+		s.logger.Warn("could not persist terminal SparkApplication before deletion", "namespace", namespace, "application", name, "error", err)
+	}
+	if err := s.kubernetes.DeleteSparkApplication(ctx, namespace, name); err != nil {
+		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "DELETE", reason, "FAILED", "Kubernetes delete failed: "+err.Error())
+		s.persistAudit(ctx, audit)
+		return audit, err
+	}
+	audit := domain.NewOperationAudit(newID(), namespace, name, operator, "DELETE", reason, "SUCCESS", "Terminal SparkApplication deletion accepted by Kubernetes API")
 	if err := s.persistAudit(ctx, audit); err != nil {
 		return audit, fmt.Errorf("SparkApplication was deleted but audit persistence failed: %w", err)
 	}
@@ -452,8 +495,26 @@ func executorPresentationState(applicationState, rawExecutorState string) string
 	return state
 }
 
-func activeState(state string) bool {
-	return state == "RUNNING" || state == "PENDING" || state == "SUBMITTED" || state == "FAILING" || state == "UNKNOWN"
+func terminalState(state string) bool {
+	return state == "COMPLETED" || state == "FAILED" || state == "SUBMISSION_FAILED" || state == "KILLED"
+}
+
+func currentHistorySummary(applications []domain.SparkApplication, from, to time.Time) domain.HistorySummary {
+	result := domain.HistorySummary{From: from.UTC().Format(time.RFC3339), To: to.UTC().Format(time.RFC3339)}
+	for _, app := range applications {
+		createdAt, createdErr := time.Parse(time.RFC3339, app.CreatedAt)
+		if createdErr == nil && !createdAt.Before(from) && !createdAt.After(to) {
+			result.Submitted++
+		}
+		if app.State != "FAILED" && app.State != "SUBMISSION_FAILED" {
+			continue
+		}
+		failedAt, failedErr := time.Parse(time.RFC3339, app.FinishedAt)
+		if failedErr == nil && !failedAt.Before(from) && !failedAt.After(to) {
+			result.Failed++
+		}
+	}
+	return result
 }
 
 func addResources(target *domain.ResourceAmount, value domain.ResourceAmount) {

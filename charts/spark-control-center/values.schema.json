@@ -15,7 +15,7 @@
     },
     "runtimeConfig": {
       "type": "object",
-      "required": ["dataMode", "api", "auth", "cluster", "features"],
+      "required": ["dataMode", "api", "auth", "cluster", "dashboard", "features"],
       "properties": {
         "dataMode": { "enum": ["mock", "api"] },
         "api": {
@@ -35,11 +35,30 @@
           "type": "object",
           "required": ["name", "namespaces"],
           "properties": { "name": { "type": "string", "minLength": 1 }, "namespaces": { "type": "array", "items": { "type": "string", "minLength": 1 } } }
-        }
+        },
+        "dashboard": {
+          "type": "object",
+          "required": ["refreshIntervalSeconds", "defaultHistoryDays"],
+          "properties": {
+            "refreshIntervalSeconds": { "type": "integer", "minimum": 5 },
+            "defaultHistoryDays": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "features": { "type": "object" }
       }
     },
     "service": { "type": "object", "properties": { "port": { "type": "integer", "minimum": 1, "maximum": 65535 } } },
     "backend": { "type": "object", "properties": { "enabled": { "type": "boolean" } } },
-    "rbac": { "type": "object", "properties": { "clusterWide": { "type": "boolean" }, "namespaces": { "type": "array", "items": { "type": "string" } } } }
+    "rbac": { "type": "object", "properties": { "clusterWide": { "type": "boolean" }, "namespaces": { "type": "array", "items": { "type": "string" } } } },
+    "prometheus": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "queryTimeout": { "type": "string", "minLength": 1 },
+        "lookback": { "type": "string", "minLength": 1 },
+        "queryStep": { "type": "string", "minLength": 1 },
+        "cpuRateWindow": { "type": "string", "minLength": 1 }
+      }
+    }
   }
 }
