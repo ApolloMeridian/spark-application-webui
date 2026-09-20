@@ -1,0 +1,15 @@
+apiVersion: v2
+name: spark-control-center
+description: Spark on Kubernetes application operations console UI with an optional backend deployment
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0-0"
+keywords:
+  - spark
+  - kubernetes
+  - observability
+  - operations
+home: https://example.invalid/spark-control-center
+maintainers:
+  - name: Platform Engineering

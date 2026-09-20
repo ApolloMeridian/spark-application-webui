@@ -1,0 +1,13 @@
+{{- if .Values.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "spark-control-center.fullname" . }}
+  labels:
+    {{- include "spark-control-center.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "spark-control-center.selectorLabels" . | nindent 6 }}
+{{- end }}

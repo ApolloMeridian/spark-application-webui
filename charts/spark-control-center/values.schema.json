@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["image", "runtimeConfig", "service"],
+  "properties": {
+    "replicaCount": { "type": "integer", "minimum": 1 },
+    "image": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "runtimeConfig": {
+      "type": "object",
+      "required": ["dataMode", "api", "auth", "cluster", "features"],
+      "properties": {
+        "dataMode": { "enum": ["mock", "api"] },
+        "api": {
+          "type": "object",
+          "required": ["baseUrl", "requestTimeoutMs"],
+          "properties": {
+            "baseUrl": { "type": "string" },
+            "requestTimeoutMs": { "type": "integer", "minimum": 1000 }
+          }
+        },
+        "auth": {
+          "type": "object",
+          "required": ["mode", "oidc"],
+          "properties": { "mode": { "enum": ["mock", "oidc"] }, "oidc": { "type": "object" } }
+        },
+        "cluster": {
+          "type": "object",
+          "required": ["name", "namespaces"],
+          "properties": { "name": { "type": "string", "minLength": 1 }, "namespaces": { "type": "array", "items": { "type": "string", "minLength": 1 } } }
+        }
+      }
+    },
+    "service": { "type": "object", "properties": { "port": { "type": "integer", "minimum": 1, "maximum": 65535 } } },
+    "backend": { "type": "object", "properties": { "enabled": { "type": "boolean" } } },
+    "rbac": { "type": "object", "properties": { "clusterWide": { "type": "boolean" }, "namespaces": { "type": "array", "items": { "type": "string" } } } }
+  }
+}

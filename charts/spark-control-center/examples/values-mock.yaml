@@ -1,0 +1,20 @@
+image:
+  repository: registry.example.com/platform/spark-control-center
+  tag: "0.1.0"
+
+runtimeConfig:
+  dataMode: mock
+  auth:
+    mode: mock
+  cluster:
+    name: gke-test
+    namespaces: [spark-test]
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: spark-console.test.example.com
+      paths:
+        - path: /
+          pathType: Prefix

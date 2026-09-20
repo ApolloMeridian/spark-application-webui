@@ -1,0 +1,103 @@
+# Real integration profile for the UI and Go backend in this repository.
+# Build and push both images before installing this file.
+
+image:
+  repository: 10.0.32.115:5000/library/platform/spark-control-center
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+runtimeConfig:
+  dataMode: api
+  api:
+    baseUrl: /api
+    requestTimeoutMs: 15000
+  auth:
+    # The backend currently uses an explicit admin bypass instead of validating OIDC.
+    mode: oidc
+    oidc:
+      issuerUrl: https://keycloak.k8s.automatic.local/realms/k8s-infra/
+      clientId: spark-control-center
+      audience: spark-control-center-api
+      scopes: [openid, profile, email, roles]
+      loginPath: /v1/auth/login
+      logoutPath: /v1/auth/logout
+      sessionPath: /v1/auth/me
+  cluster:
+    name: kubernetes
+    namespaces: [spark]
+  features:
+    kill: true
+    audit: true
+    demoReset: false
+    sparkUi: true
+
+# The UI's nginx forwards /api to the backend only when this is enabled.
+apiProxy:
+  enabled: true
+  upstream: ""
+
+backend:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: 10.0.32.115:5000/library/platform/spark-control-center-backend
+    tag: "0.1.0"
+    pullPolicy: IfNotPresent
+  service:
+    port: 8081
+  sparkApplicationAPIVersion: sparkoperator.k8s.io/v1beta2
+  auth:
+    # Temporary: every request is treated as admin. Do not expose publicly.
+    adminBypass: true
+  extraEnv: []
+
+# Real backend integration endpoints in this cluster.
+prometheus:
+  url: http://prometheus-server.prometheus.svc:80
+  queryTimeout: 15s
+  lookback: 1h
+
+database:
+  host: spark-postgres.spark-console.svc
+  port: 5432
+  name: spark_console_db
+  # The supplied in-cluster PostgreSQL manifest does not configure TLS.
+  sslMode: disable
+  maxOpenConnections: 20
+  credentials:
+    existingSecret: spark-postgres-secret
+    usernameKey: POSTGRES_USER
+    passwordKey: POSTGRES_PASSWORD
+
+# Reserved for real OIDC. It is not mounted while adminBypass=true.
+oidcSecret:
+  existingSecret: spark-console-oidc
+  clientSecretKey: client-secret
+
+# When the backend is enabled, grant access only to SparkApplications in spark.
+rbac:
+  create: true
+  clusterWide: false
+  namespaces: [spark]
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: spark-console.k8s.automatic.local
+      paths:
+        - path: /
+          pathType: Prefix
+  # No TLS Secret name was provided. Add one before enabling real OIDC, for example:
+  # tls:
+  #   - secretName: spark-console-tls
+  #     hosts: [spark-console.k8s.automatic.local]
+  tls: []
+
+pdb:
+  enabled: false
+
+autoscaling:
+  enabled: false

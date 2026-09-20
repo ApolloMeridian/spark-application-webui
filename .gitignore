@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+.npm-cache/
+.qa/
+*.log
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+.tools/
+backend/spark-control-center-backend
