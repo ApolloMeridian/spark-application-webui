@@ -38,7 +38,7 @@ export class MockSparkApplicationService implements SparkApplicationService {
       used.cpu += totals.used.cpu; used.memoryGiB += totals.used.memoryGiB;
       app.executors.forEach((executor) => { if (!executor.node) pending += 1; else if (executor.nodePool === 'baseline') baseline += 1; else autoscale += 1; });
     });
-    return { total: apps.length, byState, requested, used, capacity: { cpu: 288, memoryGiB: 2458 }, nodePools: { baseline, autoscale, pending } };
+    return { total: apps.length, byState, requested, used, capacity: { cpu: 288, memoryGiB: 2458 }, metricsAvailable: true, nodePools: { baseline, autoscale, pending } };
   }
   async getAudit() { await wait(150); return readAudit().sort((a, b) => b.timestamp.localeCompare(a.timestamp)); }
   async killApplication(namespace: string, name: string, operator: string, reason?: string) {

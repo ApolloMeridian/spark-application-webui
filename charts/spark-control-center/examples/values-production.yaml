@@ -3,7 +3,7 @@
 
 image:
   repository: 10.0.32.115:5000/library/platform/spark-control-center
-  tag: "0.1.0"
+  tag: "0.1.2"
   pullPolicy: IfNotPresent
 
 replicaCount: 1
@@ -43,7 +43,7 @@ backend:
   replicaCount: 1
   image:
     repository: 10.0.32.115:5000/library/platform/spark-control-center-backend
-    tag: "0.1.0"
+    tag: "0.1.2"
     pullPolicy: IfNotPresent
   service:
     port: 8081

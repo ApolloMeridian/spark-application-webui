@@ -42,6 +42,16 @@ type apiResponse struct {
 	} `json:"data"`
 }
 
+type queryCandidate struct {
+	query    string
+	podLabel string
+}
+
+type rangeResult struct {
+	response apiResponse
+	podLabel string
+}
+
 func New(baseURL string, timeout, lookback time.Duration) *Client {
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), http: &http.Client{Timeout: timeout}, lookback: lookback}
 }
@@ -55,29 +65,26 @@ func (c *Client) Usage(ctx context.Context, namespace string, podNames []string)
 	for _, podName := range podNames {
 		podRegex = append(podRegex, regexp.QuoteMeta(podName))
 	}
-	selector := fmt.Sprintf(`namespace=%q,pod=~%q,container!="",container!="POD"`, namespace, strings.Join(podRegex, "|"))
-	queries := []string{
-		fmt.Sprintf(`sum by (pod) (rate(container_cpu_usage_seconds_total{%s}[5m]))`, selector),
-		fmt.Sprintf(`sum by (pod) (container_memory_working_set_bytes{%s}) / 1073741824`, selector),
-	}
+	regex := strings.Join(podRegex, "|")
+	queries := [][]queryCandidate{usageQueryCandidates(namespace, regex, true), usageQueryCandidates(namespace, regex, false)}
 	type result struct {
 		index int
-		data  apiResponse
+		data  rangeResult
 		err   error
 	}
 	results := make(chan result, 2)
 	var wg sync.WaitGroup
-	for index, query := range queries {
+	for index, candidates := range queries {
 		wg.Add(1)
-		go func(index int, query string) {
+		go func(index int, candidates []queryCandidate) {
 			defer wg.Done()
-			response, err := c.queryRange(ctx, query, time.Now().Add(-c.lookback), time.Now())
+			response, err := c.queryRangeWithFallback(ctx, candidates, time.Now().Add(-c.lookback), time.Now())
 			results <- result{index: index, data: response, err: err}
-		}(index, query)
+		}(index, candidates)
 	}
 	wg.Wait()
 	close(results)
-	series := make([]apiResponse, 2)
+	series := make([]rangeResult, 2)
 	for result := range results {
 		if result.err != nil {
 			return nil, nil, result.err
@@ -86,9 +93,15 @@ func (c *Client) Usage(ctx context.Context, namespace string, podNames []string)
 	}
 
 	aggregate := map[int64]*domain.MetricPoint{}
-	for index, response := range series {
-		for _, item := range response.Data.Result {
-			podName := item.Metric["pod"]
+	for index, result := range series {
+		for _, item := range result.response.Data.Result {
+			podName := item.Metric[result.podLabel]
+			if podName == "" {
+				podName = firstNonEmpty(item.Metric["pod"], item.Metric["pod_name"])
+			}
+			if podName == "" {
+				continue
+			}
 			podUsage := usage[podName]
 			for _, sample := range item.Values {
 				timestamp, value, ok := parseSample(sample)
@@ -134,6 +147,48 @@ func (c *Client) Usage(ctx context.Context, namespace string, podNames []string)
 		metrics = append(metrics, point)
 	}
 	return usage, metrics, nil
+}
+
+func usageQueryCandidates(namespace, podRegex string, cpu bool) []queryCandidate {
+	type labels struct {
+		namespace string
+		pod       string
+	}
+	labelSets := []labels{{"namespace", "pod"}, {"namespace", "pod_name"}, {"kubernetes_namespace", "pod_name"}}
+	result := make([]queryCandidate, 0, len(labelSets)*2)
+	for _, set := range labelSets {
+		preciseSelector := fmt.Sprintf(`%s=%q,%s=~%q,container!="",container!="POD"`, set.namespace, namespace, set.pod, podRegex)
+		broadSelector := fmt.Sprintf(`%s=%q,%s=~%q,container!="POD"`, set.namespace, namespace, set.pod, podRegex)
+		for _, selector := range []string{preciseSelector, broadSelector} {
+			query := fmt.Sprintf(`sum by (%s) (container_memory_working_set_bytes{%s}) / 1073741824`, set.pod, selector)
+			if cpu {
+				query = fmt.Sprintf(`sum by (%s) (rate(container_cpu_usage_seconds_total{%s}[5m]))`, set.pod, selector)
+			}
+			result = append(result, queryCandidate{query: query, podLabel: set.pod})
+		}
+	}
+	return result
+}
+
+func (c *Client) queryRangeWithFallback(ctx context.Context, candidates []queryCandidate, start, end time.Time) (rangeResult, error) {
+	var lastErr error
+	for _, candidate := range candidates {
+		response, err := c.queryRange(ctx, candidate.query, start, end)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(response.Data.Result) > 0 {
+			return rangeResult{response: response, podLabel: candidate.podLabel}, nil
+		}
+	}
+	if lastErr != nil {
+		return rangeResult{}, lastErr
+	}
+	if len(candidates) == 0 {
+		return rangeResult{}, nil
+	}
+	return rangeResult{podLabel: candidates[0].podLabel}, nil
 }
 
 func (c *Client) Capacity(ctx context.Context) (domain.ResourceAmount, error) {
@@ -230,4 +285,13 @@ func round(value float64, places int) float64 {
 	text := strconv.FormatFloat(value, 'f', places, 64)
 	result, _ := strconv.ParseFloat(text, 64)
 	return result
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

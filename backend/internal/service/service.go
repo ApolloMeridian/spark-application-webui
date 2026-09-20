@@ -139,16 +139,37 @@ func (s *Service) Summary(ctx context.Context) (domain.DashboardSummary, error) 
 		return domain.DashboardSummary{}, err
 	}
 	summary := domain.DashboardSummary{Total: len(apps), ByState: map[string]int{}}
+	expectedMetricPods := 0
+	observedMetricPods := 0
 	for _, app := range apps {
 		summary.ByState[app.State]++
+		if app.State != "RUNNING" {
+			if app.State == "PENDING" || app.State == "SUBMITTED" || app.State == "FAILING" {
+				for _, executor := range app.Executors {
+					if executor.Node == "" {
+						summary.NodePools.Pending++
+					}
+				}
+			}
+			continue
+		}
 		addResources(&summary.Requested, app.Driver.Request)
+		expectedMetricPods++
 		if app.Driver.Current != nil {
 			addResources(&summary.Used, *app.Driver.Current)
+			observedMetricPods++
 		}
 		for _, executor := range app.Executors {
+			if executor.State != "RUNNING" && executor.State != "PENDING" {
+				continue
+			}
 			addResources(&summary.Requested, executor.Resources.Request)
 			if executor.Resources.Current != nil {
 				addResources(&summary.Used, *executor.Resources.Current)
+				observedMetricPods++
+			}
+			if executor.State == "RUNNING" {
+				expectedMetricPods++
 			}
 			if executor.Node == "" {
 				summary.NodePools.Pending++
@@ -159,6 +180,7 @@ func (s *Service) Summary(ctx context.Context) (domain.DashboardSummary, error) 
 			}
 		}
 	}
+	summary.MetricsAvailable = expectedMetricPods == 0 || observedMetricPods > 0
 	capacity, metricsErr := s.prometheus.Capacity(ctx)
 	if metricsErr != nil {
 		s.logger.Warn("Prometheus capacity query failed; using requested resources as chart denominator", "error", metricsErr)
@@ -252,7 +274,8 @@ func (s *Service) mapApplication(object kube.Object, pods []kube.Pod, usage map[
 	executorByName := map[string]domain.ExecutorPod{}
 	if states, ok := kube.Map(object, "status", "executorState"); ok {
 		for podName, rawState := range states {
-			executorByName[podName] = domain.ExecutorPod{Name: podName, State: executorState(fmt.Sprint(rawState)), Resources: domain.PodResource{Request: executorFallback}}
+			raw := strings.ToUpper(strings.TrimSpace(fmt.Sprint(rawState)))
+			executorByName[podName] = domain.ExecutorPod{Name: podName, State: executorPresentationState(state, raw), RawState: raw, Resources: domain.PodResource{Request: executorFallback}}
 		}
 	}
 	for _, pod := range pods {
@@ -276,7 +299,7 @@ func (s *Service) mapApplication(object kube.Object, pods []kube.Pod, usage map[
 			continue
 		}
 		executorByName[pod.Name] = domain.ExecutorPod{
-			Name: pod.Name, State: executorState(pod.Phase), Resources: resource, Node: pod.Node,
+			Name: pod.Name, State: executorPresentationState(state, pod.Phase), RawState: pod.Phase, Resources: resource, Node: pod.Node,
 			NodePool: pod.NodePool, StartedAt: pod.StartedAt, Restarts: pod.Restarts,
 		}
 	}
@@ -416,6 +439,17 @@ func executorState(state string) string {
 	default:
 		return "FAILED"
 	}
+}
+
+func executorPresentationState(applicationState, rawExecutorState string) string {
+	state := executorState(rawExecutorState)
+	// Spark Operator keeps the historical executorState map after application completion.
+	// Executors commonly receive SIGTERM during dynamic-allocation scale-down or final cleanup,
+	// which is recorded as FAILED even though the SparkApplication completed successfully.
+	if applicationState == "COMPLETED" && state == "FAILED" {
+		return "TERMINATED"
+	}
+	return state
 }
 
 func activeState(state string) bool {

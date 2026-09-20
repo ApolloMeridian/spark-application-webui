@@ -1,7 +1,7 @@
 # Spark Control Center frontend image built from this repository.
 image:
   repository: spark-control-center
-  tag: "0.1.0"
+  tag: "0.1.2"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

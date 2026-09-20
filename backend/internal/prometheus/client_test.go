@@ -63,3 +63,31 @@ func TestUsageAndCapacity(t *testing.T) {
 		t.Fatalf("unexpected capacity: %#v err=%v", capacity, err)
 	}
 }
+
+func TestUsageFallsBackToPodNameLabel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		query := r.URL.Query().Get("query")
+		result := []any{}
+		if strings.Contains(query, "sum by (pod_name)") {
+			result = []any{map[string]any{
+				"metric": map[string]string{"pod_name": "demo-driver"},
+				"values": [][]any{{float64(100), "0.25"}, {float64(160), "0.5"}},
+			}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "success",
+			"data":   map[string]any{"resultType": "matrix", "result": result},
+		})
+	}))
+	defer server.Close()
+
+	client := New(server.URL, 2*time.Second, time.Hour)
+	usage, _, err := client.Usage(context.Background(), "spark", []string{"demo-driver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage["demo-driver"].Current.CPU != 0.5 || usage["demo-driver"].Current.MemoryGiB != 0.5 {
+		t.Fatalf("pod_name fallback did not populate usage: %#v", usage)
+	}
+}

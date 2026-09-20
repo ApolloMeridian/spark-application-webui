@@ -31,8 +31,8 @@ API 模式由 Helm 运行时配置启用，前端与后端共用 `src/types.ts` 
 项目包含多阶段、非 root Nginx 镜像和可配置 Helm Chart：
 
 ```bash
-docker build -t spark-control-center:0.1.0 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:0.1.0 .
+docker build -t spark-control-center:0.1.2 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:0.1.2 .
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace
 ```

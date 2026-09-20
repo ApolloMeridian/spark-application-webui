@@ -22,6 +22,7 @@ type MetricPoint struct {
 type ExecutorPod struct {
 	Name      string      `json:"name"`
 	State     string      `json:"state"`
+	RawState  string      `json:"rawState,omitempty"`
 	Resources PodResource `json:"resources"`
 	Node      string      `json:"node,omitempty"`
 	NodePool  string      `json:"nodePool,omitempty"`
@@ -69,12 +70,13 @@ type SparkApplication struct {
 }
 
 type DashboardSummary struct {
-	Total     int            `json:"total"`
-	ByState   map[string]int `json:"byState"`
-	Requested ResourceAmount `json:"requested"`
-	Used      ResourceAmount `json:"used"`
-	Capacity  ResourceAmount `json:"capacity"`
-	NodePools struct {
+	Total            int            `json:"total"`
+	ByState          map[string]int `json:"byState"`
+	Requested        ResourceAmount `json:"requested"`
+	Used             ResourceAmount `json:"used"`
+	Capacity         ResourceAmount `json:"capacity"`
+	MetricsAvailable bool           `json:"metricsAvailable"`
+	NodePools        struct {
 		Baseline  int `json:"baseline"`
 		Autoscale int `json:"autoscale"`
 		Pending   int `json:"pending"`

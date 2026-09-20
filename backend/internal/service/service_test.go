@@ -66,6 +66,18 @@ func runningObject() kube.Object {
 	}
 }
 
+func completedObject() kube.Object {
+	object := runningObject()
+	status := object["status"].(map[string]any)
+	status["applicationState"] = map[string]any{"state": "COMPLETED"}
+	status["executorState"] = map[string]any{
+		"demo-exec-1": "FAILED",
+		"demo-exec-2": "COMPLETED",
+	}
+	status["terminationTime"] = "2026-09-20T00:05:00Z"
+	return object
+}
+
 func TestListMapsRealResources(t *testing.T) {
 	kubernetes := &fakeKubernetes{object: runningObject(), pods: []kube.Pod{{Name: "demo-driver", Namespace: "spark", Role: "driver", Phase: "RUNNING", Node: "worker-1", NodePool: "baseline", Request: domain.ResourceAmount{CPU: 1, MemoryGiB: 2}, Labels: map[string]string{"sparkoperator.k8s.io/app-name": "demo"}}}}
 	store := &fakeStore{}
@@ -97,5 +109,62 @@ func TestKillFailureIsAudited(t *testing.T) {
 	audit, err := svc.KillApplication(context.Background(), "spark", "demo", "test")
 	if err == nil || audit.Result != "FAILED" || len(store.rows) != 1 {
 		t.Fatalf("expected failed audit, got audit=%#v rows=%d err=%v", audit, len(store.rows), err)
+	}
+}
+
+func TestSummaryExcludesCompletedApplicationResources(t *testing.T) {
+	kubernetes := &fakeKubernetes{object: completedObject()}
+	store := &fakeStore{}
+	svc := New(config.Config{ClusterName: "kubernetes", Namespaces: []string{"spark"}}, kubernetes, fakePrometheus{}, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	summary, err := svc.Summary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Total != 1 || summary.ByState["COMPLETED"] != 1 {
+		t.Fatalf("completed app must remain in status totals: %#v", summary)
+	}
+	if summary.Requested.CPU != 0 || summary.Requested.MemoryGiB != 0 || summary.Used.CPU != 0 || summary.NodePools.Pending != 0 {
+		t.Fatalf("completed resources must not contribute to live capacity: %#v", summary)
+	}
+}
+
+func TestSummaryExcludesHistoricalExecutorsOfRunningApplication(t *testing.T) {
+	object := runningObject()
+	status := object["status"].(map[string]any)
+	status["executorState"] = map[string]any{
+		"demo-exec-1": "FAILED",
+		"demo-exec-2": "COMPLETED",
+		"demo-exec-3": "RUNNING",
+	}
+	kubernetes := &fakeKubernetes{object: object, pods: []kube.Pod{
+		{Name: "demo-driver", Namespace: "spark", Role: "driver", Phase: "RUNNING", Node: "worker-1", NodePool: "baseline", Request: domain.ResourceAmount{CPU: 1, MemoryGiB: 2}, Labels: map[string]string{"sparkoperator.k8s.io/app-name": "demo"}},
+		{Name: "demo-exec-3", Namespace: "spark", Role: "executor", Phase: "RUNNING", Node: "worker-2", NodePool: "baseline", Request: domain.ResourceAmount{CPU: 2, MemoryGiB: 4}, Labels: map[string]string{"sparkoperator.k8s.io/app-name": "demo"}},
+	}}
+	svc := New(config.Config{ClusterName: "kubernetes", Namespaces: []string{"spark"}}, kubernetes, fakePrometheus{}, &fakeStore{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	summary, err := svc.Summary(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Requested.CPU != 3 || summary.Requested.MemoryGiB != 6 {
+		t.Fatalf("historical executors must not contribute to live requests: %#v", summary.Requested)
+	}
+	if summary.NodePools.Baseline != 1 || summary.NodePools.Pending != 0 {
+		t.Fatalf("historical executors must not contribute to node pools: %#v", summary.NodePools)
+	}
+}
+
+func TestCompletedApplicationNormalizesHistoricalFailedExecutor(t *testing.T) {
+	svc := New(config.Config{ClusterName: "kubernetes", Namespaces: []string{"spark"}}, &fakeKubernetes{}, fakePrometheus{}, &fakeStore{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	app := svc.mapApplication(completedObject(), nil, map[string]metrics.PodUsage{})
+	states := map[string]domain.ExecutorPod{}
+	for _, executor := range app.Executors {
+		states[executor.Name] = executor
+	}
+	failed := states["demo-exec-1"]
+	if failed.State != "TERMINATED" || failed.RawState != "FAILED" {
+		t.Fatalf("expected neutral presentation with raw state preserved, got %#v", failed)
+	}
+	if states["demo-exec-2"].State != "SUCCEEDED" {
+		t.Fatalf("completed executor should be SUCCEEDED, got %#v", states["demo-exec-2"])
 	}
 }

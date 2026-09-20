@@ -1,5 +1,5 @@
 import { CopyOutlined, DeleteOutlined, DownloadOutlined, ExclamationCircleOutlined, LinkOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
-import { Alert, App, Button, Card, Col, Descriptions, Empty, Input, Progress, Row, Segmented, Skeleton, Space, Table, Tabs, Tag, Typography } from 'antd';
+import { Alert, App, Button, Card, Col, Descriptions, Empty, Input, Progress, Row, Segmented, Skeleton, Space, Table, Tabs, Tag, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import ReactECharts from 'echarts-for-react';
 import dayjs from 'dayjs';
@@ -42,7 +42,7 @@ function ExecutorsTab({ app }: { app: SparkApplication }) {
   const { t } = useI18n();
   const columns: ColumnsType<ExecutorPod> = [
     { title: 'Pod', dataIndex: 'name', width: 260, render: (value) => <Typography.Text copyable={{ text: value }}>{value}</Typography.Text> },
-    { title: t('status'), dataIndex: 'state', width: 110, render: (value) => <Tag color={value === 'RUNNING' ? 'success' : value === 'PENDING' ? 'warning' : value === 'FAILED' ? 'error' : 'blue'}>{value}</Tag> },
+    { title: t('status'), dataIndex: 'state', width: 125, render: (value, row) => <Tooltip title={row.rawState && row.rawState !== value ? `Spark Operator raw state: ${row.rawState}` : undefined}><Tag color={value === 'RUNNING' ? 'success' : value === 'PENDING' ? 'warning' : value === 'FAILED' ? 'error' : value === 'TERMINATED' ? 'default' : 'blue'}>{value}</Tag></Tooltip> },
     { title: t('cpu'), width: 180, render: (_, row) => <div className="table-progress"><span>{formatCpu(row.resources.current?.cpu)} / {formatCpu(row.resources.request.cpu)}</span><Progress size="small" percent={Math.round((row.resources.current?.cpu ?? 0) / row.resources.request.cpu * 100)} showInfo={false} /></div> },
     { title: t('memory'), width: 190, render: (_, row) => <div className="table-progress"><span>{formatMemory(row.resources.current?.memoryGiB)} / {formatMemory(row.resources.request.memoryGiB)}</span><Progress size="small" percent={Math.round((row.resources.current?.memoryGiB ?? 0) / row.resources.request.memoryGiB * 100)} showInfo={false} strokeColor="#7a58e8" /></div> },
     { title: t('node'), dataIndex: 'node', width: 165, render: (value) => value ?? <Typography.Text type="warning">Unscheduled</Typography.Text> },

@@ -31,7 +31,8 @@ export interface MetricPoint {
 
 export interface ExecutorPod {
   name: string;
-  state: 'RUNNING' | 'PENDING' | 'SUCCEEDED' | 'FAILED';
+  state: 'RUNNING' | 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'TERMINATED';
+  rawState?: string;
   resources: PodResource;
   node?: string;
   nodePool?: 'baseline' | 'autoscale';
@@ -95,6 +96,7 @@ export interface DashboardSummary {
   requested: ResourceAmount;
   used: ResourceAmount;
   capacity: ResourceAmount;
+  metricsAvailable: boolean;
   nodePools: { baseline: number; autoscale: number; pending: number };
 }
 

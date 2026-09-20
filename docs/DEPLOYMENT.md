@@ -3,8 +3,8 @@
 ## Build and publish the UI image
 
 ```bash
-docker build -t registry.example.com/platform/spark-control-center:0.1.0 .
-docker push registry.example.com/platform/spark-control-center:0.1.0
+docker build -t registry.example.com/platform/spark-control-center:0.1.2 .
+docker push registry.example.com/platform/spark-control-center:0.1.2
 ```
 
 For an air-gapped build with a locally cached Nginx base image:
@@ -12,7 +12,7 @@ For an air-gapped build with a locally cached Nginx base image:
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:0.1.0 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:0.1.2 .
 ```
 
 The image listens on port `8080`, serves `/healthz`, runs as UID 101, and supports a read-only root filesystem. Helm replaces `/usr/share/nginx/html/config/config.js` at runtime, so one immutable image can be promoted through environments.
@@ -23,8 +23,8 @@ Use the repository root as Docker build context:
 
 ```bash
 docker build -f backend/Dockerfile \
-  -t 10.0.32.115:5000/library/platform/spark-control-center-backend:0.1.0 .
-docker push 10.0.32.115:5000/library/platform/spark-control-center-backend:0.1.0
+  -t 10.0.32.115:5000/library/platform/spark-control-center-backend:0.1.2 .
+docker push 10.0.32.115:5000/library/platform/spark-control-center-backend:0.1.2
 ```
 
 The backend runs as UID 65532 on port `8081`. On startup it connects to PostgreSQL and creates the `operation_audit` table and indexes when absent. The configured database user therefore needs table/index creation permission in `spark_console_db`.
