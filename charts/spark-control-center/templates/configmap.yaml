@@ -1,0 +1,91 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "spark-control-center.fullname" . }}-frontend
+  labels:
+    {{- include "spark-control-center.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+data:
+  config.js: |
+    window.__SPARK_CONTROL_CENTER_CONFIG__ = {
+      appName: {{ .Values.runtimeConfig.appName | quote }},
+      timeZone: {{ .Values.runtimeConfig.timeZone | quote }},
+      dataMode: {{ .Values.runtimeConfig.dataMode | quote }},
+      api: {
+        baseUrl: {{ .Values.runtimeConfig.api.baseUrl | quote }},
+        requestTimeoutMs: {{ .Values.runtimeConfig.api.requestTimeoutMs }}
+      },
+      auth: {
+        mode: {{ .Values.runtimeConfig.auth.mode | quote }},
+        oidc: {
+          enabled: {{ .Values.oidc.enabled }},
+          providerName: {{ .Values.oidc.providerName | quote }},
+          issuerUrl: {{ .Values.oidc.issuerURL | quote }},
+          clientId: {{ .Values.oidc.clientID | quote }},
+          audience: {{ .Values.oidc.clientID | quote }},
+          scopes: {{ .Values.oidc.scopes | toJson }},
+          authorizePath: "/v1/auth/oidc/login",
+          loginPath: "/v1/auth/login",
+          logoutPath: "/v1/auth/logout",
+          sessionPath: "/v1/auth/me"
+        }
+      },
+      cluster: {
+        name: {{ .Values.runtimeConfig.cluster.name | quote }},
+        namespaces: {{ .Values.runtimeConfig.cluster.namespaces | toJson }}
+      },
+      dashboard: {{ .Values.runtimeConfig.dashboard | toJson }},
+      historyServer: {{ .Values.runtimeConfig.historyServer | toJson }},
+      features: {{ .Values.runtimeConfig.features | toJson }}
+    };
+  default.conf: |
+    server {
+      listen 8080;
+      server_name _;
+      root /usr/share/nginx/html;
+      index index.html;
+      server_tokens off;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header X-Frame-Options "SAMEORIGIN" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+      location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+      }
+
+      location = /config/config.js {
+        add_header Cache-Control "no-store, no-cache, must-revalidate";
+        try_files $uri =404;
+      }
+
+      location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+      }
+
+      {{- if .Values.apiProxy.enabled }}
+      location /api/ {
+        {{- $upstream := .Values.apiProxy.upstream }}
+        {{- if not $upstream }}
+        {{- if not .Values.backend.enabled }}{{ fail "apiProxy.enabled requires apiProxy.upstream or backend.enabled=true" }}{{ end }}
+        {{- $upstream = printf "http://%s-backend:%v" (include "spark-control-center.fullname" .) .Values.backend.service.port }}
+        {{- end }}
+        proxy_pass {{ trimSuffix "/" $upstream }}/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $spark_forwarded_proto;
+        proxy_set_header X-Forwarded-Host $spark_forwarded_host;
+        proxy_set_header X-Forwarded-Prefix /api;
+        proxy_connect_timeout {{ .Values.apiProxy.connectTimeoutSeconds }}s;
+        proxy_read_timeout {{ .Values.apiProxy.readTimeoutSeconds }}s;
+      }
+      {{- end }}
+
+      location / {
+        try_files $uri $uri/ /index.html;
+      }
+    }

@@ -1,0 +1,133 @@
+# Real integration profile for the UI and Go backend in this repository.
+# Build and push both images before installing this file.
+
+image:
+  repository: spark-control-center
+  tag: "1.0.1"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+runtimeConfig:
+  timeZone: Etc/UTC
+  dataMode: api
+  api:
+    baseUrl: /api
+    requestTimeoutMs: 15000
+  auth:
+    mode: oidc
+  cluster:
+    name: kubernetes
+    namespaces: [spark]
+  dashboard:
+    # The UI refreshes live resource values every 10 seconds. Historical cards default to seven days.
+    refreshIntervalSeconds: 10
+    defaultHistoryDays: 7
+  historyServer:
+    enabled: true
+    baseUrl: https://spark-history.example.com/history
+  features:
+    kill: true
+    audit: true
+    sparkUi: true
+    submit: true
+    executorLogs: true
+
+# The UI's nginx forwards /api to the backend only when this is enabled.
+apiProxy:
+  enabled: true
+  upstream: ""
+
+backend:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: spark-control-center-backend
+    tag: "1.0.1"
+    pullPolicy: IfNotPresent
+  service:
+    port: 8081
+  sparkApplicationAPIVersion: sparkoperator.k8s.io/v1beta2
+  auth:
+    sessionTTL: 8h
+    bcryptCost: 12
+  extraEnv: []
+
+# Real backend integration endpoints in this cluster.
+prometheus:
+  url: http://prometheus-server.prometheus.svc:80
+  queryTimeout: 15s
+  lookback: 1h
+  # Keep one hour of history while querying it at the same resolution as the recommended scrape interval.
+  queryStep: 15s
+  cpuRateWindow: 1m
+
+loki:
+  enabled: true
+  url: http://loki-gateway.loki.svc.cluster.local
+  queryTimeout: 15s
+  maxEntries: 5000
+
+database:
+  host: postgresql.database.svc.cluster.local
+  port: 5432
+  name: spark_console_db
+  # The supplied in-cluster PostgreSQL manifest does not configure TLS.
+  sslMode: disable
+  maxOpenConnections: 20
+  credentials:
+    existingSecret: spark-postgres-secret
+    usernameKey: POSTGRES_USER
+    passwordKey: POSTGRES_PASSWORD
+
+oidc:
+  enabled: true
+  providerName: Keycloak
+  issuerURL: https://idp.example.com/realms/platform
+  clientID: spark-control-center
+  scopes: [openid, profile, email, groups]
+  usernameClaim: preferred_username
+  groupsClaim: groups
+  adminGroups: [spark-console-admins]
+  autoCreate: true
+  redirectURL: https://spark-console.example.com/api/v1/auth/oidc/callback
+  stateTTL: 10m
+  ca:
+    # ConfigMaps are namespace-scoped; copy the identity provider CA into the release namespace.
+    existingConfigMap: oidc-ca
+    key: ca.crt
+    mountPath: /etc/spark-control-center/oidc-ca/ca.crt
+  caFile: ""
+
+# This Kubernetes Secret must contain the Keycloak client secret in key "client-secret".
+oidcSecret:
+  existingSecret: spark-console-oidc
+  clientSecretKey: client-secret
+
+# Grant the backend get/list/watch/create/patch/delete access to SparkApplications in spark,
+# plus pod patch for retained Driver termination and pod delete for Executor cleanup.
+# No pods/exec permission is required.
+rbac:
+  create: true
+  clusterWide: false
+  namespaces: [spark]
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: spark-console.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  # No TLS Secret name was provided. Configure the cluster's TLS Secret or default wildcard certificate for OIDC:
+  # tls:
+  #   - secretName: spark-console-tls
+  #     hosts: [spark-console.example.com]
+  tls: []
+
+pdb:
+  enabled: false
+
+autoscaling:
+  enabled: false

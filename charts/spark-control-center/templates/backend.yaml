@@ -1,0 +1,204 @@
+{{- if .Values.backend.enabled }}
+{{- if not (or .Values.database.credentials.existingSecret .Values.database.credentials.create) }}{{ fail "backend.enabled requires database.credentials.existingSecret or database.credentials.create=true" }}{{ end }}
+{{- if not (or (eq .Values.runtimeConfig.auth.mode "local") (eq .Values.runtimeConfig.auth.mode "oidc")) }}{{ fail "backend.enabled requires runtimeConfig.auth.mode=local or oidc" }}{{ end }}
+{{- if and (eq .Values.runtimeConfig.auth.mode "local") (not (or .Values.backend.auth.initialAdmin.existingSecret .Values.backend.auth.initialAdmin.createSecret)) }}{{ fail "local authentication requires backend.auth.initialAdmin.existingSecret or createSecret=true" }}{{ end }}
+{{- if and (eq .Values.runtimeConfig.auth.mode "oidc") (not .Values.oidc.enabled) }}{{ fail "runtimeConfig.auth.mode=oidc requires oidc.enabled=true" }}{{ end }}
+{{- if and .Values.oidc.enabled (not (or .Values.oidcSecret.existingSecret .Values.oidcSecret.create)) }}{{ fail "oidc.enabled requires oidcSecret.existingSecret or oidcSecret.create=true" }}{{ end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "spark-control-center.fullname" . }}-backend
+  labels:
+    {{- include "spark-control-center.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  replicas: {{ .Values.backend.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels:
+      {{- include "spark-control-center.backendSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "spark-control-center.backendSelectorLabels" . | nindent 8 }}
+      {{- with .Values.backend.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "spark-control-center.backendServiceAccountName" . }}
+      automountServiceAccountToken: true
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: backend
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+          ports:
+            - name: http
+              containerPort: {{ .Values.backend.service.port }}
+          env:
+            - name: HTTP_ADDR
+              value: ":{{ .Values.backend.service.port }}"
+            - name: KUBERNETES_CLUSTER_NAME
+              value: {{ .Values.runtimeConfig.cluster.name | quote }}
+            - name: WATCH_NAMESPACES
+              value: {{ join "," .Values.rbac.namespaces | quote }}
+            - name: SPARKAPPLICATION_API_VERSION
+              value: {{ .Values.backend.sparkApplicationAPIVersion | quote }}
+            - name: PROMETHEUS_URL
+              value: {{ .Values.prometheus.url | quote }}
+            - name: PROMETHEUS_QUERY_TIMEOUT
+              value: {{ .Values.prometheus.queryTimeout | quote }}
+            - name: PROMETHEUS_LOOKBACK
+              value: {{ .Values.prometheus.lookback | quote }}
+            - name: PROMETHEUS_QUERY_STEP
+              value: {{ .Values.prometheus.queryStep | quote }}
+            - name: PROMETHEUS_CPU_RATE_WINDOW
+              value: {{ .Values.prometheus.cpuRateWindow | quote }}
+            - name: HISTORY_DEFAULT_DAYS
+              value: {{ .Values.runtimeConfig.dashboard.defaultHistoryDays | quote }}
+            {{- if .Values.loki.enabled }}
+            - name: LOKI_URL
+              value: {{ .Values.loki.url | quote }}
+            - name: LOKI_QUERY_TIMEOUT
+              value: {{ .Values.loki.queryTimeout | quote }}
+            - name: LOKI_MAX_ENTRIES
+              value: {{ .Values.loki.maxEntries | quote }}
+            {{- end }}
+            - name: DATABASE_HOST
+              value: {{ .Values.database.host | quote }}
+            - name: DATABASE_PORT
+              value: {{ .Values.database.port | quote }}
+            - name: DATABASE_NAME
+              value: {{ .Values.database.name | quote }}
+            - name: DATABASE_SSLMODE
+              value: {{ .Values.database.sslMode | quote }}
+            - name: DATABASE_MAX_OPEN_CONNECTIONS
+              value: {{ .Values.database.maxOpenConnections | quote }}
+            - name: DATABASE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "spark-control-center.backendSecretName" . }}
+                  key: {{ .Values.database.credentials.usernameKey }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "spark-control-center.backendSecretName" . }}
+                  key: {{ .Values.database.credentials.passwordKey }}
+            - name: AUTH_MODE
+              value: {{ .Values.runtimeConfig.auth.mode | quote }}
+            - name: AUTH_SESSION_TTL
+              value: {{ .Values.backend.auth.sessionTTL | quote }}
+            - name: AUTH_BCRYPT_COST
+              value: {{ .Values.backend.auth.bcryptCost | quote }}
+            {{- if eq .Values.runtimeConfig.auth.mode "local" }}
+            - name: AUTH_INITIAL_ADMIN_USERNAME
+              value: {{ .Values.backend.auth.initialAdmin.username | quote }}
+            - name: AUTH_INITIAL_ADMIN_DISPLAY_NAME
+              value: {{ .Values.backend.auth.initialAdmin.displayName | quote }}
+            - name: AUTH_INITIAL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "spark-control-center.localAuthSecretName" . }}
+                  key: {{ .Values.backend.auth.initialAdmin.passwordKey }}
+            {{- end }}
+            - name: OIDC_ENABLED
+              value: {{ .Values.oidc.enabled | quote }}
+            {{- if .Values.oidc.enabled }}
+            - name: OIDC_ISSUER_URL
+              value: {{ required "oidc.issuerURL is required when OIDC is enabled" .Values.oidc.issuerURL | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ required "oidc.clientID is required when OIDC is enabled" .Values.oidc.clientID | quote }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "spark-control-center.oidcSecretName" . }}
+                  key: {{ .Values.oidcSecret.clientSecretKey }}
+            - name: OIDC_SCOPES
+              value: {{ join "," .Values.oidc.scopes | quote }}
+            - name: OIDC_USERNAME_CLAIM
+              value: {{ .Values.oidc.usernameClaim | quote }}
+            - name: OIDC_GROUPS_CLAIM
+              value: {{ .Values.oidc.groupsClaim | quote }}
+            - name: OIDC_ADMIN_GROUPS
+              value: {{ join "," .Values.oidc.adminGroups | quote }}
+            - name: OIDC_AUTO_CREATE
+              value: {{ .Values.oidc.autoCreate | quote }}
+            - name: OIDC_REDIRECT_URL
+              value: {{ .Values.oidc.redirectURL | quote }}
+            - name: OIDC_STATE_TTL
+              value: {{ .Values.oidc.stateTTL | quote }}
+            - name: OIDC_CA_FILE
+              value: {{ if .Values.oidc.ca.existingConfigMap }}{{ .Values.oidc.ca.mountPath | quote }}{{ else }}{{ .Values.oidc.caFile | quote }}{{ end }}
+            {{- end }}
+            {{- with .Values.backend.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          {{- if or .Values.oidc.ca.existingConfigMap .Values.backend.extraVolumeMounts }}
+          volumeMounts:
+            {{- if .Values.oidc.ca.existingConfigMap }}
+            - name: oidc-ca
+              mountPath: {{ .Values.oidc.ca.mountPath | quote }}
+              subPath: oidc-ca.pem
+              readOnly: true
+            {{- end }}
+            {{- with .Values.backend.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+      {{- if or .Values.oidc.ca.existingConfigMap .Values.backend.extraVolumes }}
+      volumes:
+        {{- if .Values.oidc.ca.existingConfigMap }}
+        - name: oidc-ca
+          configMap:
+            name: {{ .Values.oidc.ca.existingConfigMap | quote }}
+            items:
+              - key: {{ .Values.oidc.ca.key | quote }}
+                path: oidc-ca.pem
+        {{- end }}
+        {{- with .Values.backend.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "spark-control-center.fullname" . }}-backend
+  labels:
+    {{- include "spark-control-center.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "spark-control-center.backendSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.backend.service.port }}
+      targetPort: http
+{{- end }}

@@ -1,0 +1,231 @@
+# Spark Control Center frontend image built from this repository.
+image:
+  repository: spark-control-center
+  tag: "1.0.1"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+replicaCount: 1
+
+# Public browser configuration. Never put passwords or client secrets here.
+runtimeConfig:
+  appName: Spark Control Center
+  # Empty uses the browser timezone. Set an IANA timezone such as Asia/Shanghai to force display conversion.
+  timeZone: ""
+  # mock: browser-local demo data; api: call api.baseUrl.
+  dataMode: mock
+  api:
+    baseUrl: /api
+    requestTimeoutMs: 15000
+  auth:
+    # mock, local, or oidc. OIDC provider settings live in the top-level oidc block.
+    mode: mock
+  cluster:
+    name: spark-demo
+    namespaces: [spark-prod, spark-ml, spark-streaming, spark-sandbox]
+  dashboard:
+    refreshIntervalSeconds: 10
+    defaultHistoryDays: 7
+  historyServer:
+    enabled: false
+    baseUrl: ""
+  features:
+    kill: true
+    audit: true
+    sparkUi: true
+    submit: true
+    executorLogs: false
+
+# Same-origin /api reverse proxy. Enable when backend.enabled=true or supply an upstream URL.
+apiProxy:
+  enabled: false
+  # Empty uses the optional backend Service. Example external value: http://spark-console-api.platform.svc:8081
+  upstream: ""
+  connectTimeoutSeconds: 5
+  readTimeoutSeconds: 60
+
+serviceAccount:
+  create: true
+  automount: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 101
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: spark-console.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  # - secretName: spark-console-tls
+  #   hosts: [spark-console.example.com]
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+livenessProbe:
+  httpGet: { path: /healthz, port: http }
+  initialDelaySeconds: 5
+  periodSeconds: 15
+readinessProbe:
+  httpGet: { path: /healthz, port: http }
+  initialDelaySeconds: 2
+  periodSeconds: 10
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+pdb:
+  enabled: false
+  minAvailable: 1
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+# Optional backend image. This chart passes the documented environment contract;
+# the backend implementation/image is intentionally separate from this UI repository.
+backend:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: your-registry/spark-control-center-backend
+    tag: "1.0.1"
+    pullPolicy: IfNotPresent
+  service:
+    port: 8081
+  sparkApplicationAPIVersion: sparkoperator.k8s.io/v1beta2
+  auth:
+    sessionTTL: 8h
+    bcryptCost: 12
+    initialAdmin:
+      username: admin
+      displayName: Initial Administrator
+      # Use an existing Secret in production, or set createSecret/password for a test deployment.
+      existingSecret: ""
+      passwordKey: password
+      createSecret: false
+      password: ""
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: "1", memory: 512Mi }
+  podAnnotations: {}
+  extraEnv: []
+  # Add config files, projected secrets, or workload identity volumes if required.
+  extraVolumes: []
+  extraVolumeMounts: []
+
+# Backend-only Prometheus endpoint. It is not exposed to the browser.
+prometheus:
+  url: http://prometheus-operated.monitoring.svc:9090
+  queryTimeout: 15s
+  lookback: 1h
+  queryStep: 15s
+  cpuRateWindow: 1m
+
+# Optional Loki query endpoint used for persisted executor logs.
+loki:
+  enabled: false
+  url: http://loki-gateway.loki.svc.cluster.local
+  queryTimeout: 15s
+  maxEntries: 5000
+
+# Existing PostgreSQL is recommended. This chart does not install a database.
+database:
+  host: postgresql.database.svc
+  port: 5432
+  name: spark_console
+  sslMode: require
+  maxOpenConnections: 20
+  credentials:
+    username: spark_console
+    # Prefer existingSecret. Keys default to username and password.
+    existingSecret: ""
+    usernameKey: username
+    passwordKey: password
+    # For development only; creates a Secret when existingSecret is empty.
+    create: false
+    password: ""
+
+# Optional Authorization Code + PKCE login. The issuer must be reachable by the backend.
+oidc:
+  enabled: false
+  providerName: Keycloak
+  issuerURL: "https://keycloak.example.com/realms/k8s-infra"
+  clientID: spark-control-center
+  scopes: [openid, profile, email, groups]
+  usernameClaim: preferred_username
+  groupsClaim: groups
+  adminGroups: [k8s-admins]
+  autoCreate: true
+  # Empty derives https://<external-host>/api/v1/auth/oidc/callback from proxy headers.
+  redirectURL: ""
+  stateTTL: 10m
+  # Trust an internal Keycloak CA from a ConfigMap in the release namespace.
+  ca:
+    existingConfigMap: ""
+    key: ca.crt
+    mountPath: /etc/spark-control-center/oidc-ca/ca.crt
+  # Advanced alternative: an already-mounted PEM path.
+  caFile: ""
+
+# Confidential OIDC settings consumed only by the backend Pod.
+oidcSecret:
+  existingSecret: ""
+  clientSecretKey: client-secret
+  # For development only; creates a Secret when existingSecret is empty.
+  create: false
+  clientSecret: ""
+
+# Kubernetes permissions used by the optional backend watcher/API.
+rbac:
+  create: true
+  # false creates a Role and RoleBinding in each configured namespace.
+  clusterWide: false
+  namespaces: [spark-prod, spark-ml, spark-streaming, spark-sandbox]
+
+networkPolicy:
+  enabled: false
+  ingressNamespaceSelector: {}
+  additionalEgress: []
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}

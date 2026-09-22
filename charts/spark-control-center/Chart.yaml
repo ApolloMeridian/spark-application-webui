@@ -1,0 +1,17 @@
+apiVersion: v2
+name: spark-control-center
+description: Spark on Kubernetes application operations console UI with an optional backend deployment
+type: application
+version: 1.0.1
+appVersion: "1.0.1"
+kubeVersion: ">=1.25.0-0"
+keywords:
+  - spark
+  - kubernetes
+  - observability
+  - operations
+home: https://github.com/ApolloMeridian/spark-application-webui
+sources:
+  - https://github.com/ApolloMeridian/spark-application-webui
+maintainers:
+  - name: Platform Engineering

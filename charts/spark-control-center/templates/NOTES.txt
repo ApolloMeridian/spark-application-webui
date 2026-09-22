@@ -1,0 +1,19 @@
+Spark Control Center has been installed.
+
+{{- if .Values.ingress.enabled }}
+URL:
+{{- range .Values.ingress.hosts }}
+  {{ if $.Values.ingress.tls }}https{{ else }}http{{ end }}://{{ .host }}{{ (index .paths 0).path }}
+{{- end }}
+{{- else }}
+Local access:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "spark-control-center.fullname" . }} 8080:{{ .Values.service.port }}
+  Open http://127.0.0.1:8080
+{{- end }}
+
+Data mode: {{ .Values.runtimeConfig.dataMode }}
+Authentication mode: {{ .Values.runtimeConfig.auth.mode }}
+OIDC login enabled: {{ .Values.oidc.enabled }}
+{{- if and (eq .Values.runtimeConfig.dataMode "api") (not .Values.apiProxy.enabled) }}
+WARNING: API mode is enabled without the same-origin API proxy. Ensure runtimeConfig.api.baseUrl points to a reachable CORS-enabled API.
+{{- end }}

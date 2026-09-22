@@ -1,0 +1,7 @@
+# Override for the prometheus-community/prometheus chart used by this cluster.
+# cAdvisor jobs inherit the global interval unless their scrape config explicitly overrides it.
+server:
+  global:
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    evaluation_interval: 15s

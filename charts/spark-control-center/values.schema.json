@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["image", "runtimeConfig", "service"],
+  "properties": {
+    "replicaCount": { "type": "integer", "minimum": 1 },
+    "image": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "runtimeConfig": {
+      "type": "object",
+      "required": ["dataMode", "api", "auth", "cluster", "dashboard", "historyServer", "features"],
+      "properties": {
+        "timeZone": { "type": "string" },
+        "dataMode": { "enum": ["mock", "api"] },
+        "api": {
+          "type": "object",
+          "required": ["baseUrl", "requestTimeoutMs"],
+          "properties": {
+            "baseUrl": { "type": "string" },
+            "requestTimeoutMs": { "type": "integer", "minimum": 1000 }
+          }
+        },
+        "auth": {
+          "type": "object",
+          "required": ["mode"],
+          "properties": {
+            "mode": { "enum": ["mock", "local", "oidc"] }
+          }
+        },
+        "cluster": {
+          "type": "object",
+          "required": ["name", "namespaces"],
+          "properties": { "name": { "type": "string", "minLength": 1 }, "namespaces": { "type": "array", "items": { "type": "string", "minLength": 1 } } }
+        },
+        "dashboard": {
+          "type": "object",
+          "required": ["refreshIntervalSeconds", "defaultHistoryDays"],
+          "properties": {
+            "refreshIntervalSeconds": { "type": "integer", "minimum": 5 },
+            "defaultHistoryDays": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "historyServer": {
+          "type": "object",
+          "required": ["enabled", "baseUrl"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "baseUrl": { "type": "string" }
+          }
+        },
+        "features": { "type": "object" }
+      }
+    },
+    "service": { "type": "object", "properties": { "port": { "type": "integer", "minimum": 1, "maximum": 65535 } } },
+    "backend": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "sessionTTL": { "type": "string", "minLength": 1 },
+            "bcryptCost": { "type": "integer", "minimum": 10, "maximum": 15 },
+            "initialAdmin": {
+              "type": "object",
+              "properties": {
+                "username": { "type": "string", "minLength": 3, "maxLength": 64 },
+                "displayName": { "type": "string" },
+                "existingSecret": { "type": "string" },
+                "passwordKey": { "type": "string", "minLength": 1 },
+                "createSecret": { "type": "boolean" },
+                "password": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "oidc": {
+      "type": "object",
+      "required": ["enabled", "providerName", "issuerURL", "clientID", "scopes", "usernameClaim", "groupsClaim", "adminGroups", "autoCreate", "stateTTL"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "providerName": { "type": "string", "minLength": 1 },
+        "issuerURL": { "type": "string" },
+        "clientID": { "type": "string" },
+        "scopes": { "type": "array", "contains": { "const": "openid" }, "items": { "type": "string", "minLength": 1 } },
+        "usernameClaim": { "type": "string", "minLength": 1 },
+        "groupsClaim": { "type": "string", "minLength": 1 },
+        "adminGroups": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "autoCreate": { "type": "boolean" },
+        "redirectURL": { "type": "string" },
+        "stateTTL": { "type": "string", "minLength": 1 },
+        "ca": {
+          "type": "object",
+          "required": ["existingConfigMap", "key", "mountPath"],
+          "properties": {
+            "existingConfigMap": { "type": "string" },
+            "key": { "type": "string", "minLength": 1 },
+            "mountPath": { "type": "string", "pattern": "^/" }
+          }
+        },
+        "caFile": { "type": "string" }
+      }
+    },
+    "oidcSecret": {
+      "type": "object",
+      "properties": {
+        "existingSecret": { "type": "string" },
+        "clientSecretKey": { "type": "string", "minLength": 1 },
+        "create": { "type": "boolean" },
+        "clientSecret": { "type": "string" }
+      }
+    },
+    "rbac": { "type": "object", "properties": { "clusterWide": { "type": "boolean" }, "namespaces": { "type": "array", "items": { "type": "string" } } } },
+    "prometheus": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "queryTimeout": { "type": "string", "minLength": 1 },
+        "lookback": { "type": "string", "minLength": 1 },
+        "queryStep": { "type": "string", "minLength": 1 },
+        "cpuRateWindow": { "type": "string", "minLength": 1 }
+      }
+    },
+    "loki": {
+      "type": "object",
+      "required": ["enabled", "url", "queryTimeout", "maxEntries"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "url": { "type": "string" },
+        "queryTimeout": { "type": "string", "minLength": 1 },
+        "maxEntries": { "type": "integer", "minimum": 1, "maximum": 5000 }
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+node_modules
+.qa
+.npm-cache
+.git
+.gitignore
+charts
+scripts
+*.log
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+design.md
+README.md

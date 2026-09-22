@@ -1,0 +1,129 @@
+package prometheus
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestUsageAndCapacity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		query := r.URL.Query().Get("query")
+		if strings.Contains(r.URL.Path, "query_range") {
+			values := [][]any{{float64(100), "0.5"}, {float64(160), "0.7"}}
+			if strings.Contains(query, "memory_working_set") {
+				values = [][]any{{float64(100), "1.5"}, {float64(160), "2.0"}}
+			}
+			response := map[string]any{
+				"status": "success",
+				"data": map[string]any{
+					"resultType": "matrix",
+					"result": []any{map[string]any{
+						"metric": map[string]string{"pod": "demo-driver"},
+						"values": values,
+					}},
+				},
+			}
+			_ = json.NewEncoder(w).Encode(response)
+			return
+		}
+		value := "16"
+		if strings.Contains(query, `resource="memory"`) {
+			value = "64"
+		}
+		response := map[string]any{
+			"status": "success",
+			"data": map[string]any{
+				"resultType": "vector",
+				"result": []any{map[string]any{
+					"metric": map[string]string{},
+					"value":  []any{float64(160), value},
+				}},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, 2*time.Second, time.Hour, 15*time.Second, time.Minute)
+	usage, history, err := client.Usage(context.Background(), "spark", []string{"demo-driver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage["demo-driver"].Current.CPU != 0.7 || usage["demo-driver"].Peak.MemoryGiB != 2 || len(history) != 2 {
+		t.Fatalf("unexpected usage: %#v history=%#v", usage, history)
+	}
+	capacity, err := client.Capacity(context.Background())
+	if err != nil || capacity.CPU != 16 || capacity.MemoryGiB != 64 {
+		t.Fatalf("unexpected capacity: %#v err=%v", capacity, err)
+	}
+}
+
+func TestUsageFallsBackToPodNameLabel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		query := r.URL.Query().Get("query")
+		result := []any{}
+		if strings.Contains(query, "sum by (pod_name)") {
+			result = []any{map[string]any{
+				"metric": map[string]string{"pod_name": "demo-driver"},
+				"values": [][]any{{float64(100), "0.25"}, {float64(160), "0.5"}},
+			}}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "success",
+			"data":   map[string]any{"resultType": "matrix", "result": result},
+		})
+	}))
+	defer server.Close()
+
+	client := New(server.URL, 2*time.Second, time.Hour, 15*time.Second, time.Minute)
+	usage, _, err := client.Usage(context.Background(), "spark", []string{"demo-driver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage["demo-driver"].Current.CPU != 0.5 || usage["demo-driver"].Current.MemoryGiB != 0.5 {
+		t.Fatalf("pod_name fallback did not populate usage: %#v", usage)
+	}
+}
+
+func TestUsageUsesConfiguredResolutionAndRateWindow(t *testing.T) {
+	var mu sync.Mutex
+	queries := []string{}
+	steps := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queries = append(queries, r.URL.Query().Get("query"))
+		steps = append(steps, r.URL.Query().Get("step"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"pod":"demo-driver"},"values":[[100,"0.5"],[115,"0.7"]]}]}}`))
+	}))
+	defer server.Close()
+
+	client := New(server.URL, 2*time.Second, time.Hour, 15*time.Second, time.Minute)
+	_, _, err := client.Usage(context.Background(), "spark", []string{"demo-driver"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range steps {
+		if step != "15" {
+			t.Fatalf("expected 15 second query step, got %q", step)
+		}
+	}
+	foundRateWindow := false
+	for _, query := range queries {
+		if strings.Contains(query, "[1m]") {
+			foundRateWindow = true
+		}
+	}
+	if !foundRateWindow {
+		t.Fatalf("expected configured CPU rate window, got %q", queries)
+	}
+}
