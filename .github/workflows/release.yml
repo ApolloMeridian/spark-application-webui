@@ -68,14 +68,19 @@ jobs:
           cd release
           sha256sum ./*.tar ./*.tgz > SHA256SUMS
 
-      - name: Create GitHub Release
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.value }}
         shell: bash
         run: |
           notes_file=".github/release-notes/${VERSION}.md"
-          if [[ -f "${notes_file}" ]]; then
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            if [[ -f "${notes_file}" ]]; then
+              gh release edit "${GITHUB_REF_NAME}" --title "Spark Control Center ${GITHUB_REF_NAME}" --notes-file "${notes_file}"
+            fi
+            gh release upload "${GITHUB_REF_NAME}" release/* --clobber
+          elif [[ -f "${notes_file}" ]]; then
             gh release create "${GITHUB_REF_NAME}" release/* --verify-tag --title "Spark Control Center ${GITHUB_REF_NAME}" --notes-file "${notes_file}"
           else
             gh release create "${GITHUB_REF_NAME}" release/* --verify-tag --title "Spark Control Center ${GITHUB_REF_NAME}" --generate-notes
