@@ -18,6 +18,7 @@ export interface UserAccount {
   displayName: string;
   email: string;
   role: UserRole;
+  namespaces: string[];
   authSource: 'local' | 'oidc' | 'mock';
   disabled: boolean;
   createdAt: string;
@@ -29,6 +30,7 @@ export interface CreateUserInput {
   displayName: string;
   email: string;
   role: 'viewer' | 'admin';
+  namespaces: string[];
   password: string;
 }
 
@@ -36,6 +38,7 @@ export interface UpdateUserInput {
   displayName?: string;
   email?: string;
   role?: 'viewer' | 'admin';
+  namespaces?: string[];
   disabled?: boolean;
   password?: string;
 }
@@ -96,6 +99,38 @@ export interface OperationAudit {
   message: string;
 }
 
+export interface ApplicationDiagnostic {
+  code: string;
+  severity: 'info' | 'warning' | 'error';
+  summary: string;
+  detail?: string;
+  recommendation?: string;
+}
+
+export interface LifecycleEvent {
+  time: string;
+  type: string;
+  title: string;
+  detail?: string;
+}
+
+export interface ManifestPreview {
+  name: string;
+  namespace: string;
+  originalYaml: string;
+  serverYaml: string;
+  warnings: string[];
+  dryRunAccepted: boolean;
+}
+
+export interface ApplicationChange {
+  type: 'ADDED' | 'MODIFIED' | 'DELETED';
+  namespace: string;
+  name: string;
+  resourceVersion?: string;
+  timestamp: string;
+}
+
 export interface SparkApplication {
   id: string;
   name: string;
@@ -123,6 +158,9 @@ export interface SparkApplication {
   yaml: string;
   pendingReason?: string;
   errorMessage?: string;
+  historical?: boolean;
+  diagnostics?: ApplicationDiagnostic[];
+  lifecycle?: LifecycleEvent[];
 }
 
 export interface DashboardSummary {
@@ -152,6 +190,8 @@ export interface SparkApplicationService {
   getApplicationMetrics(namespace: string, name: string, from: string, to: string): Promise<MetricPoint[]>;
   getExecutorLogs(namespace: string, application: string, pod: string, from: string, to: string, direction: 'forward' | 'backward'): Promise<LogEntry[]>;
   submitApplication(namespace: string, yaml: string, operator: string): Promise<SparkApplication>;
+  dryRunApplication(namespace: string, yaml: string, operator: string): Promise<ManifestPreview>;
+  prepareApplication(namespace: string, name: string, mode: 'clone' | 'retry'): Promise<ManifestPreview>;
   getAudit(): Promise<OperationAudit[]>;
   killApplication(namespace: string, name: string, operator: string, reason?: string): Promise<OperationAudit>;
   deleteApplication(namespace: string, name: string, operator: string, reason?: string): Promise<OperationAudit>;

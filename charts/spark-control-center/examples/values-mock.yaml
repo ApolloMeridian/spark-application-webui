@@ -1,6 +1,6 @@
 image:
   repository: registry.example.com/platform/spark-control-center
-  tag: "1.0.1"
+  tag: "1.1.0"
 
 runtimeConfig:
   dataMode: mock

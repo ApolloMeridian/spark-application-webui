@@ -3,7 +3,7 @@
 ## Build and publish the UI image
 
 ```bash
-docker build -t spark-control-center:1.0.1 .
+docker build -t spark-control-center:1.1.0 .
 ```
 
 For an air-gapped build with a locally cached Nginx base image:
@@ -11,7 +11,7 @@ For an air-gapped build with a locally cached Nginx base image:
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:1.0.1 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:1.1.0 .
 ```
 
 The image listens on port `8080`, serves `/healthz`, runs as UID 101, and supports a read-only root filesystem. Helm replaces `/usr/share/nginx/html/config/config.js` at runtime, so one immutable image can be promoted through environments.
@@ -22,7 +22,7 @@ Use the repository root as Docker build context:
 
 ```bash
 docker build -f backend/Dockerfile \
-  -t spark-control-center-backend:1.0.1 .
+  -t spark-control-center-backend:1.1.0 .
 ```
 
 The backend runs as UID 65532 on port `8081`. On startup it connects to PostgreSQL and creates the audit/history tables plus `local_users`, `local_user_sessions`, and `application_settings`. The configured database user therefore needs table/index creation permission in `spark_console_db`.
@@ -105,7 +105,10 @@ The `api.baseUrl` prefix is omitted below. JSON uses the TypeScript models in `s
 | --- | --- | --- |
 | `GET` | `/v1/dashboard/summary?from={RFC3339}&to={RFC3339}` | Live `DashboardSummary` plus PostgreSQL-backed historical submissions/failures |
 | `GET` | `/v1/applications` | `SparkApplication[]`; accepts keyword/state/owner/namespace |
+| `GET` | `/v1/stream` | Server-Sent Events stream backed by Kubernetes Watch; automatically reconnectable |
 | `GET` | `/v1/namespaces/{namespace}/applications/{name}` | Complete `SparkApplication` detail |
+| `POST` | `/v1/namespaces/{namespace}/applications/dry-run` | Admin only; Kubernetes server-side dry-run and normalized YAML preview from body `{ yaml }` |
+| `GET` | `/v1/namespaces/{namespace}/applications/{name}/prepare?mode=clone\|retry` | Admin only; return a sanitized manifest with a derived name |
 | `POST` | `/v1/namespaces/{namespace}/applications` | Admin only; validate and create a SparkApplication from body `{ yaml }` |
 | `POST` | `/v1/namespaces/{namespace}/applications/{name}/kill` | Admin only; terminate a `RUNNING` or `SUBMITTED` application while retaining its CR and failed Driver Pod; body `{ reason }` |
 | `GET` | `/v1/namespaces/{namespace}/applications/{name}/executors/{pod}/logs` | Loki-backed Executor logs; accepts RFC3339 `from`/`to`, `direction=forward|backward`, and `limit` |
@@ -123,13 +126,13 @@ The `api.baseUrl` prefix is omitted below. JSON uses the TypeScript models in `s
 | `GET` | `/healthz` | Backend health check |
 | `GET` | `/metrics` | Optional Prometheus metrics |
 
-All `/v1` data endpoints require a valid database session. Viewer accounts are read-only; the backend independently enforces administrator access for submission, termination, deletion, audit, and user-management APIs. Client-supplied operator names are ignored, and operation audit records use the authenticated username. Passwords are bcrypt-hashed, only SHA-256 hashes of random session tokens are stored, session cookies are HttpOnly/SameSite, and cross-origin state-changing requests are rejected. The last active administrator cannot be disabled, demoted, or deleted, and users cannot delete their own account.
+All `/v1` data endpoints require a valid database session. Viewer accounts are read-only; the backend independently enforces administrator access for submission, termination, deletion, audit, and user-management APIs. Every data and mutation route also enforces the authenticated user's namespace assignment. An empty namespace list means all Helm-configured namespaces for backward compatibility. Client-supplied operator names are ignored, and operation audit records use the authenticated username. Passwords are bcrypt-hashed, only SHA-256 hashes of random session tokens are stored, session cookies are HttpOnly/SameSite, and cross-origin state-changing requests are rejected. The last active administrator cannot be disabled, demoted, or deleted, and users cannot delete their own account.
 
 Terminate TLS at the Ingress before using password login outside a trusted test network. The frontend proxy preserves the original `X-Forwarded-Proto`/host so the backend marks the session cookie `Secure` on HTTPS deployments.
 
 Kill/delete state guards are enforced by the backend as well as the UI. Kubernetes has no generic SparkApplication kill subresource. Both `RUNNING` and `SUBMITTED` applications can be terminated, including a Driver stuck in `ImagePullBackOff`. Kill first patches `spec.restartPolicy.type` to `Never`, then patches the Driver Pod with an expired `activeDeadlineSeconds`. Kubelet terminates the Driver container and retains the failed Pod so its status, events, and Kubernetes logs remain available. Correlated Executor Pods are force-deleted to stop compute. Delete later removes the terminal SparkApplication CR using foreground propagation, allowing owner-referenced Driver resources to be deleted with it. Exact reconciliation timing remains controlled by Spark Operator.
 
-The submission API accepts at most 1 MiB, requires the configured SparkApplication API version and kind, removes server-owned metadata/status, and rejects a manifest namespace that differs from the selected, allow-listed namespace. It records the authenticated username in the `spark-control-center.io/submitted-by` annotation; applications created elsewhere display owner `unknown`. The backend ServiceAccount gets namespace-scoped `sparkapplications.create` when `runtimeConfig.features.submit=true`.
+The submission API accepts at most 1 MiB, requires the configured SparkApplication API version and kind, removes server-owned metadata/status, and rejects a manifest namespace that differs from the selected, allow-listed namespace. Before submission, the UI calls Kubernetes with `dryRun=All` and displays the original and API-normalized YAML side by side. Clone/retry uses the same sanitizer and derives a new DNS-safe name. It records the authenticated username in the `spark-control-center.io/submitted-by` annotation; applications created elsewhere display owner `unknown`. The backend ServiceAccount gets namespace-scoped `sparkapplications.create` when `runtimeConfig.features.submit=true`.
 
 For a running application, the UI embeds Driver Spark UI through the backend proxy using `status.driverInfo.webUIServiceName` and `webUIPort`; no `pods/exec` permission or local port-forward is used. The proxy rewrites redirects, absolute in-cluster Service URLs, and root-relative HTML links so the browser never has to resolve `*.svc` DNS. For terminal applications, the button opens `${runtimeConfig.historyServer.baseUrl}/<Spark ID>/jobs/` only when the history server is enabled and both `spark.eventLog.enabled=true` and `spark.eventLog.dir` are present in `spec.sparkConf`.
 
@@ -180,6 +183,8 @@ OIDC uses Authorization Code Flow with PKCE, validates issuer/audience/signature
 ## Real data behavior
 
 - SparkApplications are read directly from Kubernetes in `rbac.namespaces`; Pods, Driver logs, and core/v1 Events are correlated to each application.
+- A Kubernetes Watch per configured namespace feeds a same-origin SSE stream. The UI refreshes affected views immediately and retains periodic polling for watch reconnection or proxy timeout recovery.
+- PostgreSQL snapshots preserve deleted application details, generated lifecycle events, and rule-based diagnosis for common image-pull, scheduling, mount, OOM, lost-executor, and RBAC failures.
 - CPU uses `container_cpu_usage_seconds_total`; memory uses `container_memory_working_set_bytes`; cluster capacity uses `kube_node_status_allocatable`.
 - Executor logs use Loki `query_range`, remain available after Executor Pod deletion, and can be ordered oldest-first or newest-first for a selected time range.
 - A Prometheus failure leaves Kubernetes application data available with live metrics omitted. Kubernetes and PostgreSQL are readiness dependencies.

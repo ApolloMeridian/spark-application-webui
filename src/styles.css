@@ -43,3 +43,6 @@ body { min-width: 760px; }
 @media (max-width: 900px) { .login-page { grid-template-columns: 1fr; }.login-visual { display: none; }.login-panel { min-height: 100vh; }.topbar-context { gap: 8px; }.user-copy b { display: none; }.page-content { padding: 20px 16px 36px; }.filter-bar { flex-wrap: wrap; }.search-input { width: 100%; }.logs-card .ant-card-extra { max-width: none; }.logs-card .ant-card-head { display: block; }.logs-card .ant-card-extra { margin: 10px 0; }.logs-card .ant-space { flex-wrap: wrap; }.submit-toolbar { align-items: stretch; flex-direction: column; } }
 .login-visual .ant-typography { color: #aebdd4; }
 .login-visual h1.ant-typography { color: #fff; }
+.manifest-diff { min-height: 420px; max-height: 58vh; margin: 0; padding: 16px; overflow: auto; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; color: #27364d; font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; }
+.manifest-diff.accepted { border-color: #b9e7d2; background: #f3fbf7; }
+.diagnostic-list { display: grid; gap: 10px; }.diagnostic-card { border-left: 3px solid #e5a11a; padding-left: 12px; }.diagnostic-card.error { border-left-color: #e44c55; }.diagnostic-card small { display: block; margin-top: 4px; color: #667085; }

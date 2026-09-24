@@ -8,6 +8,7 @@ import { useI18n } from '../i18n';
 import type { CreateUserInput, UpdateUserInput, UserAccount } from '../types';
 import { userService } from '../userService';
 import { formatTimestamp } from '../utils';
+import { runtimeConfig } from '../runtimeConfig';
 
 type UserForm = CreateUserInput & { disabled: boolean };
 
@@ -18,13 +19,13 @@ export function UsersPage() {
   const [form] = Form.useForm<UserForm>();
   const load = async () => { setLoading(true); try { setRows(await userService.list()); } catch (error) { message.error(error instanceof Error ? error.message : String(error)); } finally { setLoading(false); } };
   useEffect(() => { void load(); }, []);
-  const showCreate = () => { setEditing(null); form.resetFields(); form.setFieldsValue({ role: 'viewer', disabled: false }); setOpen(true); };
-  const showEdit = (user: UserAccount) => { setEditing(user); form.setFieldsValue({ username: user.username, displayName: user.displayName, email: user.email, role: user.role === 'admin' ? 'admin' : 'viewer', disabled: user.disabled, password: '' }); setOpen(true); };
+  const showCreate = () => { setEditing(null); form.resetFields(); form.setFieldsValue({ role: 'viewer', namespaces: [], disabled: false }); setOpen(true); };
+  const showEdit = (user: UserAccount) => { setEditing(user); form.setFieldsValue({ username: user.username, displayName: user.displayName, email: user.email, role: user.role === 'admin' ? 'admin' : 'viewer', namespaces: user.namespaces ?? [], disabled: user.disabled, password: '' }); setOpen(true); };
   const save = async () => {
     const values = await form.validateFields(); setSaving(true);
     try {
       if (editing) {
-        const input: UpdateUserInput = { displayName: values.displayName, email: values.email, disabled: values.disabled };
+        const input: UpdateUserInput = { displayName: values.displayName, email: values.email, namespaces: values.namespaces ?? [], disabled: values.disabled };
         if (editing.authSource !== 'oidc') input.role = values.role;
         if (editing.authSource !== 'oidc' && values.password) input.password = values.password;
         await userService.update(editing.id, input); message.success(t('userUpdated'));
@@ -41,6 +42,7 @@ export function UsersPage() {
     { title: t('email'), dataIndex: 'email', ellipsis: true, render: (value) => value || '—' },
     { title: t('authSource'), dataIndex: 'authSource', width: 100, render: (value) => <Tag>{value === 'oidc' ? 'OIDC' : t('localAccount')}</Tag> },
     { title: t('role'), dataIndex: 'role', width: 110, render: (value) => <Tag color={value === 'admin' ? 'blue' : 'default'}>{value}</Tag> },
+    { title: t('namespaceAccess'), dataIndex: 'namespaces', width: 240, render: (value: string[]) => value?.length ? <Space size={[4, 4]} wrap>{value.map((namespace) => <Tag key={namespace}>{namespace}</Tag>)}</Space> : <Tag color="blue">{t('allNamespaces')}</Tag> },
     { title: t('accountStatus'), dataIndex: 'disabled', width: 110, render: (value) => <Tag color={value ? 'red' : 'green'}>{t(value ? 'disabled' : 'active')}</Tag> },
     { title: t('createdAt'), dataIndex: 'createdAt', width: 170, render: (value) => formatTimestamp(value) },
     { title: t('action'), key: 'action', fixed: 'right', width: 120, render: (_, row) => <Space size={4}>
@@ -57,6 +59,7 @@ export function UsersPage() {
         <Form.Item name="displayName" label={t('displayName')}><Input maxLength={100} /></Form.Item>
         <Form.Item name="email" label={t('email')} rules={[{ type: 'email' }]}><Input /></Form.Item>
         <Form.Item name="role" label={t('role')} rules={[{ required: true }]}><Select disabled={editing?.id === session?.id || editing?.authSource === 'oidc'} options={[{ value: 'viewer', label: t('viewerRole') }, { value: 'admin', label: t('adminRole') }]} /></Form.Item>
+        <Form.Item name="namespaces" label={t('namespaceAccess')} extra={t('namespaceAccessHint')}><Select mode="multiple" allowClear options={runtimeConfig.cluster.namespaces.map((value) => ({ value, label: value }))} placeholder={t('allNamespaces')} /></Form.Item>
         {editing && <Form.Item name="disabled" label={t('disabled')} valuePropName="checked"><Switch disabled={editing.id === session?.id} /></Form.Item>}
         {editing?.authSource !== 'oidc' && <Form.Item name="password" label={editing ? t('resetPasswordOptional') : t('password')} rules={editing ? [{ min: 8 }] : [{ required: true }, { min: 8 }, { max: 128 }]}><Input.Password disabled={editing?.id === session?.id} autoComplete="new-password" /></Form.Item>}
       </Form>

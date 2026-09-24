@@ -24,6 +24,9 @@ func (fakeService) Ready(context.Context) error { return nil }
 func (fakeService) ListApplications(context.Context) ([]domain.SparkApplication, error) {
 	return []domain.SparkApplication{{ID: "1", Name: "alpha", Namespace: "spark", Owner: "alice", State: "RUNNING"}, {ID: "2", Name: "beta", Namespace: "spark", Owner: "bob", State: "COMPLETED"}}, nil
 }
+func (service fakeService) ListApplicationsForNamespaces(ctx context.Context, _ []string) ([]domain.SparkApplication, error) {
+	return service.ListApplications(ctx)
+}
 func (fakeService) GetApplication(context.Context, string, string) (domain.SparkApplication, error) {
 	return domain.SparkApplication{}, nil
 }
@@ -32,6 +35,12 @@ func (fakeService) GetApplicationMetrics(context.Context, string, string, time.T
 }
 func (fakeService) SubmitApplication(_ context.Context, namespace, manifest, _ string) (domain.SparkApplication, error) {
 	return domain.SparkApplication{Name: "submitted", Namespace: namespace, YAML: manifest}, nil
+}
+func (fakeService) DryRunApplication(_ context.Context, namespace, manifest, _ string) (domain.ManifestPreview, error) {
+	return domain.ManifestPreview{Name: "submitted", Namespace: namespace, OriginalYAML: manifest, ServerYAML: manifest, DryRunAccepted: true}, nil
+}
+func (fakeService) PrepareApplication(_ context.Context, namespace, name, mode string) (domain.ManifestPreview, error) {
+	return domain.ManifestPreview{Name: name + "-" + mode, Namespace: namespace, ServerYAML: "kind: SparkApplication"}, nil
 }
 func (fakeService) SparkUIProxyTarget(context.Context, string, string) (string, error) {
 	return "http://spark-ui.spark.svc:4040", nil
@@ -42,6 +51,9 @@ func (fakeService) GetExecutorLogs(context.Context, string, string, string, time
 func (fakeService) Summary(context.Context, time.Time, time.Time) (domain.DashboardSummary, error) {
 	return domain.DashboardSummary{}, nil
 }
+func (fakeService) SummaryForNamespaces(context.Context, time.Time, time.Time, []string) (domain.DashboardSummary, error) {
+	return domain.DashboardSummary{}, nil
+}
 func (fakeService) KillApplication(context.Context, string, string, string, string) (domain.OperationAudit, error) {
 	return domain.OperationAudit{Result: "SUCCESS"}, nil
 }
@@ -50,6 +62,9 @@ func (fakeService) DeleteApplication(context.Context, string, string, string, st
 }
 func (fakeService) ListAudit(context.Context) ([]domain.OperationAudit, error) {
 	return []domain.OperationAudit{}, nil
+}
+func (fakeService) Subscribe(context.Context, []string) <-chan domain.ApplicationChange {
+	return make(chan domain.ApplicationChange)
 }
 
 type fakeAuthStore struct {
@@ -107,14 +122,18 @@ func (f *fakeAuthStore) DeleteSessionsForUser(context.Context, string) error {
 }
 
 func authenticatedHandler(t *testing.T, role domain.UserRole) (http.Handler, *http.Cookie) {
+	return authenticatedHandlerWithNamespaces(t, role, nil)
+}
+
+func authenticatedHandlerWithNamespaces(t *testing.T, role domain.UserRole, namespaces []string) (http.Handler, *http.Cookie) {
 	t.Helper()
 	hash, err := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.MinCost)
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &fakeAuthStore{user: domain.User{ID: "user-1", Username: "alice", DisplayName: "Alice", Role: role}, hash: string(hash), sessions: map[string]domain.UserSession{}}
+	store := &fakeAuthStore{user: domain.User{ID: "user-1", Username: "alice", DisplayName: "Alice", Role: role, Namespaces: namespaces}, hash: string(hash), sessions: map[string]domain.UserSession{}}
 	authService := localauth.New(store, time.Hour, bcrypt.MinCost)
-	handler := New(config.Config{AuthMode: "local"}, fakeService{}, authService, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	handler := New(config.Config{AuthMode: "local", Namespaces: []string{"spark"}}, fakeService{}, authService, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewBufferString(`{"username":"alice","password":"password123"}`)))
 	if recorder.Code != http.StatusOK {
@@ -157,6 +176,25 @@ func TestSubmitApplication(t *testing.T) {
 	serveAuthenticated(handler, cookie, recorder, httptest.NewRequest(http.MethodPost, "/v1/namespaces/spark/applications", body))
 	if recorder.Code != http.StatusCreated || !bytes.Contains(recorder.Body.Bytes(), []byte(`"name":"submitted"`)) {
 		t.Fatalf("unexpected submit response: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestDryRunApplication(t *testing.T) {
+	handler, cookie := authenticatedHandler(t, domain.RoleAdmin)
+	body := bytes.NewBufferString(`{"yaml":"apiVersion: sparkoperator.k8s.io/v1beta2\\nkind: SparkApplication"}`)
+	recorder := httptest.NewRecorder()
+	serveAuthenticated(handler, cookie, recorder, httptest.NewRequest(http.MethodPost, "/v1/namespaces/spark/applications/dry-run", body))
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"dryRunAccepted":true`)) {
+		t.Fatalf("unexpected dry-run response: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestNamespaceRestrictedUserCannotReadAnotherNamespace(t *testing.T) {
+	handler, cookie := authenticatedHandlerWithNamespaces(t, domain.RoleAdmin, []string{"allowed"})
+	recorder := httptest.NewRecorder()
+	serveAuthenticated(handler, cookie, recorder, httptest.NewRequest(http.MethodGet, "/v1/namespaces/spark/applications/demo", nil))
+	if recorder.Code != http.StatusForbidden || !bytes.Contains(recorder.Body.Bytes(), []byte("namespace access is not permitted")) {
+		t.Fatalf("expected namespace-specific 403, got %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 

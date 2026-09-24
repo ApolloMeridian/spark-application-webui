@@ -1,7 +1,7 @@
 # Spark Control Center frontend image built from this repository.
 image:
   repository: spark-control-center
-  tag: "1.0.1"
+  tag: "1.1.0"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -115,14 +115,13 @@ tolerations: []
 affinity: {}
 topologySpreadConstraints: []
 
-# Optional backend image. This chart passes the documented environment contract;
-# the backend implementation/image is intentionally separate from this UI repository.
+# Optional Go backend image built from this repository.
 backend:
   enabled: false
   replicaCount: 1
   image:
-    repository: your-registry/spark-control-center-backend
-    tag: "1.0.1"
+    repository: spark-control-center-backend
+    tag: "1.1.0"
     pullPolicy: IfNotPresent
   service:
     port: 8081

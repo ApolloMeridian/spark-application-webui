@@ -14,6 +14,7 @@ export function AppShell() {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const location = useLocation(); const navigate = useNavigate();
   const { session, logout, setRole } = useAuth(); const { t, locale, setLocale } = useI18n();
+  const visibleNamespaces = session?.namespaces?.length ? runtimeConfig.cluster.namespaces.filter((value) => session.namespaces.includes(value)) : runtimeConfig.cluster.namespaces;
   useEffect(() => { const onResize = () => window.innerWidth < 960 && setCollapsed(true); window.addEventListener('resize', onResize); return () => window.removeEventListener('resize', onResize); }, []);
   const selected = location.pathname.startsWith('/applications') ? '/applications' : location.pathname.startsWith('/submit') ? '/submit' : location.pathname.startsWith('/audit') ? '/audit' : location.pathname.startsWith('/users') ? '/users' : '/overview';
   const menuItems = useMemo(() => [
@@ -38,7 +39,7 @@ export function AppShell() {
           <Button type="text" className="collapse-button" icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />} onClick={() => setCollapsed(!collapsed)} />
           <div className="topbar-context">
             <Space size={8}><CloudServerOutlined className="context-icon" /><Typography.Text type="secondary">{t('cluster')}</Typography.Text><strong>{runtimeConfig.cluster.name}</strong></Space>
-            <Select className="namespace-select" defaultValue="all" options={[{ value: 'all', label: t('allNamespaces') }, ...runtimeConfig.cluster.namespaces.map((value) => ({ value, label: value }))]} />
+            <Select className="namespace-select" defaultValue="all" options={[{ value: 'all', label: t('allNamespaces') }, ...visibleNamespaces.map((value) => ({ value, label: value }))]} />
           </div>
           <div className="topbar-actions">
             <Select aria-label={t('language')} value={locale} onChange={(value: Locale) => setLocale(value)} suffixIcon={<GlobalOutlined />} options={[{ value: 'zh-CN', label: '中文' }, { value: 'en-US', label: 'EN' }]} />

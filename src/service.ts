@@ -1,4 +1,4 @@
-import type { ApplicationFilters, DashboardSummary, LogEntry, MetricPoint, OperationAudit, SparkApplication, SparkApplicationService } from './types';
+import type { ApplicationChange, ApplicationFilters, DashboardSummary, LogEntry, ManifestPreview, MetricPoint, OperationAudit, SparkApplication, SparkApplicationService } from './types';
 import { seedApplications } from './mockData';
 import { apiUrl, runtimeConfig } from './runtimeConfig';
 import { sumResources } from './utils';
@@ -83,6 +83,33 @@ export class MockSparkApplicationService implements SparkApplicationService {
     apps.unshift(app); localStorage.setItem(APPS_KEY, JSON.stringify(apps)); localStorage.setItem(AUDIT_KEY, JSON.stringify([audit, ...readAudit()]));
     return app;
   }
+  async dryRunApplication(namespace: string, yaml: string, _operator: string): Promise<ManifestPreview> {
+    await wait(300);
+    if (!/^apiVersion:\s*sparkoperator\.k8s\.io\/v1beta2\s*$/m.test(yaml) || !/^kind:\s*SparkApplication\s*$/m.test(yaml)) throw new Error('YAML must be a sparkoperator.k8s.io/v1beta2 SparkApplication');
+    const metadata = yaml.match(/^metadata:\s*\n((?:[ \t]+.*\n?)*)/m)?.[1] ?? '';
+    const name = metadata.match(/^\s+name:\s*["']?([^\s"']+)["']?\s*$/m)?.[1];
+    if (!name) throw new Error('YAML metadata.name is required');
+    if (readApps().some((app) => app.namespace === namespace && app.name === name)) throw new Error('SparkApplication already exists');
+    const serverYaml = /^\s*namespace:/m.test(metadata) ? yaml : yaml.replace(/^metadata:\s*$/m, `metadata:\n  namespace: ${namespace}`);
+    return { name, namespace, originalYaml: yaml, serverYaml, warnings: [], dryRunAccepted: true };
+  }
+  async prepareApplication(namespace: string, name: string, mode: 'clone' | 'retry'): Promise<ManifestPreview> {
+    const app = await this.getApplication(namespace, name);
+    const suffix = mode === 'clone' ? '-copy' : `-retry-${new Date().toISOString().slice(2, 16).replace(/[-T:]/g, '')}`;
+    const suggestedName = `${name.slice(0, Math.max(1, 63 - suffix.length))}${suffix}`;
+    let manifest = app.yaml;
+    try {
+      const object = JSON.parse(app.yaml) as Record<string, unknown>;
+      const metadata = (object.metadata ?? {}) as Record<string, unknown>;
+      metadata.name = suggestedName; metadata.namespace = namespace;
+      ['uid', 'resourceVersion', 'generation', 'creationTimestamp', 'managedFields', 'deletionTimestamp'].forEach((key) => delete metadata[key]);
+      delete object.status; object.metadata = metadata;
+      manifest = JSON.stringify(object, null, 2);
+    } catch {
+      manifest = manifest.replace(/(^\s*name:\s*)\S+/m, `$1${suggestedName}`).replace(/(^\s*namespace:\s*)\S+/m, `$1${namespace}`);
+    }
+    return { name: suggestedName, namespace, originalYaml: '', serverYaml: manifest, warnings: [], dryRunAccepted: false };
+  }
   async killApplication(namespace: string, name: string, operator: string, reason?: string) {
     await wait(550); const apps = readApps(); const app = apps.find((item) => item.namespace === namespace && item.name === name);
     if (!app) throw new Error('Application not found');
@@ -152,6 +179,14 @@ export class ApiSparkApplicationService implements SparkApplicationService {
       method: 'POST', body: JSON.stringify({ yaml, requestedBy: operator }),
     });
   }
+  dryRunApplication(namespace: string, yaml: string, operator: string) {
+    return this.request<ManifestPreview>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications/dry-run`, {
+      method: 'POST', body: JSON.stringify({ yaml, requestedBy: operator }),
+    });
+  }
+  prepareApplication(namespace: string, name: string, mode: 'clone' | 'retry') {
+    return this.request<ManifestPreview>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications/${encodeURIComponent(name)}/prepare?mode=${mode}`);
+  }
   getAudit() { return this.request<OperationAudit[]>('/v1/audit'); }
   killApplication(namespace: string, name: string, operator: string, reason?: string) {
     return this.request<OperationAudit>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications/${encodeURIComponent(name)}/kill`, {
@@ -169,3 +204,13 @@ export class ApiSparkApplicationService implements SparkApplicationService {
 export const sparkService: SparkApplicationService = runtimeConfig.dataMode === 'api'
   ? new ApiSparkApplicationService()
   : new MockSparkApplicationService();
+
+export function subscribeApplicationEvents(listener: (change: ApplicationChange) => void) {
+  if (runtimeConfig.dataMode !== 'api' || typeof EventSource === 'undefined') return () => undefined;
+  const source = new EventSource(apiUrl('/v1/stream'), { withCredentials: true });
+  const handler = (event: MessageEvent<string>) => {
+    try { listener(JSON.parse(event.data) as ApplicationChange); } catch { /* ignore malformed events */ }
+  };
+  source.addEventListener('application', handler as EventListener);
+  return () => source.close();
+}

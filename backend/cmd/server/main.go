@@ -74,6 +74,9 @@ func main() {
 		logSource = loki.New(cfg.LokiURL, cfg.LokiTimeout, cfg.LokiMaxEntries)
 	}
 	applicationService := service.New(cfg, kubernetes, prometheus, audits, logger, logSource)
+	watchContext, watchCancel := context.WithCancel(context.Background())
+	defer watchCancel()
+	applicationService.StartWatch(watchContext)
 	server := &http.Server{
 		Addr: cfg.HTTPAddr, Handler: api.New(cfg, applicationService, authService, oidcService, logger),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 90 * time.Second, IdleTimeout: 120 * time.Second,
@@ -83,6 +86,7 @@ func main() {
 	defer stop()
 	go func() {
 		<-shutdownSignals.Done()
+		watchCancel()
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {

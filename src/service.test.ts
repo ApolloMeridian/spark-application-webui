@@ -25,6 +25,18 @@ describe('mock application service', () => {
     expect(await sparkService.getApplication('spark-prod', 'submitted-demo')).toBeTruthy();
     expect((await sparkService.getAudit())[0]).toMatchObject({ operation: 'SUBMIT', applicationName: 'submitted-demo' });
   });
+  it('validates a manifest with a server-style dry run before submission', async () => {
+    const yaml = 'apiVersion: sparkoperator.k8s.io/v1beta2\nkind: SparkApplication\nmetadata:\n  name: dry-run-demo\nspec:\n  image: spark:3.5\n';
+    const preview = await sparkService.dryRunApplication('spark-prod', yaml, 'operator');
+    expect(preview).toMatchObject({ name: 'dry-run-demo', namespace: 'spark-prod', dryRunAccepted: true });
+    expect(preview.serverYaml).toContain('namespace: spark-prod');
+  });
+  it('prepares a clean clone manifest with a new application name', async () => {
+    const preview = await sparkService.prepareApplication('spark-prod', 'parquet-to-iceberg', 'clone');
+    expect(preview).toMatchObject({ name: 'parquet-to-iceberg-copy', namespace: 'spark-prod', dryRunAccepted: false });
+    expect(preview.serverYaml).toContain('parquet-to-iceberg-copy');
+    expect(preview.serverYaml).not.toContain('resourceVersion');
+  });
   it('returns executor logs in the requested order', async () => {
     const app = await sparkService.getApplication('spark-prod', 'parquet-to-iceberg');
     const executor = app.executors[0];

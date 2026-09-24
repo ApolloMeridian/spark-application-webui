@@ -20,6 +20,7 @@ var (
 	ErrInvalidCredentials = errors.New("invalid username or password")
 	ErrUnauthorized       = errors.New("authentication is required")
 	ErrForbidden          = errors.New("administrator permission is required")
+	ErrNamespaceForbidden = errors.New("namespace access is not permitted")
 	ErrUserNotFound       = errors.New("user not found")
 	ErrUsernameExists     = errors.New("username already exists")
 	ErrLastAdmin          = errors.New("the last active administrator cannot be removed, disabled, or demoted")
@@ -56,6 +57,7 @@ type CreateUserInput struct {
 	DisplayName string
 	Email       string
 	Role        domain.UserRole
+	Namespaces  []string
 	Password    string
 }
 
@@ -63,6 +65,7 @@ type UpdateUserInput struct {
 	DisplayName *string
 	Email       *string
 	Role        *domain.UserRole
+	Namespaces  *[]string
 	Disabled    *bool
 	Password    *string
 }
@@ -219,7 +222,7 @@ func (s *Service) CreateUser(ctx context.Context, actor domain.User, input Creat
 		return domain.User{}, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	user := domain.User{ID: newID(), Username: username, DisplayName: cleanDisplayName(input.DisplayName, username), Email: email, Role: input.Role, AuthSource: "local", CreatedAt: now, UpdatedAt: now}
+	user := domain.User{ID: newID(), Username: username, DisplayName: cleanDisplayName(input.DisplayName, username), Email: email, Role: input.Role, Namespaces: cleanNamespaces(input.Namespaces), AuthSource: "local", CreatedAt: now, UpdatedAt: now}
 	if err := s.store.CreateUser(ctx, user, normalized, string(hash)); err != nil {
 		return domain.User{}, err
 	}
@@ -336,6 +339,11 @@ func (s *Service) applyUpdate(user *domain.User, input UpdateUserInput) (*string
 		sensitive = sensitive || user.Role != *input.Role
 		user.Role = *input.Role
 	}
+	if input.Namespaces != nil {
+		next := cleanNamespaces(*input.Namespaces)
+		sensitive = sensitive || strings.Join(user.Namespaces, "\x00") != strings.Join(next, "\x00")
+		user.Namespaces = next
+	}
 	if input.Disabled != nil {
 		sensitive = sensitive || user.Disabled != *input.Disabled
 		user.Disabled = *input.Disabled
@@ -355,6 +363,19 @@ func (s *Service) applyUpdate(user *domain.User, input UpdateUserInput) (*string
 	}
 	user.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return passwordHash, sensitive, nil
+}
+
+func cleanNamespaces(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" && !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func validateUsername(value string) (string, string, error) {

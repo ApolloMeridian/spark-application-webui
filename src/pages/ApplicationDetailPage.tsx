@@ -1,5 +1,5 @@
-import { CopyOutlined, DeleteOutlined, DownloadOutlined, ExclamationCircleOutlined, FileTextOutlined, LinkOutlined, ReloadOutlined, SearchOutlined, StopOutlined } from '@ant-design/icons';
-import { Alert, App, Button, Card, Col, DatePicker, Descriptions, Empty, Input, Progress, Row, Segmented, Skeleton, Space, Spin, Table, Tabs, Tag, Tooltip, Typography } from 'antd';
+import { BranchesOutlined, CopyOutlined, DeleteOutlined, DownloadOutlined, ExclamationCircleOutlined, FileTextOutlined, LinkOutlined, RedoOutlined, ReloadOutlined, SearchOutlined, StopOutlined } from '@ant-design/icons';
+import { Alert, App, Button, Card, Col, DatePicker, Descriptions, Empty, Input, Progress, Row, Segmented, Skeleton, Space, Spin, Table, Tabs, Tag, Timeline, Tooltip, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import ReactECharts from 'echarts-for-react';
 import type { Dayjs } from 'dayjs';
@@ -14,7 +14,8 @@ import { useI18n } from '../i18n';
 import { sparkService } from '../service';
 import { runtimeConfig } from '../runtimeConfig';
 import type { ExecutorPod, KubernetesEvent, SparkApplication } from '../types';
-import { canDelete, canKill, displayNow, displayTime, formatCpu, formatDuration, formatMemory, formatTimestamp, isKillableState, isTerminalState, sumResources } from '../utils';
+import { canDelete, canKill, canSubmit, displayNow, displayTime, formatCpu, formatDuration, formatMemory, formatTimestamp, isKillableState, isTerminalState, sumResources } from '../utils';
+import { useApplicationEvents } from '../useApplicationEvents';
 
 function ResourceSummary({ app }: { app: SparkApplication }) {
   const { t } = useI18n(); const totals = sumResources(app);
@@ -101,9 +102,10 @@ function YamlTab({ app }: { app: SparkApplication }) {
 }
 
 export function ApplicationDetailPage() {
-  const { namespace = '', name = '' } = useParams(); const navigate = useNavigate(); const { t } = useI18n(); const { session } = useAuth(); const [app, setApp] = useState<SparkApplication>(); const [error, setError] = useState(''); const [operation, setOperation] = useState<'kill' | 'delete'>();
+  const { namespace = '', name = '' } = useParams(); const navigate = useNavigate(); const { t } = useI18n(); const { session } = useAuth(); const [app, setApp] = useState<SparkApplication>(); const [error, setError] = useState(''); const [actionError, setActionError] = useState(''); const [operation, setOperation] = useState<'kill' | 'delete'>(); const [preparing, setPreparing] = useState<'clone' | 'retry'>();
   const load = useCallback(async () => { setError(''); try { setApp(await sparkService.getApplication(namespace, name)); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load'); } }, [namespace, name]);
   useEffect(() => { void load(); const timer = window.setInterval(() => void load(), runtimeConfig.dashboard.refreshIntervalSeconds * 1000); return () => window.clearInterval(timer); }, [load]);
+  useApplicationEvents((change) => { if (change.namespace === namespace && change.name === name) void load(); });
   if (error) return <Alert type="error" showIcon message={error} action={<Button onClick={load}>{t('retry')}</Button>} />;
   if (!app) return <Skeleton active paragraph={{ rows: 10 }} />;
   const historyAvailable = runtimeConfig.historyServer.enabled && !!runtimeConfig.historyServer.baseUrl && !!app.eventLogEnabled && !!app.sparkApplicationId && isTerminalState(app.state);
@@ -117,9 +119,19 @@ export function ApplicationDetailPage() {
     }
   };
   const sparkUITooltip = app.state === 'RUNNING' ? (app.sparkUiAvailable ? t('sparkUiLive') : t('sparkUiUnavailable')) : (historyAvailable ? t('sparkHistory') : t('sparkHistoryUnavailable'));
+  const prepare = async (mode: 'clone' | 'retry') => {
+    setPreparing(mode); setActionError('');
+    try {
+      const result = await sparkService.prepareApplication(app.namespace, app.name, mode);
+      navigate('/submit', { state: { manifest: result.serverYaml, namespace: result.namespace, source: `${app.namespace}/${app.name}`, mode } });
+    } catch (caught) { setActionError(caught instanceof Error ? caught.message : 'Failed to prepare manifest'); }
+    finally { setPreparing(undefined); }
+  };
   return <>
-    <PageHeader back={{ label: t('applications'), to: '/applications' }} title={<Space wrap>{app.name}<StatusTag state={app.state} /></Space>} subtitle={`${app.namespace} · ${app.cluster} · ${formatDuration(app)}`} extra={<Space><Button icon={<ReloadOutlined />} onClick={load}>{t('refresh')}</Button>{runtimeConfig.features.sparkUi && <Tooltip title={sparkUITooltip}><Button icon={<LinkOutlined />} disabled={app.state === 'RUNNING' ? !app.sparkUiAvailable : !historyAvailable} onClick={openSparkUI}>{app.state === 'RUNNING' ? 'Spark UI' : 'Spark History'}</Button></Tooltip>}{runtimeConfig.features.kill && isKillableState(app.state) && <Button danger icon={<StopOutlined />} disabled={!canKill(session?.role ?? 'viewer')} onClick={() => setOperation('kill')}>{t('kill')}</Button>}{runtimeConfig.features.kill && isTerminalState(app.state) && <Button danger icon={<DeleteOutlined />} disabled={!canDelete(session?.role ?? 'viewer')} onClick={() => setOperation('delete')}>{t('delete')}</Button>}</Space>} />
+    <PageHeader back={{ label: t('applications'), to: '/applications' }} title={<Space wrap>{app.name}<StatusTag state={app.state} />{app.historical && <Tag color="purple">{t('historicalSnapshot')}</Tag>}</Space>} subtitle={`${app.namespace} · ${app.cluster} · ${formatDuration(app)}`} extra={<Space wrap><Button icon={<ReloadOutlined />} onClick={load}>{t('refresh')}</Button>{runtimeConfig.features.sparkUi && <Tooltip title={sparkUITooltip}><Button icon={<LinkOutlined />} disabled={app.state === 'RUNNING' ? !app.sparkUiAvailable : !historyAvailable} onClick={openSparkUI}>{app.state === 'RUNNING' ? 'Spark UI' : 'Spark History'}</Button></Tooltip>}{runtimeConfig.features.submit && canSubmit(session?.role ?? 'viewer') && <Button icon={<BranchesOutlined />} loading={preparing === 'clone'} onClick={() => void prepare('clone')}>{t('cloneApplication')}</Button>}{runtimeConfig.features.submit && canSubmit(session?.role ?? 'viewer') && isTerminalState(app.state) && <Button icon={<RedoOutlined />} loading={preparing === 'retry'} onClick={() => void prepare('retry')}>{t('retryApplication')}</Button>}{runtimeConfig.features.kill && isKillableState(app.state) && !app.historical && <Button danger icon={<StopOutlined />} disabled={!canKill(session?.role ?? 'viewer')} onClick={() => setOperation('kill')}>{t('kill')}</Button>}{runtimeConfig.features.kill && isTerminalState(app.state) && !app.historical && <Button danger icon={<DeleteOutlined />} disabled={!canDelete(session?.role ?? 'viewer')} onClick={() => setOperation('delete')}>{t('delete')}</Button>}</Space>} />
+    {actionError && <Alert className="detail-alert" type="error" showIcon closable onClose={() => setActionError('')} message={actionError} />}
     {app.errorMessage && <Alert className="detail-alert" type="error" showIcon icon={<ExclamationCircleOutlined />} message="Application failure detected" description={app.errorMessage} />}
+    {!!app.diagnostics?.length && <Card className="panel-card" title={t('diagnosis')}><div className="diagnostic-list">{app.diagnostics.map((item) => <div key={item.code} className={`diagnostic-card ${item.severity}`}><Space><Tag color={item.severity === 'error' ? 'red' : 'orange'}>{item.code}</Tag><Typography.Text strong>{item.summary}</Typography.Text></Space>{item.detail && <small>{item.detail}</small>}{item.recommendation && <small><b>{t('recommendation')}:</b> {item.recommendation}</small>}</div>)}</div></Card>}
     <Row gutter={[16, 16]} className="detail-overview"><Col xs={24} xl={16}><Card className="panel-card"><Descriptions column={{ xs: 1, sm: 2, lg: 3 }} items={[
       { key: 'owner', label: t('owner'), children: app.owner }, { key: 'created', label: t('createdAt'), children: formatTimestamp(app.createdAt) }, { key: 'started', label: t('startedAt'), children: formatTimestamp(app.startedAt) },
       { key: 'finished', label: t('finishedAt'), children: formatTimestamp(app.finishedAt) }, { key: 'spark', label: t('sparkVersion'), children: app.sparkVersion }, { key: 'submission', label: t('submissionId'), children: <Typography.Text copyable>{app.submissionId}</Typography.Text> },
@@ -129,6 +141,7 @@ export function ApplicationDetailPage() {
     <Tabs className="detail-tabs" defaultActiveKey="resources" items={[
       { key: 'resources', label: t('resources'), children: <ResourcesTab app={app} /> }, { key: 'executors', label: `${t('executors')} (${app.executors.length})`, children: <ExecutorsTab app={app} /> },
       { key: 'scheduling', label: t('scheduling'), children: <SchedulingTab app={app} /> }, { key: 'logs', label: t('logs'), children: <LogsTab app={app} /> },
+      { key: 'lifecycle', label: `${t('lifecycle')} (${app.lifecycle?.length ?? 0})`, children: <Card className="panel-card"><Timeline items={(app.lifecycle ?? []).map((item) => ({ color: item.type === 'warning' ? 'red' : item.type === 'finished' ? 'green' : 'blue', children: <div><Typography.Text strong>{item.title}</Typography.Text><Typography.Text type="secondary"> · {formatTimestamp(item.time)}</Typography.Text>{item.detail && <Typography.Paragraph type="secondary">{item.detail}</Typography.Paragraph>}</div> }))} /></Card> },
       { key: 'events', label: `${t('events')} (${app.events.length})`, children: <EventsTab app={app} /> }, { key: 'yaml', label: t('yaml'), children: <YamlTab app={app} /> },
     ]} />
     {operation && <ApplicationOperationModal application={app} operation={operation} open onClose={() => setOperation(undefined)} onCompleted={() => { if (operation === 'delete') navigate('/applications'); else void load(); }} />}

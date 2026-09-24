@@ -11,8 +11,11 @@ Spark Control Center is a web console for operating Apache Spark applications on
 - Proxy a running Driver Spark UI through the backend; link terminal jobs to Spark History Server when event logging is enabled.
 - Query retained Executor logs from Loki even after Kubernetes Pods are removed.
 - Submit SparkApplication YAML, terminate `RUNNING` or stuck `SUBMITTED` jobs while retaining the failed Driver Pod, and delete terminal records.
-- Authenticate with PostgreSQL local accounts or optional OIDC/Keycloak; enforce `viewer` and `admin` permissions in both UI and API.
-- Persist users, sessions, application history, and operation audit records in PostgreSQL.
+- Validate submissions through Kubernetes server-side dry-run and compare the original YAML with the normalized manifest before creating it.
+- Clone or retry an application from a sanitized manifest, with server-owned metadata and runtime status removed.
+- Stream Kubernetes Watch changes to the browser over SSE, while retaining periodic refresh as a recovery path.
+- Authenticate with PostgreSQL local accounts or optional OIDC/Keycloak; enforce `viewer` and `admin` permissions plus per-user namespace access in both UI and API.
+- Persist users, sessions, lifecycle snapshots, failure diagnostics, and operation audit records in PostgreSQL.
 - Deploy with the included Helm chart and namespace-scoped Kubernetes RBAC.
 
 ## Screenshots
@@ -69,15 +72,15 @@ go vet ./...
 Build images without a registry prefix:
 
 ```bash
-docker build -t spark-control-center:1.0.1 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.0.1 .
+docker build -t spark-control-center:1.1.0 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.1.0 .
 ```
 
-GitHub Release `v1.0.1` contains Docker-loadable image tar files and the packaged Helm chart.
+GitHub Release `v1.1.0` contains Docker-loadable image tar files and the packaged Helm chart.
 
 ```bash
-docker load -i spark-control-center-1.0.1.tar
-docker load -i spark-control-center-backend-1.0.1.tar
+docker load -i spark-control-center-1.1.0.tar
+docker load -i spark-control-center-backend-1.1.0.tar
 ```
 
 ## Helm deployment
@@ -101,8 +104,8 @@ See [Deployment and configuration](docs/DEPLOYMENT.md) for the complete interfac
 
 ## Permissions
 
-- `viewer`: read applications, metrics, events, logs, YAML, and Spark UI; manage their own profile.
-- `admin`: all viewer permissions plus submit, terminate, delete, audit, and user management.
+- `viewer`: read permitted namespaces, applications, metrics, events, logs, YAML, and Spark UI; manage their own profile.
+- `admin`: all viewer permissions plus submit, terminate, delete, audit, and user management within permitted namespaces. Administrators can assign namespace access; an empty assignment retains backward-compatible access to every configured namespace.
 
 The backend independently checks every privileged operation; hiding a UI button is not treated as authorization.
 

@@ -15,10 +15,43 @@ type User struct {
 	DisplayName string   `json:"displayName"`
 	Email       string   `json:"email"`
 	Role        UserRole `json:"role"`
+	Namespaces  []string `json:"namespaces"`
 	AuthSource  string   `json:"authSource"`
 	Disabled    bool     `json:"disabled"`
 	CreatedAt   string   `json:"createdAt"`
 	UpdatedAt   string   `json:"updatedAt"`
+}
+
+type ApplicationDiagnostic struct {
+	Code           string `json:"code"`
+	Severity       string `json:"severity"`
+	Summary        string `json:"summary"`
+	Detail         string `json:"detail,omitempty"`
+	Recommendation string `json:"recommendation,omitempty"`
+}
+
+type LifecycleEvent struct {
+	Time   string `json:"time"`
+	Type   string `json:"type"`
+	Title  string `json:"title"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type ManifestPreview struct {
+	Name           string   `json:"name"`
+	Namespace      string   `json:"namespace"`
+	OriginalYAML   string   `json:"originalYaml"`
+	ServerYAML     string   `json:"serverYaml"`
+	Warnings       []string `json:"warnings"`
+	DryRunAccepted bool     `json:"dryRunAccepted"`
+}
+
+type ApplicationChange struct {
+	Type            string `json:"type"`
+	Namespace       string `json:"namespace"`
+	Name            string `json:"name"`
+	ResourceVersion string `json:"resourceVersion,omitempty"`
+	Timestamp       string `json:"timestamp"`
 }
 
 type OIDCLoginState struct {
@@ -82,32 +115,35 @@ type KubernetesEvent struct {
 }
 
 type SparkApplication struct {
-	ID                 string            `json:"id"`
-	Name               string            `json:"name"`
-	Namespace          string            `json:"namespace"`
-	Cluster            string            `json:"cluster"`
-	Owner              string            `json:"owner"`
-	State              string            `json:"state"`
-	CreatedAt          string            `json:"createdAt"`
-	StartedAt          string            `json:"startedAt,omitempty"`
-	FinishedAt         string            `json:"finishedAt,omitempty"`
-	Image              string            `json:"image"`
-	SparkVersion       string            `json:"sparkVersion"`
-	SparkApplicationID string            `json:"sparkApplicationId,omitempty"`
-	SparkUIAvailable   bool              `json:"sparkUiAvailable"`
-	EventLogEnabled    bool              `json:"eventLogEnabled"`
-	SubmissionID       string            `json:"submissionId"`
-	DriverPod          string            `json:"driverPod"`
-	DriverNode         string            `json:"driverNode,omitempty"`
-	DriverNodePool     string            `json:"driverNodePool,omitempty"`
-	Driver             PodResource       `json:"driver"`
-	Executors          []ExecutorPod     `json:"executors"`
-	Metrics            []MetricPoint     `json:"metrics"`
-	Events             []KubernetesEvent `json:"events"`
-	Logs               []string          `json:"logs"`
-	YAML               string            `json:"yaml"`
-	PendingReason      string            `json:"pendingReason,omitempty"`
-	ErrorMessage       string            `json:"errorMessage,omitempty"`
+	ID                 string                  `json:"id"`
+	Name               string                  `json:"name"`
+	Namespace          string                  `json:"namespace"`
+	Cluster            string                  `json:"cluster"`
+	Owner              string                  `json:"owner"`
+	State              string                  `json:"state"`
+	CreatedAt          string                  `json:"createdAt"`
+	StartedAt          string                  `json:"startedAt,omitempty"`
+	FinishedAt         string                  `json:"finishedAt,omitempty"`
+	Image              string                  `json:"image"`
+	SparkVersion       string                  `json:"sparkVersion"`
+	SparkApplicationID string                  `json:"sparkApplicationId,omitempty"`
+	SparkUIAvailable   bool                    `json:"sparkUiAvailable"`
+	EventLogEnabled    bool                    `json:"eventLogEnabled"`
+	SubmissionID       string                  `json:"submissionId"`
+	DriverPod          string                  `json:"driverPod"`
+	DriverNode         string                  `json:"driverNode,omitempty"`
+	DriverNodePool     string                  `json:"driverNodePool,omitempty"`
+	Driver             PodResource             `json:"driver"`
+	Executors          []ExecutorPod           `json:"executors"`
+	Metrics            []MetricPoint           `json:"metrics"`
+	Events             []KubernetesEvent       `json:"events"`
+	Logs               []string                `json:"logs"`
+	YAML               string                  `json:"yaml"`
+	PendingReason      string                  `json:"pendingReason,omitempty"`
+	ErrorMessage       string                  `json:"errorMessage,omitempty"`
+	Historical         bool                    `json:"historical,omitempty"`
+	Diagnostics        []ApplicationDiagnostic `json:"diagnostics,omitempty"`
+	Lifecycle          []LifecycleEvent        `json:"lifecycle,omitempty"`
 }
 
 type DashboardSummary struct {

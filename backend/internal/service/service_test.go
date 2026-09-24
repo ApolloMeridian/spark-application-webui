@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"sigs.k8s.io/yaml"
 	"spark-control-center/backend/internal/config"
 	"spark-control-center/backend/internal/domain"
 	"spark-control-center/backend/internal/kube"
 	metrics "spark-control-center/backend/internal/prometheus"
+	"spark-control-center/backend/internal/store"
 )
 
 type fakeKubernetes struct {
@@ -44,6 +46,13 @@ func (f *fakeKubernetes) CreateSparkApplication(_ context.Context, _ string, obj
 		return f.object, nil
 	}
 	return object, nil
+}
+func (f *fakeKubernetes) DryRunCreateSparkApplication(_ context.Context, _ string, object kube.Object) (kube.Object, error) {
+	f.created = object
+	return object, nil
+}
+func (f *fakeKubernetes) WatchSparkApplications(context.Context, string, func(domain.ApplicationChange)) error {
+	return nil
 }
 func (f *fakeKubernetes) DisableSparkApplicationRestart(context.Context, string, string) error {
 	f.restartDisabled = f.restartPatchErr == nil
@@ -104,8 +113,11 @@ func (f *fakeStore) Insert(_ context.Context, row domain.OperationAudit) error {
 }
 func (f *fakeStore) List(context.Context, int) ([]domain.OperationAudit, error)          { return f.rows, nil }
 func (f *fakeStore) UpsertApplications(context.Context, []domain.SparkApplication) error { return nil }
-func (f *fakeStore) HistorySummary(_ context.Context, from, to time.Time) (domain.HistorySummary, error) {
+func (f *fakeStore) HistorySummary(_ context.Context, from, to time.Time, _ []string) (domain.HistorySummary, error) {
 	return domain.HistorySummary{Submitted: 1, From: from.UTC().Format(time.RFC3339), To: to.UTC().Format(time.RFC3339)}, nil
+}
+func (f *fakeStore) GetApplicationSnapshot(context.Context, string, string) (domain.SparkApplication, error) {
+	return domain.SparkApplication{}, store.ErrSnapshotNotFound
 }
 func (f *fakeStore) Ping(context.Context) error { return nil }
 func (f *fakeStore) Close()                     {}
@@ -206,6 +218,46 @@ func TestSubmitRejectsNamespaceMismatch(t *testing.T) {
 	}
 }
 
+func TestDryRunSanitizesManifestAndReturnsServerPreview(t *testing.T) {
+	kubernetes := &fakeKubernetes{}
+	svc := New(config.Config{Namespaces: []string{"spark"}, SparkAPIVersion: "sparkoperator.k8s.io/v1beta2"}, kubernetes, fakePrometheus{}, &fakeStore{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	manifest := "apiVersion: sparkoperator.k8s.io/v1beta2\nkind: SparkApplication\nmetadata:\n  name: preview-demo\n  namespace: spark\n  resourceVersion: old\nstatus:\n  applicationState:\n    state: FAILED\nspec:\n  image: spark:3.5\n"
+	preview, err := svc.DryRunApplication(context.Background(), "spark", manifest, "alice")
+	if err != nil || !preview.DryRunAccepted || preview.Name != "preview-demo" {
+		t.Fatalf("unexpected dry-run result: %#v err=%v", preview, err)
+	}
+	if kube.String(kubernetes.created, "metadata", "resourceVersion") != "" || kube.String(kubernetes.created, "status", "applicationState", "state") != "" {
+		t.Fatalf("server dry-run object retained immutable fields: %#v", kubernetes.created)
+	}
+	if kube.StringMap(kubernetes.created, "metadata", "annotations")[consoleOwnerAnnotation] != "alice" {
+		t.Fatalf("dry-run did not annotate the requesting user: %#v", kubernetes.created)
+	}
+}
+
+func TestPrepareCloneRemovesRuntimeState(t *testing.T) {
+	object := runningObject()
+	object["metadata"].(map[string]any)["resourceVersion"] = "42"
+	svc := New(config.Config{Namespaces: []string{"spark"}}, &fakeKubernetes{object: object}, fakePrometheus{}, &fakeStore{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	preview, err := svc.PrepareApplication(context.Background(), "spark", "demo", "clone")
+	if err != nil || preview.Name != "demo-copy" {
+		t.Fatalf("unexpected prepared clone: %#v err=%v", preview, err)
+	}
+	var prepared kube.Object
+	if err := yaml.Unmarshal([]byte(preview.ServerYAML), &prepared); err != nil {
+		t.Fatal(err)
+	}
+	if kube.String(prepared, "metadata", "resourceVersion") != "" || kube.String(prepared, "status", "applicationState", "state") != "" || kube.String(prepared, "metadata", "name") != "demo-copy" {
+		t.Fatalf("clone retained runtime state: %#v", prepared)
+	}
+}
+
+func TestDiagnosisRecognizesImagePullFailure(t *testing.T) {
+	diagnostics := diagnoseApplication(domain.SparkApplication{State: "SUBMITTED", Events: []domain.KubernetesEvent{{Reason: "Failed", Message: "Error: ImagePullBackOff"}}})
+	if len(diagnostics) != 1 || diagnostics[0].Code != "IMAGE_PULL" || diagnostics[0].Recommendation == "" {
+		t.Fatalf("unexpected diagnostics: %#v", diagnostics)
+	}
+}
+
 func TestSparkUIProxyTargetUsesDriverService(t *testing.T) {
 	object := runningObject()
 	object["status"].(map[string]any)["driverInfo"] = map[string]any{"podName": "demo-driver", "webUIServiceName": "demo-ui-svc", "webUIPort": float64(4040)}
@@ -251,6 +303,17 @@ func TestSummaryExcludesCompletedApplicationResources(t *testing.T) {
 	}
 	if summary.Requested.CPU != 0 || summary.Requested.MemoryGiB != 0 || summary.Used.CPU != 0 || summary.NodePools.Pending != 0 {
 		t.Fatalf("completed resources must not contribute to live capacity: %#v", summary)
+	}
+}
+
+func TestSummaryDoesNotExpandAnEmptyNamespaceIntersection(t *testing.T) {
+	svc := New(config.Config{ClusterName: "kubernetes", Namespaces: []string{"spark"}}, &fakeKubernetes{object: runningObject()}, fakePrometheus{}, &fakeStore{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	summary, err := svc.SummaryForNamespaces(context.Background(), time.Now().Add(-time.Hour), time.Now(), []string{"removed-namespace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Total != 0 || summary.History.Submitted != 0 {
+		t.Fatalf("an empty configured/authorized namespace intersection must not expand to all namespaces: %#v", summary)
 	}
 }
 

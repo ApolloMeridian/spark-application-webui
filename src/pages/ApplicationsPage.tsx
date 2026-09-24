@@ -12,6 +12,7 @@ import { sparkService } from '../service';
 import { runtimeConfig } from '../runtimeConfig';
 import type { ApplicationState, SparkApplication } from '../types';
 import { canDelete, canKill, formatCpu, formatDuration, formatMemory, formatTimestamp, isKillableState, isTerminalState, sumResources } from '../utils';
+import { useApplicationEvents } from '../useApplicationEvents';
 
 export function ApplicationsPage() {
   const { t } = useI18n(); const { session } = useAuth(); const navigate = useNavigate(); const location = useLocation();
@@ -21,6 +22,7 @@ export function ApplicationsPage() {
   const [state, setState] = useState<ApplicationState | 'ALL' | undefined>(initialState ?? undefined); const [namespace, setNamespace] = useState<string | undefined>(); const [target, setTarget] = useState<{ application: SparkApplication; operation: 'kill' | 'delete' }>();
   const load = useCallback(async () => { setLoading(true); setError(''); try { setApps(await sparkService.listApplications()); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load'); } finally { setLoading(false); } }, []);
   useEffect(() => { void load(); const timer = window.setInterval(() => void load(), runtimeConfig.dashboard.refreshIntervalSeconds * 1000); return () => window.clearInterval(timer); }, [load]);
+  useApplicationEvents(() => { void load(); });
   useEffect(() => { localStorage.setItem('spark-console-filter-keyword', keyword); }, [keyword]);
   const filtered = useMemo(() => apps.filter((app) => (!keyword.trim() || [app.name, app.owner].some((v) => v.toLowerCase().includes(keyword.toLowerCase()))) && (!state || state === 'ALL' || app.state === state) && (!namespace || namespace === 'ALL' || app.namespace === namespace)), [apps, keyword, state, namespace]);
   const columns: ColumnsType<SparkApplication> = [
@@ -38,7 +40,7 @@ export function ApplicationsPage() {
   ];
   const onChange: TableProps<SparkApplication>['onChange'] = () => undefined;
   return <>
-    <PageHeader title={t('applications')} subtitle={`${filtered.length} applications across ${runtimeConfig.cluster.namespaces.length} namespaces`} extra={<Button icon={<ReloadOutlined />} onClick={load}>{t('refresh')}</Button>} />
+    <PageHeader title={t('applications')} subtitle={`${filtered.length} applications across ${new Set(filtered.map((app) => app.namespace)).size} namespaces`} extra={<Button icon={<ReloadOutlined />} onClick={load}>{t('refresh')}</Button>} />
     <Card className="filter-card"><div className="filter-bar"><Input allowClear value={keyword} onChange={(e) => setKeyword(e.target.value)} prefix={<SearchOutlined />} placeholder={t('search')} className="search-input" /><Select allowClear value={state} onChange={setState} placeholder={t('status')} options={['ALL', 'RUNNING', 'COMPLETED', 'FAILED', 'SUBMISSION_FAILED', 'PENDING', 'SUBMITTED', 'FAILING', 'UNKNOWN', 'KILLED'].map((value) => ({ value, label: value === 'ALL' ? t('all') : value }))} /><Select allowClear value={namespace} onChange={setNamespace} placeholder={t('namespace')} options={[{ value: 'ALL', label: t('all') }, ...[...new Set(apps.map((app) => app.namespace))].map((value) => ({ value, label: value }))]} /><Button onClick={() => { setKeyword(''); setState(undefined); setNamespace(undefined); }}>{t('resetFilters')}</Button></div></Card>
     {error ? <Alert type="error" showIcon message={error} action={<Button onClick={load}>{t('retry')}</Button>} /> : <Card className="table-card"><Table rowKey="id" loading={loading} dataSource={filtered} columns={columns} onChange={onChange} scroll={{ x: 1780 }} pagination={{ pageSize: 8, showSizeChanger: true, showTotal: (total) => `${total} applications` }} /></Card>}
     {target && <ApplicationOperationModal application={target.application} operation={target.operation} open onClose={() => setTarget(undefined)} onCompleted={() => { void load(); }} />}

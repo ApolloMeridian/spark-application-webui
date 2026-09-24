@@ -11,8 +11,11 @@ Spark Control Center 是面向 Kubernetes 上 Apache Spark 作业的运维控制
 - 通过后端代理访问运行中的 Driver Spark UI；终态作业在启用 EventLog 后可跳转 Spark History Server。
 - 从 Loki 查询持久化 Executor 日志，即使对应 Pod 已被删除仍可查看。
 - 提交 SparkApplication YAML；终止 `RUNNING` 或卡住的 `SUBMITTED` 作业并保留失败 Driver Pod；删除终态记录。
-- 支持 PostgreSQL 本地账号和可选 OIDC/Keycloak 登录，并在前后端同时落实 `viewer`、`admin` 权限。
-- 使用 PostgreSQL 保存用户、会话、作业历史和操作审计。
+- 提交前调用 Kubernetes 服务端 dry-run 校验，并对比原始 YAML 与服务端规范化清单。
+- 从已清理服务端元数据和运行状态的清单克隆或重试作业。
+- 通过 Kubernetes Watch 和 SSE 实时推送变更，同时保留定时刷新作为恢复机制。
+- 支持 PostgreSQL 本地账号和可选 OIDC/Keycloak 登录，并在前后端同时落实 `viewer`、`admin` 及用户级命名空间权限。
+- 使用 PostgreSQL 保存用户、会话、生命周期快照、失败诊断和操作审计。
 - 通过内置 Helm Chart 和命名空间级 RBAC 部署。
 
 ## 运行截图
@@ -69,15 +72,15 @@ go vet ./...
 使用不含仓库前缀的名称构建：
 
 ```bash
-docker build -t spark-control-center:1.0.1 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.0.1 .
+docker build -t spark-control-center:1.1.0 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.1.0 .
 ```
 
-GitHub `v1.0.1` Release 提供可由 Docker 直接载入的镜像 tar 文件和打包后的 Helm Chart：
+GitHub `v1.1.0` Release 提供可由 Docker 直接载入的镜像 tar 文件和打包后的 Helm Chart：
 
 ```bash
-docker load -i spark-control-center-1.0.1.tar
-docker load -i spark-control-center-backend-1.0.1.tar
+docker load -i spark-control-center-1.1.0.tar
+docker load -i spark-control-center-backend-1.1.0.tar
 ```
 
 ## Helm 部署
@@ -99,8 +102,8 @@ helm upgrade --install spark-console ./charts/spark-control-center \
 
 ## 权限模型
 
-- `viewer`：查看作业、指标、事件、日志、YAML 和 Spark UI，并管理自己的资料。
-- `admin`：拥有 viewer 权限，并可提交、终止、删除作业，以及管理审计和用户。
+- `viewer`：查看已授权命名空间中的作业、指标、事件、日志、YAML 和 Spark UI，并管理自己的资料。
+- `admin`：拥有 viewer 权限，并可在已授权命名空间中提交、终止、删除作业，以及管理审计和用户。管理员可为用户分配命名空间；留空时为兼容现有部署，表示允许全部已配置命名空间。
 
 所有高权限操作都会由后端独立校验，前端隐藏按钮不作为授权依据。
 

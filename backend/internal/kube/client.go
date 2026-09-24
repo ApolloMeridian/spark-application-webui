@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"spark-control-center/backend/internal/config"
 	"spark-control-center/backend/internal/domain"
@@ -137,6 +138,73 @@ func (c *Client) CreateSparkApplication(ctx context.Context, namespace string, o
 		return nil, err
 	}
 	return response, nil
+}
+
+func (c *Client) DryRunCreateSparkApplication(ctx context.Context, namespace string, object Object) (Object, error) {
+	if err := c.ensureNamespace(namespace); err != nil {
+		return nil, err
+	}
+	var response Object
+	path := c.sparkCollectionPath(namespace) + "?dryRun=All&fieldManager=spark-control-center"
+	if err := c.doJSON(ctx, http.MethodPost, path, object, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+// WatchSparkApplications uses the Kubernetes watch API directly. It returns when
+// the watch timeout expires or the context is cancelled; callers are expected to
+// reconnect with backoff.
+func (c *Client) WatchSparkApplications(ctx context.Context, namespace string, notify func(domain.ApplicationChange)) error {
+	if err := c.ensureNamespace(namespace); err != nil {
+		return err
+	}
+	path := c.sparkCollectionPath(namespace) + "?watch=true&allowWatchBookmarks=true&timeoutSeconds=300&resourceVersion=0"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	token, err := c.bearerToken()
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	watchClient := &http.Client{Transport: c.http.Transport}
+	resp, err := watchClient.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("Kubernetes watch request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return &APIError{StatusCode: resp.StatusCode, Message: strings.TrimSpace(string(data))}
+	}
+	decoder := json.NewDecoder(resp.Body)
+	for {
+		var event struct {
+			Type   string `json:"type"`
+			Object Object `json:"object"`
+		}
+		if err := decoder.Decode(&event); err != nil {
+			if errors.Is(err, io.EOF) || ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("decode Kubernetes watch event: %w", err)
+		}
+		if event.Type == "BOOKMARK" || event.Object == nil {
+			continue
+		}
+		notify(domain.ApplicationChange{
+			Type: strings.ToUpper(event.Type), Namespace: namespace,
+			Name:            String(event.Object, "metadata", "name"),
+			ResourceVersion: String(event.Object, "metadata", "resourceVersion"),
+			Timestamp:       time.Now().UTC().Format(time.RFC3339Nano),
+		})
+	}
 }
 
 func (c *Client) DisableSparkApplicationRestart(ctx context.Context, namespace, name string) error {

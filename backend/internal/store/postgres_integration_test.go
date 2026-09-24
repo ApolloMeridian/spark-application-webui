@@ -62,7 +62,7 @@ func TestPostgresApplicationHistoryRoundTrip(t *testing.T) {
 	if err := store.UpsertApplications(ctx, []domain.SparkApplication{app}); err != nil {
 		t.Fatal(err)
 	}
-	summary, err := store.HistorySummary(ctx, now.Add(-time.Hour), now.Add(time.Hour))
+	summary, err := store.HistorySummary(ctx, now.Add(-time.Hour), now.Add(time.Hour), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

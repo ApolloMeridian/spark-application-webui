@@ -33,14 +33,14 @@ func TestResourceQuantityParsing(t *testing.T) {
 
 func TestMutatingRequestsUseExpectedKubernetesSemantics(t *testing.T) {
 	var requests []struct {
-		method, path, contentType string
-		body                      map[string]any
+		method, path, contentType, rawQuery string
+		body                                map[string]any
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		entry := struct {
-			method, path, contentType string
-			body                      map[string]any
-		}{method: r.Method, path: r.URL.Path, contentType: r.Header.Get("Content-Type")}
+			method, path, contentType, rawQuery string
+			body                                map[string]any
+		}{method: r.Method, path: r.URL.Path, contentType: r.Header.Get("Content-Type"), rawQuery: r.URL.RawQuery}
 		_ = json.NewDecoder(r.Body).Decode(&entry.body)
 		requests = append(requests, entry)
 		w.Header().Set("Content-Type", "application/json")
@@ -55,6 +55,9 @@ func TestMutatingRequestsUseExpectedKubernetesSemantics(t *testing.T) {
 	if _, err := client.CreateSparkApplication(context.Background(), "spark", Object{"apiVersion": "sparkoperator.k8s.io/v1beta2", "kind": "SparkApplication"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := client.DryRunCreateSparkApplication(context.Background(), "spark", Object{"apiVersion": "sparkoperator.k8s.io/v1beta2", "kind": "SparkApplication"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := client.DisableSparkApplicationRestart(context.Background(), "spark", "demo"); err != nil {
 		t.Fatal(err)
 	}
@@ -64,17 +67,20 @@ func TestMutatingRequestsUseExpectedKubernetesSemantics(t *testing.T) {
 	if err := client.TerminatePodByDeadline(context.Background(), "spark", "demo-driver"); err != nil {
 		t.Fatal(err)
 	}
-	if len(requests) != 4 || requests[0].method != http.MethodPost || requests[1].method != http.MethodPatch || requests[2].method != http.MethodDelete || requests[3].method != http.MethodPatch {
+	if len(requests) != 5 || requests[0].method != http.MethodPost || requests[1].method != http.MethodPost || requests[2].method != http.MethodPatch || requests[3].method != http.MethodDelete || requests[4].method != http.MethodPatch {
 		t.Fatalf("unexpected requests: %#v", requests)
 	}
-	if requests[1].contentType != "application/merge-patch+json" || String(Object(requests[1].body), "spec", "restartPolicy", "type") != "Never" {
-		t.Fatalf("unexpected restart patch: %#v", requests[1])
+	if requests[1].rawQuery != "dryRun=All&fieldManager=spark-control-center" {
+		t.Fatalf("dry-run request must use Kubernetes server-side validation, got %q", requests[1].rawQuery)
 	}
-	if requests[2].body["gracePeriodSeconds"] != float64(0) || requests[2].body["propagationPolicy"] != "Background" {
-		t.Fatalf("unexpected pod deletion: %#v", requests[2])
+	if requests[2].contentType != "application/merge-patch+json" || String(Object(requests[2].body), "spec", "restartPolicy", "type") != "Never" {
+		t.Fatalf("unexpected restart patch: %#v", requests[2])
 	}
-	if requests[3].contentType != "application/merge-patch+json" || Int64(Object(requests[3].body), "spec", "activeDeadlineSeconds") != 1 {
-		t.Fatalf("unexpected driver deadline patch: %#v", requests[3])
+	if requests[3].body["gracePeriodSeconds"] != float64(0) || requests[3].body["propagationPolicy"] != "Background" {
+		t.Fatalf("unexpected pod deletion: %#v", requests[3])
+	}
+	if requests[4].contentType != "application/merge-patch+json" || Int64(Object(requests[4].body), "spec", "activeDeadlineSeconds") != 1 {
+		t.Fatalf("unexpected driver deadline patch: %#v", requests[4])
 	}
 }
 

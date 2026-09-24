@@ -68,6 +68,10 @@ await page.getByRole('menu').getByText('Submit Spark Application', { exact: true
 await page.waitForURL('**/submit');
 await page.getByRole('button', { name: 'Submit to cluster' }).waitFor({ state: 'visible' });
 await page.locator('.ant-message-notice').last().waitFor({ state: 'hidden' });
+await page.getByRole('button', { name: 'Validate & preview' }).click();
+await page.locator('.ant-modal-content').waitFor({ state: 'visible' });
+await page.getByText('Original YAML').waitFor({ state: 'visible' });
+await page.waitForTimeout(500);
 await page.screenshot({ path: `${output}/submit-1440.png`, fullPage: true });
 
 const desktopMetrics = await page.evaluate(() => ({

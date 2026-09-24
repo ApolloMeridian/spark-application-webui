@@ -18,7 +18,7 @@ const AuthContext = createContext<AuthValue | null>(null);
 
 function mockSession(username: string, role: UserRole): Session {
   const now = new Date().toISOString();
-  return { id: `mock-${username}`, username, displayName: username, email: '', role, authSource: 'mock', disabled: false, createdAt: now, updatedAt: now };
+  return { id: `mock-${username}`, username, displayName: username, email: '', role, namespaces: [], authSource: 'mock', disabled: false, createdAt: now, updatedAt: now };
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {

@@ -11,6 +11,7 @@ import { displayNow, formatCpu, formatMemory, formatTimestamp, stateColor } from
 import { PageHeader } from '../components/PageHeader';
 import { StatusTag } from '../components/StatusTag';
 import { runtimeConfig } from '../runtimeConfig';
+import { useApplicationEvents } from '../useApplicationEvents';
 
 function UsageCard({ title, used, requested, capacity, formatter, accent, metricsAvailable }: { title: string; used: number; requested: number; capacity: number; formatter: (n: number) => string; accent: string; metricsAvailable: boolean }) {
   const percent = Math.round((requested / capacity) * 100);
@@ -22,6 +23,7 @@ export function OverviewPage() {
   const [historyRange, setHistoryRange] = useState<[Dayjs, Dayjs]>(() => { const now = displayNow(); return [now.subtract(runtimeConfig.dashboard.defaultHistoryDays, 'day'), now]; });
   const load = useCallback(async () => { setError(''); try { const [s, list] = await Promise.all([sparkService.getSummary({ from: historyRange[0].toISOString(), to: historyRange[1].toISOString() }), sparkService.listApplications()]); setSummary(s); setApps(list); setLastUpdated(displayNow()); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load'); } }, [historyRange]);
   useEffect(() => { void load(); const timer = window.setInterval(() => void load(), runtimeConfig.dashboard.refreshIntervalSeconds * 1000); return () => window.clearInterval(timer); }, [load]);
+  useApplicationEvents(() => { void load(); });
   if (error) return <Alert type="error" showIcon message={error} action={<Button onClick={load}>{t('retry')}</Button>} />;
   const failures = apps.filter((app) => ['FAILED', 'SUBMISSION_FAILED', 'FAILING'].includes(app.state)).slice(0, 4);
   const statusData = ['RUNNING', 'PENDING', 'FAILED', 'COMPLETED'].map((state) => ({ value: summary?.byState[state as keyof typeof summary.byState] ?? 0, name: state, itemStyle: { color: stateColor[state as keyof typeof stateColor] } }));

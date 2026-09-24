@@ -27,15 +27,20 @@ import (
 type ApplicationService interface {
 	Ready(context.Context) error
 	ListApplications(context.Context) ([]domain.SparkApplication, error)
+	ListApplicationsForNamespaces(context.Context, []string) ([]domain.SparkApplication, error)
 	GetApplication(context.Context, string, string) (domain.SparkApplication, error)
 	GetApplicationMetrics(context.Context, string, string, time.Time, time.Time) ([]domain.MetricPoint, error)
 	SubmitApplication(context.Context, string, string, string) (domain.SparkApplication, error)
+	DryRunApplication(context.Context, string, string, string) (domain.ManifestPreview, error)
+	PrepareApplication(context.Context, string, string, string) (domain.ManifestPreview, error)
 	SparkUIProxyTarget(context.Context, string, string) (string, error)
 	GetExecutorLogs(context.Context, string, string, string, time.Time, time.Time, string, int) ([]domain.LogEntry, error)
 	Summary(context.Context, time.Time, time.Time) (domain.DashboardSummary, error)
+	SummaryForNamespaces(context.Context, time.Time, time.Time, []string) (domain.DashboardSummary, error)
 	KillApplication(context.Context, string, string, string, string) (domain.OperationAudit, error)
 	DeleteApplication(context.Context, string, string, string, string) (domain.OperationAudit, error)
 	ListAudit(context.Context) ([]domain.OperationAudit, error)
+	Subscribe(context.Context, []string) <-chan domain.ApplicationChange
 }
 
 type Server struct {
@@ -66,10 +71,13 @@ func New(cfg config.Config, applicationService ApplicationService, authService *
 	mux.HandleFunc("PATCH /v1/users/{id}", server.updateUser)
 	mux.HandleFunc("DELETE /v1/users/{id}", server.deleteUser)
 	mux.HandleFunc("GET /v1/applications", server.listApplications)
+	mux.HandleFunc("GET /v1/stream", server.applicationStream)
 	mux.HandleFunc("GET /v1/dashboard/summary", server.summary)
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}", server.getApplication)
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/metrics", server.applicationMetrics)
 	mux.HandleFunc("POST /v1/namespaces/{namespace}/applications", server.submitApplication)
+	mux.HandleFunc("POST /v1/namespaces/{namespace}/applications/dry-run", server.dryRunApplication)
+	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/prepare", server.prepareApplication)
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/spark-ui", server.sparkUIProxy)
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/spark-ui/{path...}", server.sparkUIProxy)
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/executors/{pod}/logs", server.executorLogs)
@@ -189,7 +197,7 @@ func externalBaseURL(r *http.Request) string {
 }
 
 func (s *Server) listApplications(w http.ResponseWriter, r *http.Request) {
-	apps, err := s.service.ListApplications(r.Context())
+	apps, err := s.service.ListApplicationsForNamespaces(r.Context(), currentUser(r).Namespaces)
 	if err != nil {
 		s.writeServiceError(w, err)
 		return
@@ -204,13 +212,50 @@ func (s *Server) listApplications(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, filtered)
 }
 
+func (s *Server) applicationStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		s.writeError(w, http.StatusInternalServerError, fmt.Errorf("streaming is not supported"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	_, _ = io.WriteString(w, "event: ready\ndata: {}\n\n")
+	flusher.Flush()
+	changes := s.service.Subscribe(r.Context(), currentUser(r).Namespaces)
+	heartbeat := time.NewTicker(20 * time.Second)
+	defer heartbeat.Stop()
+	connectionLifetime := time.NewTimer(60 * time.Second)
+	defer connectionLifetime.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-connectionLifetime.C:
+			return
+		case <-heartbeat.C:
+			_, _ = io.WriteString(w, ": heartbeat\n\n")
+			flusher.Flush()
+		case change, open := <-changes:
+			if !open {
+				return
+			}
+			data, _ := json.Marshal(change)
+			_, _ = fmt.Fprintf(w, "event: application\ndata: %s\n\n", data)
+			flusher.Flush()
+		}
+	}
+}
+
 func (s *Server) summary(w http.ResponseWriter, r *http.Request) {
 	from, to, err := s.historyRange(r)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	summary, err := s.service.Summary(r.Context(), from, to)
+	summary, err := s.service.SummaryForNamespaces(r.Context(), from, to, currentUser(r).Namespaces)
 	if err != nil {
 		s.writeServiceError(w, err)
 		return
@@ -219,6 +264,9 @@ func (s *Server) summary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getApplication(w http.ResponseWriter, r *http.Request) {
+	if !s.requireNamespace(w, currentUser(r), r.PathValue("namespace")) {
+		return
+	}
 	app, err := s.service.GetApplication(r.Context(), r.PathValue("namespace"), r.PathValue("name"))
 	if err != nil {
 		s.writeServiceError(w, err)
@@ -228,6 +276,9 @@ func (s *Server) getApplication(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) applicationMetrics(w http.ResponseWriter, r *http.Request) {
+	if !s.requireNamespace(w, currentUser(r), r.PathValue("namespace")) {
+		return
+	}
 	from, to, err := s.metricRange(r)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, err)
@@ -244,6 +295,9 @@ func (s *Server) applicationMetrics(w http.ResponseWriter, r *http.Request) {
 func (s *Server) submitApplication(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
 	if !s.requireAdmin(w, principal) {
+		return
+	}
+	if !s.requireNamespace(w, principal, r.PathValue("namespace")) {
 		return
 	}
 	var body struct {
@@ -266,7 +320,44 @@ func (s *Server) submitApplication(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusCreated, app)
 }
 
+func (s *Server) dryRunApplication(w http.ResponseWriter, r *http.Request) {
+	principal := currentUser(r)
+	if !s.requireAdmin(w, principal) || !s.requireNamespace(w, principal, r.PathValue("namespace")) {
+		return
+	}
+	var body struct {
+		YAML string `json:"yaml"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.YAML) == "" {
+		s.writeError(w, http.StatusBadRequest, fmt.Errorf("yaml is required"))
+		return
+	}
+	preview, err := s.service.DryRunApplication(r.Context(), r.PathValue("namespace"), body.YAML, principal.Username)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, preview)
+}
+
+func (s *Server) prepareApplication(w http.ResponseWriter, r *http.Request) {
+	principal := currentUser(r)
+	if !s.requireAdmin(w, principal) || !s.requireNamespace(w, principal, r.PathValue("namespace")) {
+		return
+	}
+	preview, err := s.service.PrepareApplication(r.Context(), r.PathValue("namespace"), r.PathValue("name"), r.URL.Query().Get("mode"))
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, preview)
+}
+
 func (s *Server) sparkUIProxy(w http.ResponseWriter, r *http.Request) {
+	if !s.requireNamespace(w, currentUser(r), r.PathValue("namespace")) {
+		return
+	}
 	targetValue, err := s.service.SparkUIProxyTarget(r.Context(), r.PathValue("namespace"), r.PathValue("name"))
 	if err != nil {
 		s.writeServiceError(w, err)
@@ -319,6 +410,9 @@ func (s *Server) sparkUIProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) executorLogs(w http.ResponseWriter, r *http.Request) {
+	if !s.requireNamespace(w, currentUser(r), r.PathValue("namespace")) {
+		return
+	}
 	to := time.Now().UTC()
 	from := to.Add(-time.Hour)
 	var err error
@@ -412,6 +506,9 @@ func (s *Server) killApplication(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, principal) {
 		return
 	}
+	if !s.requireNamespace(w, principal, r.PathValue("namespace")) {
+		return
+	}
 	reason, err := decodeOperationReason(w, r)
 	if err != nil {
 		s.writeError(w, http.StatusBadRequest, err)
@@ -428,6 +525,9 @@ func (s *Server) killApplication(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteApplication(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
 	if !s.requireAdmin(w, principal) {
+		return
+	}
+	if !s.requireNamespace(w, principal, r.PathValue("namespace")) {
 		return
 	}
 	reason, err := decodeOperationReason(w, r)
@@ -498,6 +598,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		DisplayName string          `json:"displayName"`
 		Email       string          `json:"email"`
 		Role        domain.UserRole `json:"role"`
+		Namespaces  []string        `json:"namespaces"`
 		Password    string          `json:"password"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
@@ -505,8 +606,12 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body"))
 		return
 	}
+	if err := s.validateConfiguredNamespaces(body.Namespaces); err != nil {
+		s.writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	user, err := s.auth.CreateUser(r.Context(), currentUser(r), localauth.CreateUserInput{
-		Username: body.Username, DisplayName: body.DisplayName, Email: body.Email, Role: body.Role, Password: body.Password,
+		Username: body.Username, DisplayName: body.DisplayName, Email: body.Email, Role: body.Role, Namespaces: body.Namespaces, Password: body.Password,
 	})
 	if err != nil {
 		s.writeAuthError(w, err)
@@ -520,6 +625,7 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		DisplayName *string          `json:"displayName"`
 		Email       *string          `json:"email"`
 		Role        *domain.UserRole `json:"role"`
+		Namespaces  *[]string        `json:"namespaces"`
 		Disabled    *bool            `json:"disabled"`
 		Password    *string          `json:"password"`
 	}
@@ -528,14 +634,29 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body"))
 		return
 	}
+	if body.Namespaces != nil {
+		if err := s.validateConfiguredNamespaces(*body.Namespaces); err != nil {
+			s.writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
 	user, err := s.auth.UpdateUser(r.Context(), currentUser(r), r.PathValue("id"), localauth.UpdateUserInput{
-		DisplayName: body.DisplayName, Email: body.Email, Role: body.Role, Disabled: body.Disabled, Password: body.Password,
+		DisplayName: body.DisplayName, Email: body.Email, Role: body.Role, Namespaces: body.Namespaces, Disabled: body.Disabled, Password: body.Password,
 	})
 	if err != nil {
 		s.writeAuthError(w, err)
 		return
 	}
 	s.writeJSON(w, http.StatusOK, user)
+}
+
+func (s *Server) validateConfiguredNamespaces(namespaces []string) error {
+	for _, namespace := range namespaces {
+		if !s.config.NamespaceAllowed(namespace) {
+			return fmt.Errorf("namespace %q is not configured for this service", namespace)
+		}
+	}
+	return nil
 }
 
 func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request) {
@@ -599,7 +720,8 @@ func (s *Server) metricRange(r *http.Request) (time.Time, time.Time, error) {
 }
 
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, currentUser(r)) {
+	principal := currentUser(r)
+	if !s.requireAdmin(w, principal) {
 		return
 	}
 	audits, err := s.service.ListAudit(r.Context())
@@ -607,7 +729,17 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 		s.writeServiceError(w, err)
 		return
 	}
-	s.writeJSON(w, http.StatusOK, audits)
+	if len(principal.Namespaces) == 0 {
+		s.writeJSON(w, http.StatusOK, audits)
+		return
+	}
+	filtered := make([]domain.OperationAudit, 0, len(audits))
+	for _, audit := range audits {
+		if userCanAccessNamespace(principal, audit.Namespace) {
+			filtered = append(filtered, audit)
+		}
+	}
+	s.writeJSON(w, http.StatusOK, filtered)
 }
 
 type principalContextKey struct{}
@@ -665,6 +797,26 @@ func (s *Server) requireAdmin(w http.ResponseWriter, user domain.User) bool {
 	return true
 }
 
+func (s *Server) requireNamespace(w http.ResponseWriter, user domain.User, namespace string) bool {
+	if !s.config.NamespaceAllowed(namespace) || !userCanAccessNamespace(user, namespace) {
+		s.writeAuthError(w, localauth.ErrNamespaceForbidden)
+		return false
+	}
+	return true
+}
+
+func userCanAccessNamespace(user domain.User, namespace string) bool {
+	if len(user.Namespaces) == 0 {
+		return true
+	}
+	for _, allowed := range user.Namespaces {
+		if allowed == namespace {
+			return true
+		}
+	}
+	return false
+}
+
 func sessionCookie(r *http.Request, value string, expires time.Time, maxAge int) *http.Cookie {
 	return &http.Cookie{
 		Name: "spark-console-session", Value: value, Path: "/", HttpOnly: true,
@@ -706,7 +858,7 @@ func (s *Server) writeAuthError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, localauth.ErrInvalidCredentials), errors.Is(err, localauth.ErrUnauthorized):
 		status = http.StatusUnauthorized
-	case errors.Is(err, localauth.ErrForbidden):
+	case errors.Is(err, localauth.ErrForbidden), errors.Is(err, localauth.ErrNamespaceForbidden):
 		status = http.StatusForbidden
 	case errors.Is(err, localauth.ErrUserNotFound):
 		status = http.StatusNotFound
@@ -750,6 +902,15 @@ func (w *statusWriter) Write(data []byte) (int, error) {
 		w.WriteHeader(http.StatusOK)
 	}
 	return w.ResponseWriter.Write(data)
+}
+
+func (w *statusWriter) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func matches(app domain.SparkApplication, keyword, state, owner, namespace string) bool {

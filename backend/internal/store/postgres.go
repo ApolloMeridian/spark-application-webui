@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -17,10 +18,13 @@ type AuditStore interface {
 	Insert(context.Context, domain.OperationAudit) error
 	List(context.Context, int) ([]domain.OperationAudit, error)
 	UpsertApplications(context.Context, []domain.SparkApplication) error
-	HistorySummary(context.Context, time.Time, time.Time) (domain.HistorySummary, error)
+	HistorySummary(context.Context, time.Time, time.Time, []string) (domain.HistorySummary, error)
+	GetApplicationSnapshot(context.Context, string, string) (domain.SparkApplication, error)
 	Ping(context.Context) error
 	Close()
 }
+
+var ErrSnapshotNotFound = errors.New("application snapshot not found")
 
 type PostgresStore struct {
 	pool *pgxpool.Pool
@@ -80,6 +84,8 @@ CREATE TABLE IF NOT EXISTS operation_audit (
 )`,
 		`CREATE INDEX IF NOT EXISTS spark_application_history_created_at_idx ON spark_application_history (created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS spark_application_history_finished_at_idx ON spark_application_history (finished_at DESC)`,
+		`ALTER TABLE spark_application_history ADD COLUMN IF NOT EXISTS snapshot jsonb NOT NULL DEFAULT '{}'::jsonb`,
+		`ALTER TABLE spark_application_history ADD COLUMN IF NOT EXISTS diagnosis jsonb NOT NULL DEFAULT '[]'::jsonb`,
 		`CREATE TABLE IF NOT EXISTS local_users (
   id text PRIMARY KEY,
   username text NOT NULL,
@@ -99,6 +105,7 @@ CREATE TABLE IF NOT EXISTS operation_audit (
 		`ALTER TABLE local_users ADD COLUMN IF NOT EXISTS oidc_issuer text`,
 		`ALTER TABLE local_users ADD COLUMN IF NOT EXISTS oidc_subject text`,
 		`ALTER TABLE local_users ALTER COLUMN password_hash DROP NOT NULL`,
+		`ALTER TABLE local_users ADD COLUMN IF NOT EXISTS namespaces text[] NOT NULL DEFAULT '{}'`,
 		`CREATE INDEX IF NOT EXISTS local_users_role_idx ON local_users (role, disabled)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS local_users_oidc_identity_idx ON local_users (oidc_issuer, oidc_subject) WHERE oidc_subject IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS local_user_sessions (
@@ -190,10 +197,22 @@ func (s *PostgresStore) UpsertApplications(ctx context.Context, applications []d
 		if err != nil {
 			return fmt.Errorf("parse created time for %s/%s: %w", app.Namespace, app.Name, err)
 		}
+		snapshot, err := json.Marshal(app)
+		if err != nil {
+			return fmt.Errorf("encode application snapshot for %s/%s: %w", app.Namespace, app.Name, err)
+		}
+		diagnostics := app.Diagnostics
+		if diagnostics == nil {
+			diagnostics = []domain.ApplicationDiagnostic{}
+		}
+		diagnosis, err := json.Marshal(diagnostics)
+		if err != nil {
+			return fmt.Errorf("encode application diagnosis for %s/%s: %w", app.Namespace, app.Name, err)
+		}
 		_, err = tx.Exec(ctx, `
 INSERT INTO spark_application_history
-  (application_id, cluster_name, namespace, application_name, owner_name, state, created_at, started_at, finished_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+  (application_id, cluster_name, namespace, application_name, owner_name, state, created_at, started_at, finished_at, snapshot, diagnosis)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 ON CONFLICT (application_id) DO UPDATE SET
   cluster_name=EXCLUDED.cluster_name,
   namespace=EXCLUDED.namespace,
@@ -203,9 +222,18 @@ ON CONFLICT (application_id) DO UPDATE SET
   created_at=EXCLUDED.created_at,
   started_at=COALESCE(EXCLUDED.started_at, spark_application_history.started_at),
   finished_at=COALESCE(EXCLUDED.finished_at, spark_application_history.finished_at),
+  snapshot=CASE
+    WHEN COALESCE(EXCLUDED.snapshot->>'yaml', '') <> '' THEN EXCLUDED.snapshot
+    WHEN spark_application_history.snapshot = '{}'::jsonb THEN EXCLUDED.snapshot
+    ELSE spark_application_history.snapshot
+  END,
+  diagnosis=CASE
+    WHEN jsonb_array_length(EXCLUDED.diagnosis) > 0 THEN EXCLUDED.diagnosis
+    ELSE spark_application_history.diagnosis
+  END,
   last_seen_at=now()`,
 			app.ID, app.Cluster, app.Namespace, app.Name, app.Owner, app.State, createdAt,
-			optionalTime(app.StartedAt), optionalTime(app.FinishedAt))
+			optionalTime(app.StartedAt), optionalTime(app.FinishedAt), snapshot, diagnosis)
 		if err != nil {
 			return fmt.Errorf("upsert application history for %s/%s: %w", app.Namespace, app.Name, err)
 		}
@@ -216,21 +244,42 @@ ON CONFLICT (application_id) DO UPDATE SET
 	return nil
 }
 
-func (s *PostgresStore) HistorySummary(ctx context.Context, from, to time.Time) (domain.HistorySummary, error) {
+func (s *PostgresStore) HistorySummary(ctx context.Context, from, to time.Time, namespaces []string) (domain.HistorySummary, error) {
 	result := domain.HistorySummary{From: from.UTC().Format(time.RFC3339), To: to.UTC().Format(time.RFC3339)}
 	err := s.pool.QueryRow(ctx, `
 SELECT
-  count(*) FILTER (WHERE created_at >= $1 AND created_at <= $2),
+  count(*) FILTER (WHERE created_at >= $1 AND created_at <= $2 AND (cardinality($3::text[])=0 OR namespace=ANY($3))),
   count(*) FILTER (
     WHERE state IN ('FAILED', 'SUBMISSION_FAILED')
       AND COALESCE(finished_at, last_seen_at) >= $1
       AND COALESCE(finished_at, last_seen_at) <= $2
+      AND (cardinality($3::text[])=0 OR namespace=ANY($3))
   )
-FROM spark_application_history`, from, to).Scan(&result.Submitted, &result.Failed)
+FROM spark_application_history`, from, to, namespaces).Scan(&result.Submitted, &result.Failed)
 	if err != nil {
 		return domain.HistorySummary{}, fmt.Errorf("query application history summary: %w", err)
 	}
 	return result, nil
+}
+
+func (s *PostgresStore) GetApplicationSnapshot(ctx context.Context, namespace, name string) (domain.SparkApplication, error) {
+	var data []byte
+	err := s.pool.QueryRow(ctx, `
+SELECT snapshot FROM spark_application_history
+WHERE namespace=$1 AND application_name=$2 AND snapshot <> '{}'::jsonb
+ORDER BY last_seen_at DESC LIMIT 1`, namespace, name).Scan(&data)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.SparkApplication{}, ErrSnapshotNotFound
+	}
+	if err != nil {
+		return domain.SparkApplication{}, fmt.Errorf("query application snapshot: %w", err)
+	}
+	var app domain.SparkApplication
+	if err := json.Unmarshal(data, &app); err != nil {
+		return domain.SparkApplication{}, fmt.Errorf("decode application snapshot: %w", err)
+	}
+	app.Historical = true
+	return app, nil
 }
 
 func (s *PostgresStore) BootstrapInitialAdmin(ctx context.Context, user domain.User, normalized, passwordHash string) error {
@@ -254,8 +303,8 @@ func (s *PostgresStore) BootstrapInitialAdmin(ctx context.Context, user domain.U
 		return err
 	}
 	_, err = tx.Exec(ctx, `
-INSERT INTO local_users (id, username, username_normalized, display_name, email, role, auth_source, password_hash, disabled, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,'local',$7,false,$8,$8)`, user.ID, user.Username, normalized, user.DisplayName, user.Email, user.Role, passwordHash, createdAt)
+INSERT INTO local_users (id, username, username_normalized, display_name, email, role, namespaces, auth_source, password_hash, disabled, created_at, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,'local',$8,false,$9,$9)`, user.ID, user.Username, normalized, user.DisplayName, user.Email, user.Role, user.Namespaces, passwordHash, createdAt)
 	if isUniqueViolation(err) {
 		return localauth.ErrUsernameExists
 	}
@@ -273,9 +322,9 @@ func (s *PostgresStore) FindUserCredentials(ctx context.Context, normalized stri
 	var passwordHash string
 	var createdAt, updatedAt time.Time
 	err := s.pool.QueryRow(ctx, `
-SELECT id, username, display_name, email, role, auth_source, disabled, created_at, updated_at, password_hash
+SELECT id, username, display_name, email, role, namespaces, auth_source, disabled, created_at, updated_at, password_hash
 FROM local_users WHERE username_normalized=$1 AND auth_source='local'`, normalized).Scan(
-		&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt, &passwordHash)
+		&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt, &passwordHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.User{}, "", localauth.ErrUserNotFound
 	}
@@ -290,8 +339,8 @@ func (s *PostgresStore) FindUserByID(ctx context.Context, id string) (domain.Use
 	var user domain.User
 	var createdAt, updatedAt time.Time
 	err := s.pool.QueryRow(ctx, `
-SELECT id, username, display_name, email, role, auth_source, disabled, created_at, updated_at
-FROM local_users WHERE id=$1`, id).Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt)
+SELECT id, username, display_name, email, role, namespaces, auth_source, disabled, created_at, updated_at
+FROM local_users WHERE id=$1`, id).Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.User{}, localauth.ErrUserNotFound
 	}
@@ -304,7 +353,7 @@ FROM local_users WHERE id=$1`, id).Scan(&user.ID, &user.Username, &user.DisplayN
 
 func (s *PostgresStore) ListUsers(ctx context.Context) ([]domain.User, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT id, username, display_name, email, role, auth_source, disabled, created_at, updated_at
+SELECT id, username, display_name, email, role, namespaces, auth_source, disabled, created_at, updated_at
 FROM local_users ORDER BY created_at ASC, username ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
@@ -314,7 +363,7 @@ FROM local_users ORDER BY created_at ASC, username ASC`)
 	for rows.Next() {
 		var user domain.User
 		var createdAt, updatedAt time.Time
-		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
 		setUserTimes(&user, createdAt, updatedAt)
@@ -329,8 +378,8 @@ func (s *PostgresStore) CreateUser(ctx context.Context, user domain.User, normal
 		return err
 	}
 	_, err = s.pool.Exec(ctx, `
-INSERT INTO local_users (id, username, username_normalized, display_name, email, role, auth_source, password_hash, disabled, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,'local',$7,$8,$9,$9)`, user.ID, user.Username, normalized, user.DisplayName, user.Email, user.Role, passwordHash, user.Disabled, createdAt)
+INSERT INTO local_users (id, username, username_normalized, display_name, email, role, namespaces, auth_source, password_hash, disabled, created_at, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,'local',$8,$9,$10,$10)`, user.ID, user.Username, normalized, user.DisplayName, user.Email, user.Role, user.Namespaces, passwordHash, user.Disabled, createdAt)
 	if isUniqueViolation(err) {
 		return localauth.ErrUsernameExists
 	}
@@ -371,8 +420,8 @@ func (s *PostgresStore) UpdateUser(ctx context.Context, user domain.User, passwo
 		return err
 	}
 	command, err := tx.Exec(ctx, `
-UPDATE local_users SET display_name=$2, email=$3, role=$4, disabled=$5, updated_at=$6,
-password_hash=COALESCE($7, password_hash) WHERE id=$1`, user.ID, user.DisplayName, user.Email, user.Role, user.Disabled, updatedAt, passwordHash)
+UPDATE local_users SET display_name=$2, email=$3, role=$4, namespaces=$5, disabled=$6, updated_at=$7,
+password_hash=COALESCE($8, password_hash) WHERE id=$1`, user.ID, user.DisplayName, user.Email, user.Role, user.Namespaces, user.Disabled, updatedAt, passwordHash)
 	if err != nil {
 		return fmt.Errorf("update user: %w", err)
 	}
@@ -434,11 +483,11 @@ func (s *PostgresStore) FindSession(ctx context.Context, tokenHash string, now t
 	var session domain.UserSession
 	var createdAt, updatedAt time.Time
 	err := s.pool.QueryRow(ctx, `
-SELECT u.id, u.username, u.display_name, u.email, u.role, u.auth_source, u.disabled, u.created_at, u.updated_at,
+SELECT u.id, u.username, u.display_name, u.email, u.role, u.namespaces, u.auth_source, u.disabled, u.created_at, u.updated_at,
        s.token_hash, s.user_id, s.expires_at
 FROM local_user_sessions s JOIN local_users u ON u.id=s.user_id
 WHERE s.token_hash=$1 AND s.expires_at>$2`, tokenHash, now).Scan(
-		&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt,
+		&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt,
 		&session.TokenHash, &session.UserID, &session.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.User{}, domain.UserSession{}, localauth.ErrUserNotFound
@@ -473,9 +522,9 @@ func (s *PostgresStore) UpsertOIDCUser(ctx context.Context, candidate domain.Use
 	var user domain.User
 	var createdAt, updatedAt time.Time
 	err = tx.QueryRow(ctx, `
-SELECT id, username, display_name, email, role, auth_source, disabled, created_at, updated_at
+SELECT id, username, display_name, email, role, namespaces, auth_source, disabled, created_at, updated_at
 FROM local_users WHERE oidc_issuer=$1 AND oidc_subject=$2 FOR UPDATE`, issuer, subject).Scan(
-		&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt)
+		&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if !autoCreate {
 			return domain.User{}, localauth.ErrUserNotFound
@@ -485,8 +534,8 @@ FROM local_users WHERE oidc_issuer=$1 AND oidc_subject=$2 FOR UPDATE`, issuer, s
 			return domain.User{}, err
 		}
 		_, err = tx.Exec(ctx, `
-INSERT INTO local_users (id, username, username_normalized, display_name, email, role, auth_source, oidc_issuer, oidc_subject, password_hash, disabled, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,'oidc',$7,$8,NULL,false,$9,$9)`, candidate.ID, candidate.Username, normalized, candidate.DisplayName, candidate.Email, candidate.Role, issuer, subject, createdAt)
+INSERT INTO local_users (id, username, username_normalized, display_name, email, role, namespaces, auth_source, oidc_issuer, oidc_subject, password_hash, disabled, created_at, updated_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7,'oidc',$8,$9,NULL,false,$10,$10)`, candidate.ID, candidate.Username, normalized, candidate.DisplayName, candidate.Email, candidate.Role, candidate.Namespaces, issuer, subject, createdAt)
 		if isUniqueViolation(err) {
 			return domain.User{}, localauth.ErrUsernameExists
 		}
