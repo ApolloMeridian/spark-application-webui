@@ -4,8 +4,6 @@
 
 Spark Control Center 是面向 Kubernetes 上 Apache Spark 作业的运维控制台，将作业生命周期管理、实时及历史资源指标、Driver UI、Executor 持久化日志、操作审计和权限控制整合为一套可独立部署的应用。
 
-已完成版本、下一阶段目标、验收条件和发布检查清单统一维护在[项目版本路线图](ROADMAP.md)中。
-
 ## 核心能力
 
 - 查询指定命名空间中的 SparkApplication，展示状态、Owner、生命周期时间和资源使用情况。

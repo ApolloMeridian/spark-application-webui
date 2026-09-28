@@ -14,8 +14,7 @@ vite.config.d.ts
 backend/spark-control-center-backend
 *.patch
 design.md
-ROADMAP.local.md
-docs/ROADMAP.local.md
+*[Rr][Oo][Aa][Dd][Mm][Aa][Pp]*
 *.local.yaml
 *.pem
 *.key
@@ -23,6 +22,3 @@ docs/ROADMAP.local.md
 *.tar
 charts/*.tgz
 release/
-
-# The shared release plan is intentionally version-controlled.
-!ROADMAP.md

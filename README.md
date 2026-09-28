@@ -4,8 +4,6 @@
 
 Spark Control Center is a web console for operating Apache Spark applications on Kubernetes. It combines application lifecycle operations, live and historical resource metrics, Driver UI access, persisted Executor logs, audit records, and role-based access in one deployable package.
 
-See the versioned [project roadmap](ROADMAP.md) for completed releases, the next development target, acceptance criteria, and the release checklist.
-
 ## Highlights
 
 - Discover SparkApplications across configured namespaces, with status, owner, lifecycle timestamps, and resource usage.
