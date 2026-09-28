@@ -196,7 +196,7 @@ export interface ApplicationFavorite { namespace: string; application: string }
 export interface BatchActionItem { namespace: string; name: string; allowed?: boolean; reason?: string }
 export interface BatchActionResult { operation: string; items: OperationAudit[] }
 export type AlertRuleType = 'failure' | 'pending' | 'resource' | 'retries';
-export interface AlertRule { id: string; name: string; type: AlertRuleType; namespaces: string[]; enabled: boolean; thresholdMinutes?: number; thresholdValue?: number; minimumRetries?: number; severity: 'info' | 'warning' | 'error'; notifyWebhook: boolean; createdBy: string; createdAt: string; updatedAt: string }
+export interface AlertRule { id: string; name: string; type: AlertRuleType; namespaces: string[]; enabled: boolean; version: number; thresholdMinutes?: number; thresholdValue?: number; minimumRetries?: number; severity: 'info' | 'warning' | 'error'; notifyWebhook: boolean; createdBy: string; createdAt: string; updatedAt: string }
 export interface ApplicationAlert { id: string; ruleId: string; ruleName: string; namespace: string; applicationName: string; fingerprint: string; severity: 'info' | 'warning' | 'error'; status: 'active' | 'acknowledged' | 'silenced' | 'recovered'; summary: string; evidence: string[]; confidence: string; recommendation?: string; firstSeenAt: string; lastSeenAt: string; acknowledgedBy?: string; acknowledgedAt?: string; silencedUntil?: string; recoveredAt?: string }
 export interface FailureFingerprint { fingerprint: string; code: string; count: number; lastSeenAt: string; sampleApplication: string; namespace: string; severity: string; recommendation?: string }
 

@@ -15,7 +15,7 @@ Spark Control Center 是面向 Kubernetes 上 Apache Spark 作业的运维控制
 - 从已清理服务端元数据和运行状态的清单克隆或重试作业。
 - 在 PostgreSQL 中保存带版本记录和参数校验的 SparkApplication 模板，生成最终清单但不保存 Secret 明文。
 - 使用可分享的 URL 组合筛选、服务端分页/排序及收藏，并在执行前预览受权限约束的批量终止或删除操作。
-- 配置作业失败、长时间 Pending、资源压力和重复重试告警，支持确认、静默、恢复、故障指纹聚合及可选通用 Webhook 通知。
+- 配置带版本记录的作业失败、长时间 Pending、资源压力和重复重试告警，支持确认、静默、恢复、故障指纹聚合及可选通用 Webhook 通知。
 - 通过 Kubernetes Watch 和 SSE 实时推送变更，同时保留定时刷新作为恢复机制。
 - 支持 PostgreSQL 本地账号和可选 OIDC/Keycloak 登录，并在前后端同时落实 `viewer`、`admin` 及用户级命名空间权限。
 - 使用 PostgreSQL 保存用户、会话、生命周期快照、失败诊断和操作审计。

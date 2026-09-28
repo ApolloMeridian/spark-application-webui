@@ -248,6 +248,7 @@ type AlertRule struct {
 	MinimumRetries   int      `json:"minimumRetries,omitempty"`
 	Severity         string   `json:"severity"`
 	NotifyWebhook    bool     `json:"notifyWebhook"`
+	Version          int      `json:"version"`
 	CreatedBy        string   `json:"createdBy"`
 	CreatedAt        string   `json:"createdAt"`
 	UpdatedAt        string   `json:"updatedAt"`

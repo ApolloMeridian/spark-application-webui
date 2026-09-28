@@ -15,7 +15,7 @@ Spark Control Center is a web console for operating Apache Spark applications on
 - Clone or retry an application from a sanitized manifest, with server-owned metadata and runtime status removed.
 - Store versioned, parameterized SparkApplication templates in PostgreSQL; render validated manifests without storing Secret values.
 - Share URL-backed application searches, use server-side paging/sorting and favorites, and preview permission-aware batch termination or deletion before execution.
-- Configure failure, long-pending, resource-pressure, and repeated-retry alerts; acknowledge, silence, recover, aggregate failure fingerprints, and optionally notify a generic webhook.
+- Configure versioned failure, long-pending, resource-pressure, and repeated-retry alerts; acknowledge, silence, recover, aggregate failure fingerprints, and optionally notify a generic webhook.
 - Stream Kubernetes Watch changes to the browser over SSE, while retaining periodic refresh as a recovery path.
 - Authenticate with PostgreSQL local accounts or optional OIDC/Keycloak; enforce `viewer` and `admin` permissions plus per-user namespace access in both UI and API.
 - Persist users, sessions, lifecycle snapshots, failure diagnostics, and operation audit records in PostgreSQL.

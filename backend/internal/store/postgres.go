@@ -195,9 +195,19 @@ CREATE TABLE IF NOT EXISTS operation_audit (
   minimum_retries integer NOT NULL DEFAULT 0,
   severity text NOT NULL DEFAULT 'warning',
   notify_webhook boolean NOT NULL DEFAULT false,
+	current_version integer NOT NULL DEFAULT 1,
   created_by text NOT NULL,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL
+)`,
+		`ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS current_version integer NOT NULL DEFAULT 1`,
+		`CREATE TABLE IF NOT EXISTS alert_rule_versions (
+  rule_id text NOT NULL REFERENCES alert_rules(id) ON DELETE CASCADE,
+  version integer NOT NULL,
+  snapshot jsonb NOT NULL,
+  created_by text NOT NULL,
+  created_at timestamptz NOT NULL,
+  PRIMARY KEY(rule_id, version)
 )`,
 		`CREATE TABLE IF NOT EXISTS application_alerts (
   id text PRIMARY KEY,
@@ -861,7 +871,7 @@ func (s *PostgresStore) ListFavorites(ctx context.Context, userID string) ([]dom
 }
 
 func (s *PostgresStore) ListAlertRules(ctx context.Context, namespaces []string) ([]domain.AlertRule, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,created_by,created_at,updated_at FROM alert_rules WHERE cardinality($1::text[])=0 OR cardinality(namespaces)=0 OR namespaces && $1 ORDER BY updated_at DESC`, namespaces)
+	rows, err := s.pool.Query(ctx, `SELECT id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,current_version,created_by,created_at,updated_at FROM alert_rules WHERE cardinality($1::text[])=0 OR cardinality(namespaces)=0 OR namespaces && $1 ORDER BY updated_at DESC`, namespaces)
 	if err != nil {
 		return nil, err
 	}
@@ -870,7 +880,7 @@ func (s *PostgresStore) ListAlertRules(ctx context.Context, namespaces []string)
 	for rows.Next() {
 		var x domain.AlertRule
 		var c, u time.Time
-		if err := rows.Scan(&x.ID, &x.Name, &x.Type, &x.Namespaces, &x.Enabled, &x.ThresholdMinutes, &x.ThresholdValue, &x.MinimumRetries, &x.Severity, &x.NotifyWebhook, &x.CreatedBy, &c, &u); err != nil {
+		if err := rows.Scan(&x.ID, &x.Name, &x.Type, &x.Namespaces, &x.Enabled, &x.ThresholdMinutes, &x.ThresholdValue, &x.MinimumRetries, &x.Severity, &x.NotifyWebhook, &x.Version, &x.CreatedBy, &c, &u); err != nil {
 			return nil, err
 		}
 		x.CreatedAt = c.UTC().Format(time.RFC3339Nano)
@@ -882,22 +892,38 @@ func (s *PostgresStore) ListAlertRules(ctx context.Context, namespaces []string)
 
 func (s *PostgresStore) SaveAlertRule(ctx context.Context, x domain.AlertRule) (domain.AlertRule, error) {
 	now := time.Now().UTC()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return x, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	if x.ID == "" {
 		x.ID = fmt.Sprintf("rule-%d", now.UnixNano())
+		x.Version = 1
 		x.CreatedAt = now.Format(time.RFC3339Nano)
-		_, err := s.pool.Exec(ctx, `INSERT INTO alert_rules (id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,created_by,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, x.CreatedBy, now)
+		_, err = tx.Exec(ctx, `INSERT INTO alert_rules (id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,current_version,created_by,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,1,$11,$12,$12)`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, x.CreatedBy, now)
 		if err != nil {
 			return x, err
 		}
 	} else {
 		var c time.Time
-		err := s.pool.QueryRow(ctx, `UPDATE alert_rules SET name=$2,rule_type=$3,namespaces=$4,enabled=$5,threshold_minutes=$6,threshold_value=$7,minimum_retries=$8,severity=$9,notify_webhook=$10,updated_at=$11 WHERE id=$1 RETURNING created_at`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, now).Scan(&c)
+		err = tx.QueryRow(ctx, `UPDATE alert_rules SET name=$2,rule_type=$3,namespaces=$4,enabled=$5,threshold_minutes=$6,threshold_value=$7,minimum_retries=$8,severity=$9,notify_webhook=$10,current_version=current_version+1,updated_at=$11 WHERE id=$1 RETURNING created_at,current_version`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, now).Scan(&c, &x.Version)
 		if err != nil {
 			return x, err
 		}
 		x.CreatedAt = c.UTC().Format(time.RFC3339Nano)
 	}
 	x.UpdatedAt = now.Format(time.RFC3339Nano)
+	snapshot, err := json.Marshal(x)
+	if err != nil {
+		return x, err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO alert_rule_versions (rule_id,version,snapshot,created_by,created_at) VALUES ($1,$2,$3,$4,$5)`, x.ID, x.Version, snapshot, x.CreatedBy, now); err != nil {
+		return x, fmt.Errorf("save alert rule version: %w", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return x, err
+	}
 	return x, nil
 }
 
