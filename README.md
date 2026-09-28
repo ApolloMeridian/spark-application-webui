@@ -79,15 +79,15 @@ go vet ./...
 Build images without a registry prefix:
 
 ```bash
-docker build -t spark-control-center:1.2.0 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.2.0 .
+docker build -t spark-control-center:1.2.1 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.2.1 .
 ```
 
-GitHub Release `v1.2.0` contains Docker-loadable image tar files and the packaged Helm chart.
+GitHub Release `v1.2.1` contains Docker-loadable image tar files and the packaged Helm chart.
 
 ```bash
-docker load -i spark-control-center-1.2.0.tar
-docker load -i spark-control-center-backend-1.2.0.tar
+docker load -i spark-control-center-1.2.1.tar
+docker load -i spark-control-center-backend-1.2.1.tar
 ```
 
 ## Helm deployment

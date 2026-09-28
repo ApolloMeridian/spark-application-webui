@@ -3,7 +3,7 @@
 ## Build and publish the UI image
 
 ```bash
-docker build -t spark-control-center:1.2.0 .
+docker build -t spark-control-center:1.2.1 .
 ```
 
 For an air-gapped build with a locally cached Nginx base image:
@@ -11,7 +11,7 @@ For an air-gapped build with a locally cached Nginx base image:
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:1.2.0 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:1.2.1 .
 ```
 
 The image listens on port `8080`, serves `/healthz`, runs as UID 101, and supports a read-only root filesystem. Helm replaces `/usr/share/nginx/html/config/config.js` at runtime, so one immutable image can be promoted through environments.
@@ -22,7 +22,7 @@ Use the repository root as Docker build context:
 
 ```bash
 docker build -f backend/Dockerfile \
-  -t spark-control-center-backend:1.2.0 .
+  -t spark-control-center-backend:1.2.1 .
 ```
 
 The backend runs as UID 65532 on port `8081`. On startup it connects to PostgreSQL and creates the audit/history tables plus `local_users`, `local_user_sessions`, and `application_settings`. The configured database user therefore needs table/index creation permission in `spark_console_db`.
