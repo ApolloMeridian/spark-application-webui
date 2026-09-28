@@ -898,6 +898,9 @@ func (s *PostgresStore) ListAlertRules(ctx context.Context, namespaces []string)
 
 func (s *PostgresStore) SaveAlertRule(ctx context.Context, x domain.AlertRule) (domain.AlertRule, error) {
 	now := time.Now().UTC()
+	if x.Namespaces == nil {
+		x.Namespaces = []string{}
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return x, err
@@ -907,13 +910,13 @@ func (s *PostgresStore) SaveAlertRule(ctx context.Context, x domain.AlertRule) (
 		x.ID = fmt.Sprintf("rule-%d", now.UnixNano())
 		x.Version = 1
 		x.CreatedAt = now.Format(time.RFC3339Nano)
-		_, err = tx.Exec(ctx, `INSERT INTO alert_rules (id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,current_version,created_by,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,1,$11,$12,$12)`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, x.CreatedBy, now)
+		_, err = tx.Exec(ctx, `INSERT INTO alert_rules (id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,current_version,created_by,created_at,updated_at) VALUES ($1,$2,$3,COALESCE($4::text[], '{}'::text[]),$5,$6,$7,$8,$9,$10,1,$11,$12,$12)`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, x.CreatedBy, now)
 		if err != nil {
 			return x, err
 		}
 	} else {
 		var c time.Time
-		err = tx.QueryRow(ctx, `UPDATE alert_rules SET name=$2,rule_type=$3,namespaces=$4,enabled=$5,threshold_minutes=$6,threshold_value=$7,minimum_retries=$8,severity=$9,notify_webhook=$10,current_version=current_version+1,updated_at=$11 WHERE id=$1 RETURNING created_at,current_version`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, now).Scan(&c, &x.Version)
+		err = tx.QueryRow(ctx, `UPDATE alert_rules SET name=$2,rule_type=$3,namespaces=COALESCE($4::text[], '{}'::text[]),enabled=$5,threshold_minutes=$6,threshold_value=$7,minimum_retries=$8,severity=$9,notify_webhook=$10,current_version=current_version+1,updated_at=$11 WHERE id=$1 RETURNING created_at,current_version`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, now).Scan(&c, &x.Version)
 		if err != nil {
 			return x, err
 		}
@@ -941,16 +944,21 @@ func (s *PostgresStore) DeleteAlertRule(ctx context.Context, id string) error {
 func (s *PostgresStore) UpsertAlert(ctx context.Context, x domain.Alert) (domain.Alert, bool, error) {
 	now := time.Now().UTC()
 	evidence, _ := json.Marshal(x.Evidence)
+	var firstSeenAt, lastSeenAt time.Time
+	var persistedStatus string
 	var created bool
-	err := s.pool.QueryRow(ctx, `INSERT INTO application_alerts (id,rule_id,rule_name,namespace,application_name,fingerprint,severity,status,summary,evidence,confidence,recommendation,first_seen_at,last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$11,$12,$12) ON CONFLICT (rule_id,namespace,application_name,fingerprint) DO UPDATE SET rule_name=EXCLUDED.rule_name,severity=EXCLUDED.severity,summary=EXCLUDED.summary,evidence=EXCLUDED.evidence,confidence=EXCLUDED.confidence,recommendation=EXCLUDED.recommendation,last_seen_at=EXCLUDED.last_seen_at,status=CASE WHEN application_alerts.status='recovered' OR (application_alerts.status='silenced' AND application_alerts.silenced_until < now()) THEN 'active' ELSE application_alerts.status END,recovered_at=NULL RETURNING first_seen_at=last_seen_at`, x.ID, x.RuleID, x.RuleName, x.Namespace, x.ApplicationName, x.Fingerprint, x.Severity, x.Summary, evidence, x.Confidence, x.Recommendation, now).Scan(&created)
+	err := s.pool.QueryRow(ctx, `INSERT INTO application_alerts (id,rule_id,rule_name,namespace,application_name,fingerprint,severity,status,summary,evidence,confidence,recommendation,first_seen_at,last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$11,$12,$12) ON CONFLICT (rule_id,namespace,application_name,fingerprint) DO UPDATE SET rule_name=EXCLUDED.rule_name,severity=EXCLUDED.severity,summary=EXCLUDED.summary,evidence=EXCLUDED.evidence,confidence=EXCLUDED.confidence,recommendation=EXCLUDED.recommendation,last_seen_at=EXCLUDED.last_seen_at,status=CASE WHEN application_alerts.status='recovered' OR (application_alerts.status='silenced' AND application_alerts.silenced_until < now()) THEN 'active' ELSE application_alerts.status END,recovered_at=NULL RETURNING first_seen_at,last_seen_at,status,first_seen_at=last_seen_at`, x.ID, x.RuleID, x.RuleName, x.Namespace, x.ApplicationName, x.Fingerprint, x.Severity, x.Summary, evidence, x.Confidence, x.Recommendation, now).Scan(&firstSeenAt, &lastSeenAt, &persistedStatus, &created)
 	if err != nil {
 		return x, false, err
 	}
+	x.FirstSeenAt = firstSeenAt.UTC().Format(time.RFC3339Nano)
+	x.LastSeenAt = lastSeenAt.UTC().Format(time.RFC3339Nano)
+	x.Status = persistedStatus
 	return x, created, nil
 }
 
 func (s *PostgresStore) ResolveInactiveAlerts(ctx context.Context, activeIDs []string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE application_alerts SET status='recovered',recovered_at=now() WHERE status IN ('active','acknowledged','silenced') AND NOT (id=ANY($1::text[]))`, activeIDs)
+	_, err := s.pool.Exec(ctx, `UPDATE application_alerts SET status='recovered',recovered_at=now() WHERE status IN ('active','acknowledged','silenced') AND NOT (id=ANY(COALESCE($1::text[], '{}'::text[])))`, activeIDs)
 	return err
 }
 

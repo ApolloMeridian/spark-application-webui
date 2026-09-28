@@ -93,6 +93,10 @@ export function canSubmit(role: UserRole): boolean {
 	return role === 'admin';
 }
 
+export function permittedNamespaces(configured: string[], assigned?: string[]): string[] {
+  return assigned?.length ? configured.filter((namespace) => assigned.includes(namespace)) : configured;
+}
+
 export function isTerminalState(state: ApplicationState): boolean {
   return ['COMPLETED', 'FAILED', 'SUBMISSION_FAILED', 'KILLED'].includes(state);
 }

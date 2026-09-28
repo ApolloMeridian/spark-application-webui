@@ -1479,12 +1479,12 @@ func (s *Service) EvaluateAlerts(ctx context.Context, namespaces []string) error
 				continue
 			}
 			active = append(active, alert.ID)
-			_, created, upsertErr := value.UpsertAlert(ctx, alert)
+			savedAlert, _, upsertErr := value.UpsertAlert(ctx, alert)
 			if upsertErr != nil {
 				return upsertErr
 			}
-			if created && rule.NotifyWebhook {
-				s.sendAlertWebhook(alert)
+			if rule.NotifyWebhook && savedAlert.Status != "silenced" {
+				s.sendAlertWebhook(savedAlert)
 			}
 		}
 	}

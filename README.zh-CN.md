@@ -79,15 +79,15 @@ go vet ./...
 使用不含仓库前缀的名称构建：
 
 ```bash
-docker build -t spark-control-center:1.2.2 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.2.2 .
+docker build -t spark-control-center:1.2.3 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.2.3 .
 ```
 
-GitHub `v1.2.2` Release 提供可由 Docker 直接载入的镜像 tar 文件和打包后的 Helm Chart：
+GitHub `v1.2.3` Release 提供可由 Docker 直接载入的镜像 tar 文件和打包后的 Helm Chart：
 
 ```bash
-docker load -i spark-control-center-1.2.2.tar
-docker load -i spark-control-center-backend-1.2.2.tar
+docker load -i spark-control-center-1.2.3.tar
+docker load -i spark-control-center-backend-1.2.3.tar
 ```
 
 ## Helm 部署

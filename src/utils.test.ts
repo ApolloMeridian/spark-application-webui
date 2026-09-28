@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canDelete, canKill, canSubmit, formatCpu, formatMemory, isKillableState, isTerminalState, stateColor, sumResources } from './utils';
+import { canDelete, canKill, canSubmit, formatCpu, formatMemory, isKillableState, isTerminalState, permittedNamespaces, stateColor, sumResources } from './utils';
 import { seedApplications } from './mockData';
 
 describe('formatters and permissions', () => {
@@ -32,5 +32,11 @@ describe('formatters and permissions', () => {
     const totals = sumResources(app);
     expect(totals.requested.cpu).toBe(app.driver.request.cpu + app.executors.length * 4);
     expect(totals.used.cpu).toBeGreaterThan(0);
+  });
+  it('uses configured namespaces for unrestricted users and filters explicit assignments', () => {
+    const configured = ['spark', 'analytics'];
+    expect(permittedNamespaces(configured, [])).toEqual(configured);
+    expect(permittedNamespaces(configured, undefined)).toEqual(configured);
+    expect(permittedNamespaces(configured, ['spark', 'missing'])).toEqual(['spark']);
   });
 });

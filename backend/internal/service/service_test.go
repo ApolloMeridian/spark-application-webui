@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -121,6 +124,36 @@ func (f *fakeStore) GetApplicationSnapshot(context.Context, string, string) (dom
 }
 func (f *fakeStore) Ping(context.Context) error { return nil }
 func (f *fakeStore) Close()                     {}
+
+type fakeAlertStore struct {
+	fakeStore
+	rules   []domain.AlertRule
+	upserts int
+}
+
+func (f *fakeAlertStore) ListAlertRules(context.Context, []string) ([]domain.AlertRule, error) {
+	return f.rules, nil
+}
+func (f *fakeAlertStore) SaveAlertRule(_ context.Context, rule domain.AlertRule) (domain.AlertRule, error) {
+	return rule, nil
+}
+func (f *fakeAlertStore) DeleteAlertRule(context.Context, string) error { return nil }
+func (f *fakeAlertStore) UpsertAlert(_ context.Context, alert domain.Alert) (domain.Alert, bool, error) {
+	f.upserts++
+	alert.FirstSeenAt = "2026-09-28T06:20:15.123Z"
+	alert.LastSeenAt = time.Date(2026, 9, 28, 6, 20, 14+f.upserts, 123000000, time.UTC).Format(time.RFC3339Nano)
+	return alert, f.upserts == 1, nil
+}
+func (f *fakeAlertStore) ResolveInactiveAlerts(context.Context, []string) error { return nil }
+func (f *fakeAlertStore) ListAlerts(context.Context, []string) ([]domain.Alert, error) {
+	return nil, nil
+}
+func (f *fakeAlertStore) UpdateAlertStatus(context.Context, string, string, string, *time.Time, []string) error {
+	return nil
+}
+func (f *fakeAlertStore) ListFailureFingerprints(context.Context, []string) ([]domain.FailureFingerprint, error) {
+	return nil, nil
+}
 
 func runningObject() kube.Object {
 	return kube.Object{
@@ -399,5 +432,52 @@ func TestEvaluateRuleDetectsFailureAndLongPending(t *testing.T) {
 	pending := domain.SparkApplication{Namespace: "spark", Name: "waiting-job", State: "SUBMITTED", CreatedAt: now.Add(-20 * time.Minute).Format(time.RFC3339)}
 	if _, matched := evaluateRule(domain.AlertRule{ID: "pending", Name: "Pending", Type: "pending", Severity: "warning", ThresholdMinutes: 10}, pending, now); !matched {
 		t.Fatal("expected long-pending alert")
+	}
+}
+
+func TestEvaluateAlertsSendsPersistedTimestampsOnEveryMatch(t *testing.T) {
+	payloads := make(chan domain.Alert, 2)
+	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var alert domain.Alert
+		if err := json.NewDecoder(r.Body).Decode(&alert); err != nil {
+			t.Errorf("decode webhook payload: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		payloads <- alert
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer webhook.Close()
+
+	object := runningObject()
+	status := object["status"].(map[string]any)
+	status["applicationState"] = map[string]any{"state": "FAILED", "errorMessage": "driver exited"}
+	alerts := &fakeAlertStore{rules: []domain.AlertRule{{ID: "rule-1", Name: "Failures", Type: "failure", Severity: "error", Enabled: true, NotifyWebhook: true}}}
+	svc := New(config.Config{ClusterName: "kubernetes", Namespaces: []string{"spark"}, AlertWebhookURL: webhook.URL, AlertWebhookTimeout: time.Second}, &fakeKubernetes{object: object}, fakePrometheus{}, alerts, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	receive := func() domain.Alert {
+		t.Helper()
+		select {
+		case alert := <-payloads:
+			return alert
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for alert webhook")
+			return domain.Alert{}
+		}
+	}
+	if err := svc.EvaluateAlerts(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	first := receive()
+	if first.FirstSeenAt == "" || first.LastSeenAt == "" {
+		t.Fatalf("expected persisted timestamps in first webhook, got %#v", first)
+	}
+	if err := svc.EvaluateAlerts(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	second := receive()
+	if second.FirstSeenAt != first.FirstSeenAt || second.LastSeenAt == first.LastSeenAt {
+		t.Fatalf("expected stable firstSeenAt and refreshed lastSeenAt, first=%#v second=%#v", first, second)
 	}
 }

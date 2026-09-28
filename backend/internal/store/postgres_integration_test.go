@@ -113,3 +113,38 @@ func TestPostgresOIDCAutoCreateUsesEmptyNamespaceArray(t *testing.T) {
 		t.Fatalf("expected PostgreSQL to persist an empty namespace array, got %#v", persisted.Namespaces)
 	}
 }
+
+func TestPostgresUpsertAlertReturnsPersistedTimestamps(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	store, err := Open(ctx, dsn, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	suffix := time.Now().UTC().Format("20060102150405.000000000")
+	rule, err := store.SaveAlertRule(ctx, domain.AlertRule{Name: "integration-" + suffix, Type: "failure", Severity: "error", Enabled: true, CreatedBy: "integration"})
+	if err != nil {
+		t.Fatalf("create alert rule: %v", err)
+	}
+	alert := domain.Alert{ID: "alert-" + suffix, RuleID: rule.ID, RuleName: rule.Name, Namespace: "spark", ApplicationName: "failed-job", Fingerprint: "fingerprint-" + suffix, Severity: "error", Status: "active", Summary: "failed", Evidence: []string{"state=FAILED"}, Confidence: "high"}
+	createdAlert, created, err := store.UpsertAlert(ctx, alert)
+	if err != nil {
+		t.Fatalf("insert alert: %v", err)
+	}
+	if !created || createdAlert.FirstSeenAt == "" || createdAlert.LastSeenAt == "" {
+		t.Fatalf("expected created alert with persisted timestamps, got created=%v alert=%#v", created, createdAlert)
+	}
+	updatedAlert, created, err := store.UpsertAlert(ctx, alert)
+	if err != nil {
+		t.Fatalf("update alert: %v", err)
+	}
+	if created || updatedAlert.FirstSeenAt != createdAlert.FirstSeenAt || updatedAlert.LastSeenAt == "" {
+		t.Fatalf("expected updated alert with stable firstSeenAt, got created=%v alert=%#v", created, updatedAlert)
+	}
+}
