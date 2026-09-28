@@ -139,6 +139,22 @@
         "queryTimeout": { "type": "string", "minLength": 1 },
         "maxEntries": { "type": "integer", "minimum": 1, "maximum": 5000 }
       }
-    }
+	},
+	"alerts": {
+	  "type": "object",
+	  "required": ["evaluationInterval", "webhook"],
+	  "properties": {
+	    "evaluationInterval": { "type": "string", "minLength": 1 },
+	    "webhook": {
+	      "type": "object",
+	      "required": ["enabled", "url", "timeout"],
+	      "properties": {
+	        "enabled": { "type": "boolean" },
+	        "url": { "type": "string" },
+	        "timeout": { "type": "string", "minLength": 1 }
+	      }
+	    }
+	  }
+	}
   }
 }

@@ -11,96 +11,102 @@ import (
 )
 
 type Config struct {
-	HTTPAddr             string
-	ClusterName          string
-	Namespaces           []string
-	SparkAPIVersion      string
-	KubernetesAPIURL     string
-	KubernetesToken      string
-	KubernetesCAFile     string
-	KubernetesTimeout    time.Duration
-	PrometheusURL        string
-	PrometheusTimeout    time.Duration
-	MetricsLookback      time.Duration
-	MetricsQueryStep     time.Duration
-	MetricsCPURateWindow time.Duration
-	HistoryDefaultDays   int
-	LokiURL              string
-	LokiTimeout          time.Duration
-	LokiMaxEntries       int
-	DatabaseURL          string
-	DatabaseHost         string
-	DatabasePort         int
-	DatabaseName         string
-	DatabaseSSLMode      string
-	DatabaseUsername     string
-	DatabasePassword     string
-	DatabaseMaxOpenConns int32
-	AuthMode             string
-	AuthSessionTTL       time.Duration
-	AuthBCryptCost       int
-	InitialAdminUsername string
-	InitialAdminPassword string
-	InitialAdminName     string
-	OIDCEnabled          bool
-	OIDCIssuerURL        string
-	OIDCClientID         string
-	OIDCClientSecret     string
-	OIDCScopes           []string
-	OIDCGroupsClaim      string
-	OIDCAdminGroups      []string
-	OIDCUsernameClaim    string
-	OIDCAutoCreate       bool
-	OIDCRedirectURL      string
-	OIDCStateTTL         time.Duration
-	OIDCCAFile           string
+	HTTPAddr                string
+	ClusterName             string
+	Namespaces              []string
+	SparkAPIVersion         string
+	KubernetesAPIURL        string
+	KubernetesToken         string
+	KubernetesCAFile        string
+	KubernetesTimeout       time.Duration
+	PrometheusURL           string
+	PrometheusTimeout       time.Duration
+	MetricsLookback         time.Duration
+	MetricsQueryStep        time.Duration
+	MetricsCPURateWindow    time.Duration
+	HistoryDefaultDays      int
+	LokiURL                 string
+	LokiTimeout             time.Duration
+	LokiMaxEntries          int
+	DatabaseURL             string
+	DatabaseHost            string
+	DatabasePort            int
+	DatabaseName            string
+	DatabaseSSLMode         string
+	DatabaseUsername        string
+	DatabasePassword        string
+	DatabaseMaxOpenConns    int32
+	AuthMode                string
+	AuthSessionTTL          time.Duration
+	AuthBCryptCost          int
+	InitialAdminUsername    string
+	InitialAdminPassword    string
+	InitialAdminName        string
+	OIDCEnabled             bool
+	OIDCIssuerURL           string
+	OIDCClientID            string
+	OIDCClientSecret        string
+	OIDCScopes              []string
+	OIDCGroupsClaim         string
+	OIDCAdminGroups         []string
+	OIDCUsernameClaim       string
+	OIDCAutoCreate          bool
+	OIDCRedirectURL         string
+	OIDCStateTTL            time.Duration
+	OIDCCAFile              string
+	AlertEvaluationInterval time.Duration
+	AlertWebhookURL         string
+	AlertWebhookTimeout     time.Duration
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		HTTPAddr:             env("HTTP_ADDR", ":8081"),
-		ClusterName:          env("KUBERNETES_CLUSTER_NAME", "kubernetes"),
-		Namespaces:           splitCSV(env("WATCH_NAMESPACES", "spark")),
-		SparkAPIVersion:      env("SPARKAPPLICATION_API_VERSION", "sparkoperator.k8s.io/v1beta2"),
-		KubernetesAPIURL:     strings.TrimRight(os.Getenv("KUBERNETES_API_URL"), "/"),
-		KubernetesToken:      os.Getenv("KUBERNETES_BEARER_TOKEN"),
-		KubernetesCAFile:     env("KUBERNETES_CA_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"),
-		KubernetesTimeout:    durationEnv("KUBERNETES_REQUEST_TIMEOUT", 15*time.Second),
-		PrometheusURL:        strings.TrimRight(env("PROMETHEUS_URL", "http://prometheus-server.prometheus.svc:80"), "/"),
-		PrometheusTimeout:    durationEnv("PROMETHEUS_QUERY_TIMEOUT", 15*time.Second),
-		MetricsLookback:      durationEnv("PROMETHEUS_LOOKBACK", time.Hour),
-		MetricsQueryStep:     durationEnv("PROMETHEUS_QUERY_STEP", 15*time.Second),
-		MetricsCPURateWindow: durationEnv("PROMETHEUS_CPU_RATE_WINDOW", time.Minute),
-		HistoryDefaultDays:   intEnv("HISTORY_DEFAULT_DAYS", 7),
-		LokiURL:              strings.TrimRight(os.Getenv("LOKI_URL"), "/"),
-		LokiTimeout:          durationEnv("LOKI_QUERY_TIMEOUT", 15*time.Second),
-		LokiMaxEntries:       intEnv("LOKI_MAX_ENTRIES", 5000),
-		DatabaseURL:          os.Getenv("DATABASE_URL"),
-		DatabaseHost:         env("DATABASE_HOST", "spark-postgres.spark-console.svc"),
-		DatabasePort:         intEnv("DATABASE_PORT", 5432),
-		DatabaseName:         env("DATABASE_NAME", "spark_console_db"),
-		DatabaseSSLMode:      env("DATABASE_SSLMODE", "disable"),
-		DatabaseUsername:     os.Getenv("DATABASE_USERNAME"),
-		DatabasePassword:     os.Getenv("DATABASE_PASSWORD"),
-		DatabaseMaxOpenConns: int32(intEnv("DATABASE_MAX_OPEN_CONNECTIONS", 20)),
-		AuthMode:             strings.ToLower(env("AUTH_MODE", "local")),
-		AuthSessionTTL:       durationEnv("AUTH_SESSION_TTL", 8*time.Hour),
-		AuthBCryptCost:       intEnv("AUTH_BCRYPT_COST", 12),
-		InitialAdminUsername: strings.TrimSpace(env("AUTH_INITIAL_ADMIN_USERNAME", "admin")),
-		InitialAdminPassword: os.Getenv("AUTH_INITIAL_ADMIN_PASSWORD"),
-		InitialAdminName:     strings.TrimSpace(env("AUTH_INITIAL_ADMIN_DISPLAY_NAME", "Initial Administrator")),
-		OIDCEnabled:          boolEnv("OIDC_ENABLED", false),
-		OIDCIssuerURL:        strings.TrimRight(strings.TrimSpace(os.Getenv("OIDC_ISSUER_URL")), "/"),
-		OIDCClientID:         strings.TrimSpace(os.Getenv("OIDC_CLIENT_ID")),
-		OIDCClientSecret:     os.Getenv("OIDC_CLIENT_SECRET"),
-		OIDCScopes:           splitCSV(env("OIDC_SCOPES", "openid,profile,email,groups")),
-		OIDCGroupsClaim:      env("OIDC_GROUPS_CLAIM", "groups"),
-		OIDCAdminGroups:      splitCSV(os.Getenv("OIDC_ADMIN_GROUPS")),
-		OIDCUsernameClaim:    env("OIDC_USERNAME_CLAIM", "preferred_username"),
-		OIDCAutoCreate:       boolEnv("OIDC_AUTO_CREATE", true),
-		OIDCRedirectURL:      strings.TrimSpace(os.Getenv("OIDC_REDIRECT_URL")),
-		OIDCStateTTL:         durationEnv("OIDC_STATE_TTL", 10*time.Minute),
-		OIDCCAFile:           strings.TrimSpace(os.Getenv("OIDC_CA_FILE")),
+		HTTPAddr:                env("HTTP_ADDR", ":8081"),
+		ClusterName:             env("KUBERNETES_CLUSTER_NAME", "kubernetes"),
+		Namespaces:              splitCSV(env("WATCH_NAMESPACES", "spark")),
+		SparkAPIVersion:         env("SPARKAPPLICATION_API_VERSION", "sparkoperator.k8s.io/v1beta2"),
+		KubernetesAPIURL:        strings.TrimRight(os.Getenv("KUBERNETES_API_URL"), "/"),
+		KubernetesToken:         os.Getenv("KUBERNETES_BEARER_TOKEN"),
+		KubernetesCAFile:        env("KUBERNETES_CA_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"),
+		KubernetesTimeout:       durationEnv("KUBERNETES_REQUEST_TIMEOUT", 15*time.Second),
+		PrometheusURL:           strings.TrimRight(env("PROMETHEUS_URL", "http://prometheus-server.prometheus.svc:80"), "/"),
+		PrometheusTimeout:       durationEnv("PROMETHEUS_QUERY_TIMEOUT", 15*time.Second),
+		MetricsLookback:         durationEnv("PROMETHEUS_LOOKBACK", time.Hour),
+		MetricsQueryStep:        durationEnv("PROMETHEUS_QUERY_STEP", 15*time.Second),
+		MetricsCPURateWindow:    durationEnv("PROMETHEUS_CPU_RATE_WINDOW", time.Minute),
+		HistoryDefaultDays:      intEnv("HISTORY_DEFAULT_DAYS", 7),
+		LokiURL:                 strings.TrimRight(os.Getenv("LOKI_URL"), "/"),
+		LokiTimeout:             durationEnv("LOKI_QUERY_TIMEOUT", 15*time.Second),
+		LokiMaxEntries:          intEnv("LOKI_MAX_ENTRIES", 5000),
+		DatabaseURL:             os.Getenv("DATABASE_URL"),
+		DatabaseHost:            env("DATABASE_HOST", "spark-postgres.spark-console.svc"),
+		DatabasePort:            intEnv("DATABASE_PORT", 5432),
+		DatabaseName:            env("DATABASE_NAME", "spark_console_db"),
+		DatabaseSSLMode:         env("DATABASE_SSLMODE", "disable"),
+		DatabaseUsername:        os.Getenv("DATABASE_USERNAME"),
+		DatabasePassword:        os.Getenv("DATABASE_PASSWORD"),
+		DatabaseMaxOpenConns:    int32(intEnv("DATABASE_MAX_OPEN_CONNECTIONS", 20)),
+		AuthMode:                strings.ToLower(env("AUTH_MODE", "local")),
+		AuthSessionTTL:          durationEnv("AUTH_SESSION_TTL", 8*time.Hour),
+		AuthBCryptCost:          intEnv("AUTH_BCRYPT_COST", 12),
+		InitialAdminUsername:    strings.TrimSpace(env("AUTH_INITIAL_ADMIN_USERNAME", "admin")),
+		InitialAdminPassword:    os.Getenv("AUTH_INITIAL_ADMIN_PASSWORD"),
+		InitialAdminName:        strings.TrimSpace(env("AUTH_INITIAL_ADMIN_DISPLAY_NAME", "Initial Administrator")),
+		OIDCEnabled:             boolEnv("OIDC_ENABLED", false),
+		OIDCIssuerURL:           strings.TrimRight(strings.TrimSpace(os.Getenv("OIDC_ISSUER_URL")), "/"),
+		OIDCClientID:            strings.TrimSpace(os.Getenv("OIDC_CLIENT_ID")),
+		OIDCClientSecret:        os.Getenv("OIDC_CLIENT_SECRET"),
+		OIDCScopes:              splitCSV(env("OIDC_SCOPES", "openid,profile,email,groups")),
+		OIDCGroupsClaim:         env("OIDC_GROUPS_CLAIM", "groups"),
+		OIDCAdminGroups:         splitCSV(os.Getenv("OIDC_ADMIN_GROUPS")),
+		OIDCUsernameClaim:       env("OIDC_USERNAME_CLAIM", "preferred_username"),
+		OIDCAutoCreate:          boolEnv("OIDC_AUTO_CREATE", true),
+		OIDCRedirectURL:         strings.TrimSpace(os.Getenv("OIDC_REDIRECT_URL")),
+		OIDCStateTTL:            durationEnv("OIDC_STATE_TTL", 10*time.Minute),
+		OIDCCAFile:              strings.TrimSpace(os.Getenv("OIDC_CA_FILE")),
+		AlertEvaluationInterval: durationEnv("ALERT_EVALUATION_INTERVAL", time.Minute),
+		AlertWebhookURL:         strings.TrimSpace(os.Getenv("ALERT_WEBHOOK_URL")),
+		AlertWebhookTimeout:     durationEnv("ALERT_WEBHOOK_TIMEOUT", 10*time.Second),
 	}
 	if len(cfg.Namespaces) == 0 {
 		return Config{}, fmt.Errorf("WATCH_NAMESPACES must contain at least one namespace")
@@ -113,6 +119,15 @@ func Load() (Config, error) {
 	}
 	if cfg.LokiTimeout <= 0 || cfg.LokiMaxEntries <= 0 {
 		return Config{}, fmt.Errorf("Loki query timeout and max entries must be positive")
+	}
+	if cfg.AlertEvaluationInterval <= 0 || cfg.AlertWebhookTimeout <= 0 {
+		return Config{}, fmt.Errorf("alert evaluation interval and webhook timeout must be positive")
+	}
+	if cfg.AlertWebhookURL != "" {
+		parsed, err := url.Parse(cfg.AlertWebhookURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return Config{}, fmt.Errorf("ALERT_WEBHOOK_URL must be an absolute http or https URL")
+		}
 	}
 	if cfg.DatabaseURL == "" && (cfg.DatabaseUsername == "" || cfg.DatabasePassword == "") {
 		return Config{}, fmt.Errorf("DATABASE_USERNAME and DATABASE_PASSWORD are required when DATABASE_URL is empty")

@@ -14,6 +14,8 @@ import { SubmitApplicationPage } from './pages/SubmitApplicationPage';
 import { SparkUIPage } from './pages/SparkUIPage';
 import { UsersPage } from './pages/UsersPage';
 import { ProfilePage } from './pages/ProfilePage';
+import { TemplatesPage } from './pages/TemplatesPage';
+import { AlertsPage } from './pages/AlertsPage';
 import { runtimeConfig } from './runtimeConfig';
 
 function ProtectedRoute() {
@@ -51,6 +53,8 @@ function ThemedApp() {
                 <Route path="/applications" element={<ApplicationsPage />} />
                 <Route path="/applications/:namespace/:name" element={<ApplicationDetailPage />} />
                 <Route path="/applications/:namespace/:name/spark-ui" element={<SparkUIPage />} />
+				<Route path="/templates" element={<TemplatesPage />} />
+				<Route path="/alerts" element={<AlertsPage />} />
                 <Route element={<LocalAccountRoute />}>
                   <Route path="/profile" element={<ProfilePage />} />
                 </Route>

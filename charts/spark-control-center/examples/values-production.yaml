@@ -3,7 +3,7 @@
 
 image:
   repository: spark-control-center
-  tag: "1.1.0"
+  tag: "1.2.0"
   pullPolicy: IfNotPresent
 
 replicaCount: 1
@@ -32,6 +32,9 @@ runtimeConfig:
     sparkUi: true
     submit: true
     executorLogs: true
+    templates: true
+    batchOperations: true
+    alerts: true
 
 # The UI's nginx forwards /api to the backend only when this is enabled.
 apiProxy:
@@ -43,7 +46,7 @@ backend:
   replicaCount: 1
   image:
     repository: spark-control-center-backend
-    tag: "1.1.0"
+    tag: "1.2.0"
     pullPolicy: IfNotPresent
   service:
     port: 8081
@@ -67,6 +70,14 @@ loki:
   url: http://loki-gateway.loki.svc.cluster.local
   queryTimeout: 15s
   maxEntries: 5000
+
+alerts:
+  evaluationInterval: 1m
+  webhook:
+    enabled: false
+    # Generic JSON webhook endpoint for newly opened alerts.
+    url: ""
+    timeout: 10s
 
 database:
   host: postgresql.database.svc.cluster.local

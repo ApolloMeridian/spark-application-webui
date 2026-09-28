@@ -77,6 +77,7 @@ func main() {
 	watchContext, watchCancel := context.WithCancel(context.Background())
 	defer watchCancel()
 	applicationService.StartWatch(watchContext)
+	applicationService.StartAlertEvaluator(watchContext)
 	server := &http.Server{
 		Addr: cfg.HTTPAddr, Handler: api.New(cfg, applicationService, authService, oidcService, logger),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 90 * time.Second, IdleTimeout: 120 * time.Second,

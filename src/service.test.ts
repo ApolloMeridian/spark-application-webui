@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { sparkService } from './service';
+import { operationsService, sparkService } from './service';
 
 describe('mock application service', () => {
   beforeEach(async () => { localStorage.clear(); await sparkService.reset(); });
@@ -8,6 +8,14 @@ describe('mock application service', () => {
     expect(running.length).toBeGreaterThan(0);
     expect(running.every((app) => app.state === 'RUNNING')).toBe(true);
   });
+	 it('paginates application results and persists favorites', async () => {
+	   const page = await operationsService.listApplications({ page: 1, pageSize: 2, sort: 'createdAt', direction: 'desc' });
+	   expect(page.items).toHaveLength(2);
+	   expect(page.total).toBeGreaterThan(2);
+	   const target = page.items[0];
+	   await operationsService.setFavorite(target.namespace, target.name, true);
+	   expect(await operationsService.listFavorites()).toContainEqual({ namespace: target.namespace, application: target.name });
+	 });
   it('kills an application and records audit', async () => {
     const before = await sparkService.getApplication('spark-prod', 'parquet-to-iceberg');
     expect(before.state).toBe('RUNNING');

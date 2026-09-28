@@ -181,7 +181,24 @@ export interface ApplicationFilters {
   namespace?: string;
   from?: string;
   to?: string;
+	page?: number;
+	pageSize?: number;
+	sort?: 'name' | 'owner' | 'state' | 'createdAt' | 'finishedAt';
+	direction?: 'asc' | 'desc';
+	favorite?: boolean;
 }
+
+export interface ApplicationList { items: SparkApplication[]; page: number; pageSize: number; total: number }
+export interface TemplateParameter { name: string; description?: string; type: 'string' | 'integer' | 'number' | 'boolean'; required: boolean; default?: string; enum?: string[]; pattern?: string }
+export interface TemplateVersion { version: number; manifest: string; createdBy: string; createdAt: string }
+export interface ApplicationTemplate { id: string; name: string; description?: string; namespace: string; manifest: string; parameters: TemplateParameter[]; version: number; disabled: boolean; createdBy: string; createdAt: string; updatedAt: string; versions?: TemplateVersion[] }
+export interface ApplicationFavorite { namespace: string; application: string }
+export interface BatchActionItem { namespace: string; name: string; allowed?: boolean; reason?: string }
+export interface BatchActionResult { operation: string; items: OperationAudit[] }
+export type AlertRuleType = 'failure' | 'pending' | 'resource' | 'retries';
+export interface AlertRule { id: string; name: string; type: AlertRuleType; namespaces: string[]; enabled: boolean; thresholdMinutes?: number; thresholdValue?: number; minimumRetries?: number; severity: 'info' | 'warning' | 'error'; notifyWebhook: boolean; createdBy: string; createdAt: string; updatedAt: string }
+export interface ApplicationAlert { id: string; ruleId: string; ruleName: string; namespace: string; applicationName: string; fingerprint: string; severity: 'info' | 'warning' | 'error'; status: 'active' | 'acknowledged' | 'silenced' | 'recovered'; summary: string; evidence: string[]; confidence: string; recommendation?: string; firstSeenAt: string; lastSeenAt: string; acknowledgedBy?: string; acknowledgedAt?: string; silencedUntil?: string; recoveredAt?: string }
+export interface FailureFingerprint { fingerprint: string; code: string; count: number; lastSeenAt: string; sampleApplication: string; namespace: string; severity: string; recommendation?: string }
 
 export interface SparkApplicationService {
   getSummary(filters?: ApplicationFilters): Promise<DashboardSummary>;

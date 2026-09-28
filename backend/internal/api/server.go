@@ -12,6 +12,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -41,6 +42,25 @@ type ApplicationService interface {
 	DeleteApplication(context.Context, string, string, string, string) (domain.OperationAudit, error)
 	ListAudit(context.Context) ([]domain.OperationAudit, error)
 	Subscribe(context.Context, []string) <-chan domain.ApplicationChange
+}
+
+type ManagementService interface {
+	ListTemplates(context.Context, []string, bool) ([]domain.ApplicationTemplate, error)
+	GetTemplate(context.Context, string) (domain.ApplicationTemplate, error)
+	SaveTemplate(context.Context, domain.ApplicationTemplate, string) (domain.ApplicationTemplate, error)
+	CopyTemplate(context.Context, string, string, string) (domain.ApplicationTemplate, error)
+	DeleteTemplate(context.Context, string) error
+	RenderTemplate(context.Context, string, map[string]string) (domain.ManifestPreview, error)
+	SetFavorite(context.Context, string, string, string, bool) error
+	ListFavorites(context.Context, string) ([]domain.ApplicationFavorite, error)
+	BatchPreview(context.Context, string, []domain.BatchActionItem) ([]domain.BatchActionItem, error)
+	BatchExecute(context.Context, string, string, string, []domain.BatchActionItem) (domain.BatchActionResult, error)
+	ListAlertRules(context.Context, []string) ([]domain.AlertRule, error)
+	SaveAlertRule(context.Context, domain.AlertRule, string) (domain.AlertRule, error)
+	DeleteAlertRule(context.Context, string) error
+	ListAlerts(context.Context, []string) ([]domain.Alert, error)
+	UpdateAlertStatus(context.Context, string, string, string, *time.Time, []string) error
+	ListFailureFingerprints(context.Context, []string) ([]domain.FailureFingerprint, error)
 }
 
 type Server struct {
@@ -84,6 +104,24 @@ func New(cfg config.Config, applicationService ApplicationService, authService *
 	mux.HandleFunc("POST /v1/namespaces/{namespace}/applications/{name}/kill", server.killApplication)
 	mux.HandleFunc("DELETE /v1/namespaces/{namespace}/applications/{name}", server.deleteApplication)
 	mux.HandleFunc("GET /v1/audit", server.listAudit)
+	mux.HandleFunc("GET /v1/templates", server.listTemplates)
+	mux.HandleFunc("POST /v1/templates", server.saveTemplate)
+	mux.HandleFunc("GET /v1/templates/{id}", server.getTemplate)
+	mux.HandleFunc("PATCH /v1/templates/{id}", server.saveTemplate)
+	mux.HandleFunc("DELETE /v1/templates/{id}", server.deleteTemplate)
+	mux.HandleFunc("POST /v1/templates/{id}/copy", server.copyTemplate)
+	mux.HandleFunc("POST /v1/templates/{id}/render", server.renderTemplate)
+	mux.HandleFunc("GET /v1/favorites", server.listFavorites)
+	mux.HandleFunc("PUT /v1/namespaces/{namespace}/applications/{name}/favorite", server.setFavorite)
+	mux.HandleFunc("POST /v1/applications/batch/preview", server.batchPreview)
+	mux.HandleFunc("POST /v1/applications/batch/execute", server.batchExecute)
+	mux.HandleFunc("GET /v1/alerts", server.listAlerts)
+	mux.HandleFunc("PATCH /v1/alerts/{id}", server.updateAlert)
+	mux.HandleFunc("GET /v1/alert-rules", server.listAlertRules)
+	mux.HandleFunc("POST /v1/alert-rules", server.saveAlertRule)
+	mux.HandleFunc("PATCH /v1/alert-rules/{id}", server.saveAlertRule)
+	mux.HandleFunc("DELETE /v1/alert-rules/{id}", server.deleteAlertRule)
+	mux.HandleFunc("GET /v1/diagnostics/fingerprints", server.listFingerprints)
 	return server.middleware(server.sameOrigin(server.authenticate(mux)))
 }
 
@@ -208,6 +246,63 @@ func (s *Server) listApplications(w http.ResponseWriter, r *http.Request) {
 		if matches(app, filters.Get("keyword"), filters.Get("state"), filters.Get("owner"), filters.Get("namespace")) {
 			filtered = append(filtered, app)
 		}
+	}
+	if filters.Get("favorite") == "true" {
+		if value, ok := s.service.(ManagementService); ok {
+			favorites, favoriteErr := value.ListFavorites(r.Context(), currentUser(r).ID)
+			if favoriteErr != nil {
+				s.writeServiceError(w, favoriteErr)
+				return
+			}
+			set := map[string]bool{}
+			for _, favorite := range favorites {
+				set[favorite.Namespace+"/"+favorite.Application] = true
+			}
+			kept := filtered[:0]
+			for _, app := range filtered {
+				if set[app.Namespace+"/"+app.Name] {
+					kept = append(kept, app)
+				}
+			}
+			filtered = kept
+		}
+	}
+	sortField := r.URL.Query().Get("sort")
+	direction := strings.ToLower(r.URL.Query().Get("direction"))
+	sort.SliceStable(filtered, func(i, j int) bool {
+		var a, b string
+		switch sortField {
+		case "name":
+			a, b = filtered[i].Name, filtered[j].Name
+		case "owner":
+			a, b = filtered[i].Owner, filtered[j].Owner
+		case "state":
+			a, b = filtered[i].State, filtered[j].State
+		case "finishedAt":
+			a, b = filtered[i].FinishedAt, filtered[j].FinishedAt
+		default:
+			a, b = filtered[i].CreatedAt, filtered[j].CreatedAt
+		}
+		if direction == "asc" {
+			return a < b
+		}
+		return a > b
+	})
+	page, pageSize := parsePositive(r.URL.Query().Get("page"), 1), parsePositive(r.URL.Query().Get("pageSize"), 20)
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	start := (page - 1) * pageSize
+	if start > len(filtered) {
+		start = len(filtered)
+	}
+	end := start + pageSize
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	if r.URL.Query().Has("page") || r.URL.Query().Has("pageSize") {
+		s.writeJSON(w, http.StatusOK, domain.ApplicationList{Items: filtered[start:end], Page: page, PageSize: pageSize, Total: len(filtered)})
+		return
 	}
 	s.writeJSON(w, http.StatusOK, filtered)
 }
@@ -742,6 +837,417 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, filtered)
 }
 
+func (s *Server) management(w http.ResponseWriter) ManagementService {
+	value, ok := s.service.(ManagementService)
+	if !ok {
+		s.writeError(w, http.StatusServiceUnavailable, fmt.Errorf("management features are unavailable"))
+		return nil
+	}
+	return value
+}
+
+func (s *Server) listTemplates(w http.ResponseWriter, r *http.Request) {
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	items, err := value.ListTemplates(r.Context(), currentUser(r).Namespaces, currentUser(r).Role == domain.RoleAdmin && r.URL.Query().Get("includeDisabled") == "true")
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, items)
+}
+func (s *Server) getTemplate(w http.ResponseWriter, r *http.Request) {
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	item, err := value.GetTemplate(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	if !s.requireNamespace(w, currentUser(r), item.Namespace) {
+		return
+	}
+	s.writeJSON(w, http.StatusOK, item)
+}
+func (s *Server) saveTemplate(w http.ResponseWriter, r *http.Request) {
+	principal := currentUser(r)
+	if !s.requireAdmin(w, principal) {
+		return
+	}
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	var item domain.ApplicationTemplate
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
+	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+		s.writeError(w, 400, fmt.Errorf("invalid JSON body"))
+		return
+	}
+	if id := r.PathValue("id"); id != "" {
+		item.ID = id
+		existing, err := value.GetTemplate(r.Context(), id)
+		if err != nil {
+			s.writeServiceError(w, err)
+			return
+		}
+		if !s.requireNamespace(w, principal, existing.Namespace) {
+			return
+		}
+	}
+	if !s.requireNamespace(w, principal, item.Namespace) {
+		return
+	}
+	saved, err := value.SaveTemplate(r.Context(), item, principal.Username)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if r.Method == http.MethodPost {
+		status = http.StatusCreated
+	}
+	s.writeJSON(w, status, saved)
+}
+func (s *Server) deleteTemplate(w http.ResponseWriter, r *http.Request) {
+	principal := currentUser(r)
+	if !s.requireAdmin(w, principal) {
+		return
+	}
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	item, err := value.GetTemplate(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	if !s.requireNamespace(w, principal, item.Namespace) {
+		return
+	}
+	if err := value.DeleteTemplate(r.Context(), item.ID); err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) copyTemplate(w http.ResponseWriter, r *http.Request) {
+	principal := currentUser(r)
+	if !s.requireAdmin(w, principal) {
+		return
+	}
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	item, err := value.GetTemplate(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	if !s.requireNamespace(w, principal, item.Namespace) {
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body)
+	copied, err := value.CopyTemplate(r.Context(), item.ID, body.Name, principal.Username)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusCreated, copied)
+}
+func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request) {
+	principal := currentUser(r)
+	if !s.requireAdmin(w, principal) {
+		return
+	}
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	item, err := value.GetTemplate(r.Context(), r.PathValue("id"))
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	if !s.requireNamespace(w, principal, item.Namespace) {
+		return
+	}
+	var body struct {
+		Values map[string]string `json:"values"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&body); err != nil {
+		s.writeError(w, 400, fmt.Errorf("invalid JSON body"))
+		return
+	}
+	preview, err := value.RenderTemplate(r.Context(), item.ID, body.Values)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, preview)
+}
+
+func (s *Server) listFavorites(w http.ResponseWriter, r *http.Request) {
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	items, err := value.ListFavorites(r.Context(), currentUser(r).ID)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, items)
+}
+func (s *Server) setFavorite(w http.ResponseWriter, r *http.Request) {
+	principal := currentUser(r)
+	if !s.requireNamespace(w, principal, r.PathValue("namespace")) {
+		return
+	}
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	var body struct {
+		Favorite bool `json:"favorite"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body); err != nil {
+		s.writeError(w, 400, fmt.Errorf("invalid JSON body"))
+		return
+	}
+	if err := value.SetFavorite(r.Context(), principal.ID, r.PathValue("namespace"), r.PathValue("name"), body.Favorite); err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type batchRequest struct {
+	Operation string                   `json:"operation"`
+	Reason    string                   `json:"reason"`
+	Items     []domain.BatchActionItem `json:"items"`
+}
+
+func (s *Server) decodeBatch(w http.ResponseWriter, r *http.Request, principal domain.User) (batchRequest, bool) {
+	var body batchRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&body); err != nil {
+		s.writeError(w, 400, fmt.Errorf("invalid JSON body"))
+		return body, false
+	}
+	body.Operation = strings.ToLower(body.Operation)
+	if body.Operation != "kill" && body.Operation != "delete" {
+		s.writeError(w, 400, fmt.Errorf("operation must be kill or delete"))
+		return body, false
+	}
+	if len(body.Items) == 0 || len(body.Items) > 50 {
+		s.writeError(w, 400, fmt.Errorf("batch must contain between 1 and 50 applications"))
+		return body, false
+	}
+	for _, item := range body.Items {
+		if !s.requireNamespace(w, principal, item.Namespace) {
+			return body, false
+		}
+	}
+	return body, true
+}
+func (s *Server) batchPreview(w http.ResponseWriter, r *http.Request) {
+	principal := currentUser(r)
+	if !s.requireAdmin(w, principal) {
+		return
+	}
+	body, ok := s.decodeBatch(w, r, principal)
+	if !ok {
+		return
+	}
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	items, err := value.BatchPreview(r.Context(), body.Operation, body.Items)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, items)
+}
+func (s *Server) batchExecute(w http.ResponseWriter, r *http.Request) {
+	principal := currentUser(r)
+	if !s.requireAdmin(w, principal) {
+		return
+	}
+	body, ok := s.decodeBatch(w, r, principal)
+	if !ok {
+		return
+	}
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	result, err := value.BatchExecute(r.Context(), body.Operation, principal.Username, strings.TrimSpace(body.Reason), body.Items)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	items, err := value.ListAlerts(r.Context(), currentUser(r).Namespaces)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, items)
+}
+func (s *Server) updateAlert(w http.ResponseWriter, r *http.Request) {
+	principal := currentUser(r)
+	if !s.requireAdmin(w, principal) {
+		return
+	}
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	var body struct {
+		Status        string `json:"status"`
+		SilencedUntil string `json:"silencedUntil"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&body); err != nil {
+		s.writeError(w, 400, fmt.Errorf("invalid JSON body"))
+		return
+	}
+	var until *time.Time
+	if body.SilencedUntil != "" {
+		parsed, err := time.Parse(time.RFC3339, body.SilencedUntil)
+		if err != nil {
+			s.writeError(w, 400, fmt.Errorf("invalid silencedUntil"))
+			return
+		}
+		until = &parsed
+	}
+	if err := value.UpdateAlertStatus(r.Context(), r.PathValue("id"), body.Status, principal.Username, until, principal.Namespaces); err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) listAlertRules(w http.ResponseWriter, r *http.Request) {
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	items, err := value.ListAlertRules(r.Context(), currentUser(r).Namespaces)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, items)
+}
+func (s *Server) saveAlertRule(w http.ResponseWriter, r *http.Request) {
+	principal := currentUser(r)
+	if !s.requireAdmin(w, principal) {
+		return
+	}
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	var rule domain.AlertRule
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10)).Decode(&rule); err != nil {
+		s.writeError(w, 400, fmt.Errorf("invalid JSON body"))
+		return
+	}
+	if id := r.PathValue("id"); id != "" {
+		rule.ID = id
+		visible, err := value.ListAlertRules(r.Context(), principal.Namespaces)
+		if err != nil {
+			s.writeServiceError(w, err)
+			return
+		}
+		found := false
+		for _, candidate := range visible {
+			if candidate.ID == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			s.writeError(w, http.StatusNotFound, fmt.Errorf("alert rule not found"))
+			return
+		}
+	}
+	if len(rule.Namespaces) == 0 && len(principal.Namespaces) > 0 {
+		rule.Namespaces = append([]string(nil), principal.Namespaces...)
+	}
+	for _, ns := range rule.Namespaces {
+		if !s.requireNamespace(w, principal, ns) {
+			return
+		}
+	}
+	saved, err := value.SaveAlertRule(r.Context(), rule, principal.Username)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, saved)
+}
+func (s *Server) deleteAlertRule(w http.ResponseWriter, r *http.Request) {
+	principal := currentUser(r)
+	if !s.requireAdmin(w, principal) {
+		return
+	}
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	visible, err := value.ListAlertRules(r.Context(), principal.Namespaces)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	found := false
+	for _, candidate := range visible {
+		if candidate.ID == r.PathValue("id") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.writeError(w, http.StatusNotFound, fmt.Errorf("alert rule not found"))
+		return
+	}
+	if err := value.DeleteAlertRule(r.Context(), r.PathValue("id")); err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) listFingerprints(w http.ResponseWriter, r *http.Request) {
+	value := s.management(w)
+	if value == nil {
+		return
+	}
+	items, err := value.ListFailureFingerprints(r.Context(), currentUser(r).Namespaces)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, items)
+}
+
 type principalContextKey struct{}
 
 func (s *Server) sameOrigin(next http.Handler) http.Handler {
@@ -961,4 +1467,12 @@ func parseLimit(r *http.Request, fallback int) int {
 		return fallback
 	}
 	return value
+}
+
+func parsePositive(value string, fallback int) int {
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }

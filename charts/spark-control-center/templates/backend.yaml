@@ -79,6 +79,14 @@ spec:
             - name: LOKI_MAX_ENTRIES
               value: {{ .Values.loki.maxEntries | quote }}
             {{- end }}
+            - name: ALERT_EVALUATION_INTERVAL
+              value: {{ .Values.alerts.evaluationInterval | quote }}
+            - name: ALERT_WEBHOOK_TIMEOUT
+              value: {{ .Values.alerts.webhook.timeout | quote }}
+            {{- if .Values.alerts.webhook.enabled }}
+            - name: ALERT_WEBHOOK_URL
+              value: {{ required "alerts.webhook.url is required when webhook delivery is enabled" .Values.alerts.webhook.url | quote }}
+            {{- end }}
             - name: DATABASE_HOST
               value: {{ .Values.database.host | quote }}
             - name: DATABASE_PORT

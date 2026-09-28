@@ -13,6 +13,9 @@ Spark Control Center is a web console for operating Apache Spark applications on
 - Submit SparkApplication YAML, terminate `RUNNING` or stuck `SUBMITTED` jobs while retaining the failed Driver Pod, and delete terminal records.
 - Validate submissions through Kubernetes server-side dry-run and compare the original YAML with the normalized manifest before creating it.
 - Clone or retry an application from a sanitized manifest, with server-owned metadata and runtime status removed.
+- Store versioned, parameterized SparkApplication templates in PostgreSQL; render validated manifests without storing Secret values.
+- Share URL-backed application searches, use server-side paging/sorting and favorites, and preview permission-aware batch termination or deletion before execution.
+- Configure failure, long-pending, resource-pressure, and repeated-retry alerts; acknowledge, silence, recover, aggregate failure fingerprints, and optionally notify a generic webhook.
 - Stream Kubernetes Watch changes to the browser over SSE, while retaining periodic refresh as a recovery path.
 - Authenticate with PostgreSQL local accounts or optional OIDC/Keycloak; enforce `viewer` and `admin` permissions plus per-user namespace access in both UI and API.
 - Persist users, sessions, lifecycle snapshots, failure diagnostics, and operation audit records in PostgreSQL.
@@ -29,6 +32,10 @@ Spark Control Center is a web console for operating Apache Spark applications on
 | ![Application detail and historical resource usage](docs/images/detail-1440.png) | ![Persisted Executor logs](docs/images/executor-logs-1440.png) |
 
 ![SparkApplication YAML submission](docs/images/submit-1440.png)
+
+| Versioned templates | Alert center |
+| --- | --- |
+| ![Versioned SparkApplication templates](docs/images/templates-1440.png) | ![Proactive alert center](docs/images/alerts-1440.png) |
 
 All screenshots use deterministic mock data. They contain no production cluster details or credentials.
 
@@ -72,15 +79,15 @@ go vet ./...
 Build images without a registry prefix:
 
 ```bash
-docker build -t spark-control-center:1.1.0 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.1.0 .
+docker build -t spark-control-center:1.2.0 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.2.0 .
 ```
 
-GitHub Release `v1.1.0` contains Docker-loadable image tar files and the packaged Helm chart.
+GitHub Release `v1.2.0` contains Docker-loadable image tar files and the packaged Helm chart.
 
 ```bash
-docker load -i spark-control-center-1.1.0.tar
-docker load -i spark-control-center-backend-1.1.0.tar
+docker load -i spark-control-center-1.2.0.tar
+docker load -i spark-control-center-backend-1.2.0.tar
 ```
 
 ## Helm deployment

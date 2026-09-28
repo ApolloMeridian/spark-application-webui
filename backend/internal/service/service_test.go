@@ -377,3 +377,27 @@ func TestCompletedApplicationNormalizesHistoricalFailedExecutor(t *testing.T) {
 		t.Fatalf("completed executor should be SUCCEEDED, got %#v", states["demo-exec-2"])
 	}
 }
+
+func TestValidateTemplateRejectsSecretsAndDuplicateParameters(t *testing.T) {
+	secret := domain.ApplicationTemplate{Name: "unsafe", Manifest: "apiVersion: v1\nkind: Secret\nstringData:\n  password: value\n"}
+	if err := validateTemplate(secret); err == nil {
+		t.Fatal("expected embedded Secret data to be rejected")
+	}
+	duplicate := domain.ApplicationTemplate{Name: "job", Manifest: "kind: SparkApplication", Parameters: []domain.TemplateParameter{{Name: "image", Type: "string"}, {Name: "image", Type: "string"}}}
+	if err := validateTemplate(duplicate); err == nil {
+		t.Fatal("expected duplicate parameters to be rejected")
+	}
+}
+
+func TestEvaluateRuleDetectsFailureAndLongPending(t *testing.T) {
+	now := time.Now().UTC()
+	failed := domain.SparkApplication{Namespace: "spark", Name: "failed-job", State: "FAILED", CreatedAt: now.Add(-time.Hour).Format(time.RFC3339), ErrorMessage: "image pull failed"}
+	alert, matched := evaluateRule(domain.AlertRule{ID: "failure", Name: "Failures", Type: "failure", Severity: "error"}, failed, now)
+	if !matched || alert.Fingerprint == "" || len(alert.Evidence) == 0 {
+		t.Fatalf("unexpected failure alert: %#v", alert)
+	}
+	pending := domain.SparkApplication{Namespace: "spark", Name: "waiting-job", State: "SUBMITTED", CreatedAt: now.Add(-20 * time.Minute).Format(time.RFC3339)}
+	if _, matched := evaluateRule(domain.AlertRule{ID: "pending", Name: "Pending", Type: "pending", Severity: "warning", ThresholdMinutes: 10}, pending, now); !matched {
+		t.Fatal("expected long-pending alert")
+	}
+}

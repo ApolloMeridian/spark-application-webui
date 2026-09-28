@@ -180,6 +180,111 @@ type OperationAudit struct {
 	Message         string `json:"message"`
 }
 
+type TemplateParameter struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Type        string   `json:"type"`
+	Required    bool     `json:"required"`
+	Default     string   `json:"default,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
+	Pattern     string   `json:"pattern,omitempty"`
+}
+
+type TemplateVersion struct {
+	Version   int    `json:"version"`
+	Manifest  string `json:"manifest"`
+	CreatedBy string `json:"createdBy"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type ApplicationTemplate struct {
+	ID          string              `json:"id"`
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	Namespace   string              `json:"namespace"`
+	Manifest    string              `json:"manifest"`
+	Parameters  []TemplateParameter `json:"parameters"`
+	Version     int                 `json:"version"`
+	Disabled    bool                `json:"disabled"`
+	CreatedBy   string              `json:"createdBy"`
+	CreatedAt   string              `json:"createdAt"`
+	UpdatedAt   string              `json:"updatedAt"`
+	Versions    []TemplateVersion   `json:"versions,omitempty"`
+}
+
+type ApplicationFavorite struct {
+	UserID      string `json:"userId,omitempty"`
+	Namespace   string `json:"namespace"`
+	Application string `json:"application"`
+}
+
+type ApplicationList struct {
+	Items    []SparkApplication `json:"items"`
+	Page     int                `json:"page"`
+	PageSize int                `json:"pageSize"`
+	Total    int                `json:"total"`
+}
+
+type BatchActionItem struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	Allowed   bool   `json:"allowed"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type BatchActionResult struct {
+	Operation string           `json:"operation"`
+	Items     []OperationAudit `json:"items"`
+}
+
+type AlertRule struct {
+	ID               string   `json:"id"`
+	Name             string   `json:"name"`
+	Type             string   `json:"type"`
+	Namespaces       []string `json:"namespaces"`
+	Enabled          bool     `json:"enabled"`
+	ThresholdMinutes int      `json:"thresholdMinutes,omitempty"`
+	ThresholdValue   float64  `json:"thresholdValue,omitempty"`
+	MinimumRetries   int      `json:"minimumRetries,omitempty"`
+	Severity         string   `json:"severity"`
+	NotifyWebhook    bool     `json:"notifyWebhook"`
+	CreatedBy        string   `json:"createdBy"`
+	CreatedAt        string   `json:"createdAt"`
+	UpdatedAt        string   `json:"updatedAt"`
+}
+
+type Alert struct {
+	ID              string   `json:"id"`
+	RuleID          string   `json:"ruleId"`
+	RuleName        string   `json:"ruleName"`
+	Namespace       string   `json:"namespace"`
+	ApplicationName string   `json:"applicationName"`
+	Fingerprint     string   `json:"fingerprint"`
+	Severity        string   `json:"severity"`
+	Status          string   `json:"status"`
+	Summary         string   `json:"summary"`
+	Evidence        []string `json:"evidence"`
+	Confidence      string   `json:"confidence"`
+	Recommendation  string   `json:"recommendation,omitempty"`
+	FirstSeenAt     string   `json:"firstSeenAt"`
+	LastSeenAt      string   `json:"lastSeenAt"`
+	AcknowledgedBy  string   `json:"acknowledgedBy,omitempty"`
+	AcknowledgedAt  string   `json:"acknowledgedAt,omitempty"`
+	SilencedUntil   string   `json:"silencedUntil,omitempty"`
+	RecoveredAt     string   `json:"recoveredAt,omitempty"`
+}
+
+type FailureFingerprint struct {
+	Fingerprint    string `json:"fingerprint"`
+	Code           string `json:"code"`
+	Count          int    `json:"count"`
+	LastSeenAt     string `json:"lastSeenAt"`
+	SampleApp      string `json:"sampleApplication"`
+	Namespace      string `json:"namespace"`
+	Severity       string `json:"severity"`
+	Recommendation string `json:"recommendation,omitempty"`
+}
+
 func NewAudit(id, namespace, application, operator, reason, result, message string) OperationAudit {
 	return NewOperationAudit(id, namespace, application, operator, "KILL", reason, result, message)
 }

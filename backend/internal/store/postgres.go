@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -22,6 +23,26 @@ type AuditStore interface {
 	GetApplicationSnapshot(context.Context, string, string) (domain.SparkApplication, error)
 	Ping(context.Context) error
 	Close()
+}
+
+type TemplateStore interface {
+	ListTemplates(context.Context, []string, bool) ([]domain.ApplicationTemplate, error)
+	GetTemplate(context.Context, string) (domain.ApplicationTemplate, error)
+	SaveTemplate(context.Context, domain.ApplicationTemplate) (domain.ApplicationTemplate, error)
+	DeleteTemplate(context.Context, string) error
+	SetFavorite(context.Context, string, string, string, bool) error
+	ListFavorites(context.Context, string) ([]domain.ApplicationFavorite, error)
+}
+
+type AlertStore interface {
+	ListAlertRules(context.Context, []string) ([]domain.AlertRule, error)
+	SaveAlertRule(context.Context, domain.AlertRule) (domain.AlertRule, error)
+	DeleteAlertRule(context.Context, string) error
+	UpsertAlert(context.Context, domain.Alert) (domain.Alert, bool, error)
+	ResolveInactiveAlerts(context.Context, []string) error
+	ListAlerts(context.Context, []string) ([]domain.Alert, error)
+	UpdateAlertStatus(context.Context, string, string, string, *time.Time, []string) error
+	ListFailureFingerprints(context.Context, []string) ([]domain.FailureFingerprint, error)
 }
 
 var ErrSnapshotNotFound = errors.New("application snapshot not found")
@@ -132,6 +153,74 @@ CREATE TABLE IF NOT EXISTS operation_audit (
   setting_value text NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now()
 )`,
+		`CREATE TABLE IF NOT EXISTS application_templates (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  description text NOT NULL DEFAULT '',
+  namespace text NOT NULL,
+  manifest text NOT NULL,
+  parameters jsonb NOT NULL DEFAULT '[]'::jsonb,
+  current_version integer NOT NULL DEFAULT 1,
+  disabled boolean NOT NULL DEFAULT false,
+  created_by text NOT NULL,
+  created_at timestamptz NOT NULL,
+  updated_at timestamptz NOT NULL,
+  UNIQUE(namespace, name)
+)`,
+		`CREATE INDEX IF NOT EXISTS application_templates_namespace_idx ON application_templates (namespace, disabled, updated_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS application_template_versions (
+  template_id text NOT NULL REFERENCES application_templates(id) ON DELETE CASCADE,
+  version integer NOT NULL,
+  manifest text NOT NULL,
+  parameters jsonb NOT NULL DEFAULT '[]'::jsonb,
+  created_by text NOT NULL,
+  created_at timestamptz NOT NULL,
+  PRIMARY KEY(template_id, version)
+)`,
+		`CREATE TABLE IF NOT EXISTS application_favorites (
+  user_id text NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+  namespace text NOT NULL,
+  application_name text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(user_id, namespace, application_name)
+)`,
+		`CREATE TABLE IF NOT EXISTS alert_rules (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  rule_type text NOT NULL,
+  namespaces text[] NOT NULL DEFAULT '{}',
+  enabled boolean NOT NULL DEFAULT true,
+  threshold_minutes integer NOT NULL DEFAULT 0,
+  threshold_value double precision NOT NULL DEFAULT 0,
+  minimum_retries integer NOT NULL DEFAULT 0,
+  severity text NOT NULL DEFAULT 'warning',
+  notify_webhook boolean NOT NULL DEFAULT false,
+  created_by text NOT NULL,
+  created_at timestamptz NOT NULL,
+  updated_at timestamptz NOT NULL
+)`,
+		`CREATE TABLE IF NOT EXISTS application_alerts (
+  id text PRIMARY KEY,
+  rule_id text NOT NULL REFERENCES alert_rules(id) ON DELETE CASCADE,
+  rule_name text NOT NULL,
+  namespace text NOT NULL,
+  application_name text NOT NULL,
+  fingerprint text NOT NULL,
+  severity text NOT NULL,
+  status text NOT NULL,
+  summary text NOT NULL,
+  evidence jsonb NOT NULL DEFAULT '[]'::jsonb,
+  confidence text NOT NULL DEFAULT 'medium',
+  recommendation text NOT NULL DEFAULT '',
+  first_seen_at timestamptz NOT NULL,
+  last_seen_at timestamptz NOT NULL,
+  acknowledged_by text NOT NULL DEFAULT '',
+  acknowledged_at timestamptz,
+  silenced_until timestamptz,
+  recovered_at timestamptz,
+  UNIQUE(rule_id, namespace, application_name, fingerprint)
+)`,
+		`CREATE INDEX IF NOT EXISTS application_alerts_status_idx ON application_alerts (status, last_seen_at DESC)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.pool.Exec(ctx, statement); err != nil {
@@ -628,6 +717,269 @@ func optionalTime(value string) any {
 		return nil
 	}
 	return parsed
+}
+
+var ErrTemplateNotFound = errors.New("application template not found")
+var ErrAlertNotFound = errors.New("application alert not found")
+
+func (s *PostgresStore) ListTemplates(ctx context.Context, namespaces []string, includeDisabled bool) ([]domain.ApplicationTemplate, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT id,name,description,namespace,manifest,parameters,current_version,disabled,created_by,created_at,updated_at
+FROM application_templates
+WHERE (cardinality($1::text[])=0 OR namespace=ANY($1)) AND ($2 OR NOT disabled)
+ORDER BY updated_at DESC`, namespaces, includeDisabled)
+	if err != nil {
+		return nil, fmt.Errorf("list application templates: %w", err)
+	}
+	defer rows.Close()
+	result := []domain.ApplicationTemplate{}
+	for rows.Next() {
+		item, err := scanTemplate(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+type rowScanner interface{ Scan(...any) error }
+
+func scanTemplate(row rowScanner) (domain.ApplicationTemplate, error) {
+	var item domain.ApplicationTemplate
+	var parameters []byte
+	var created, updated time.Time
+	if err := row.Scan(&item.ID, &item.Name, &item.Description, &item.Namespace, &item.Manifest, &parameters, &item.Version, &item.Disabled, &item.CreatedBy, &created, &updated); err != nil {
+		return item, fmt.Errorf("scan application template: %w", err)
+	}
+	if err := json.Unmarshal(parameters, &item.Parameters); err != nil {
+		return item, fmt.Errorf("decode template parameters: %w", err)
+	}
+	item.CreatedAt, item.UpdatedAt = created.UTC().Format(time.RFC3339Nano), updated.UTC().Format(time.RFC3339Nano)
+	return item, nil
+}
+
+func (s *PostgresStore) GetTemplate(ctx context.Context, id string) (domain.ApplicationTemplate, error) {
+	item, err := scanTemplate(s.pool.QueryRow(ctx, `
+SELECT id,name,description,namespace,manifest,parameters,current_version,disabled,created_by,created_at,updated_at
+FROM application_templates WHERE id=$1`, id))
+	if errors.Is(err, pgx.ErrNoRows) || (err != nil && strings.Contains(err.Error(), "no rows")) {
+		return item, ErrTemplateNotFound
+	}
+	if err != nil {
+		return item, err
+	}
+	rows, err := s.pool.Query(ctx, `SELECT version,manifest,created_by,created_at FROM application_template_versions WHERE template_id=$1 ORDER BY version DESC`, id)
+	if err != nil {
+		return item, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var version domain.TemplateVersion
+		var at time.Time
+		if err := rows.Scan(&version.Version, &version.Manifest, &version.CreatedBy, &at); err != nil {
+			return item, err
+		}
+		version.CreatedAt = at.UTC().Format(time.RFC3339Nano)
+		item.Versions = append(item.Versions, version)
+	}
+	return item, rows.Err()
+}
+
+func (s *PostgresStore) SaveTemplate(ctx context.Context, item domain.ApplicationTemplate) (domain.ApplicationTemplate, error) {
+	now := time.Now().UTC()
+	params, err := json.Marshal(item.Parameters)
+	if err != nil {
+		return item, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return item, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if item.ID == "" {
+		item.ID = fmt.Sprintf("tpl-%d", now.UnixNano())
+		item.Version = 1
+		item.CreatedAt = now.Format(time.RFC3339Nano)
+		item.UpdatedAt = item.CreatedAt
+		_, err = tx.Exec(ctx, `INSERT INTO application_templates (id,name,description,namespace,manifest,parameters,current_version,disabled,created_by,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$9)`, item.ID, item.Name, item.Description, item.Namespace, item.Manifest, params, item.Disabled, item.CreatedBy, now)
+	} else {
+		var created time.Time
+		err = tx.QueryRow(ctx, `UPDATE application_templates SET name=$2,description=$3,namespace=$4,manifest=$5,parameters=$6,current_version=current_version+1,disabled=$7,updated_at=$8 WHERE id=$1 RETURNING current_version,created_at`, item.ID, item.Name, item.Description, item.Namespace, item.Manifest, params, item.Disabled, now).Scan(&item.Version, &created)
+		item.CreatedAt = created.UTC().Format(time.RFC3339Nano)
+		item.UpdatedAt = now.Format(time.RFC3339Nano)
+	}
+	if err != nil {
+		return item, fmt.Errorf("save application template: %w", err)
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO application_template_versions (template_id,version,manifest,parameters,created_by,created_at) VALUES ($1,$2,$3,$4,$5,$6)`, item.ID, item.Version, item.Manifest, params, item.CreatedBy, now)
+	if err != nil {
+		return item, fmt.Errorf("save template version: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return item, err
+	}
+	return item, nil
+}
+
+func (s *PostgresStore) DeleteTemplate(ctx context.Context, id string) error {
+	result, err := s.pool.Exec(ctx, `DELETE FROM application_templates WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return ErrTemplateNotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) SetFavorite(ctx context.Context, userID, namespace, application string, favorite bool) error {
+	if favorite {
+		_, err := s.pool.Exec(ctx, `INSERT INTO application_favorites (user_id,namespace,application_name) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, userID, namespace, application)
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `DELETE FROM application_favorites WHERE user_id=$1 AND namespace=$2 AND application_name=$3`, userID, namespace, application)
+	return err
+}
+
+func (s *PostgresStore) ListFavorites(ctx context.Context, userID string) ([]domain.ApplicationFavorite, error) {
+	rows, err := s.pool.Query(ctx, `SELECT namespace,application_name FROM application_favorites WHERE user_id=$1 ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []domain.ApplicationFavorite{}
+	for rows.Next() {
+		var x domain.ApplicationFavorite
+		x.UserID = userID
+		if err := rows.Scan(&x.Namespace, &x.Application); err != nil {
+			return nil, err
+		}
+		result = append(result, x)
+	}
+	return result, rows.Err()
+}
+
+func (s *PostgresStore) ListAlertRules(ctx context.Context, namespaces []string) ([]domain.AlertRule, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,created_by,created_at,updated_at FROM alert_rules WHERE cardinality($1::text[])=0 OR cardinality(namespaces)=0 OR namespaces && $1 ORDER BY updated_at DESC`, namespaces)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []domain.AlertRule{}
+	for rows.Next() {
+		var x domain.AlertRule
+		var c, u time.Time
+		if err := rows.Scan(&x.ID, &x.Name, &x.Type, &x.Namespaces, &x.Enabled, &x.ThresholdMinutes, &x.ThresholdValue, &x.MinimumRetries, &x.Severity, &x.NotifyWebhook, &x.CreatedBy, &c, &u); err != nil {
+			return nil, err
+		}
+		x.CreatedAt = c.UTC().Format(time.RFC3339Nano)
+		x.UpdatedAt = u.UTC().Format(time.RFC3339Nano)
+		result = append(result, x)
+	}
+	return result, rows.Err()
+}
+
+func (s *PostgresStore) SaveAlertRule(ctx context.Context, x domain.AlertRule) (domain.AlertRule, error) {
+	now := time.Now().UTC()
+	if x.ID == "" {
+		x.ID = fmt.Sprintf("rule-%d", now.UnixNano())
+		x.CreatedAt = now.Format(time.RFC3339Nano)
+		_, err := s.pool.Exec(ctx, `INSERT INTO alert_rules (id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,created_by,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, x.CreatedBy, now)
+		if err != nil {
+			return x, err
+		}
+	} else {
+		var c time.Time
+		err := s.pool.QueryRow(ctx, `UPDATE alert_rules SET name=$2,rule_type=$3,namespaces=$4,enabled=$5,threshold_minutes=$6,threshold_value=$7,minimum_retries=$8,severity=$9,notify_webhook=$10,updated_at=$11 WHERE id=$1 RETURNING created_at`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, now).Scan(&c)
+		if err != nil {
+			return x, err
+		}
+		x.CreatedAt = c.UTC().Format(time.RFC3339Nano)
+	}
+	x.UpdatedAt = now.Format(time.RFC3339Nano)
+	return x, nil
+}
+
+func (s *PostgresStore) DeleteAlertRule(ctx context.Context, id string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM alert_rules WHERE id=$1`, id)
+	return err
+}
+
+func (s *PostgresStore) UpsertAlert(ctx context.Context, x domain.Alert) (domain.Alert, bool, error) {
+	now := time.Now().UTC()
+	evidence, _ := json.Marshal(x.Evidence)
+	var created bool
+	err := s.pool.QueryRow(ctx, `INSERT INTO application_alerts (id,rule_id,rule_name,namespace,application_name,fingerprint,severity,status,summary,evidence,confidence,recommendation,first_seen_at,last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$11,$12,$12) ON CONFLICT (rule_id,namespace,application_name,fingerprint) DO UPDATE SET rule_name=EXCLUDED.rule_name,severity=EXCLUDED.severity,summary=EXCLUDED.summary,evidence=EXCLUDED.evidence,confidence=EXCLUDED.confidence,recommendation=EXCLUDED.recommendation,last_seen_at=EXCLUDED.last_seen_at,status=CASE WHEN application_alerts.status='recovered' OR (application_alerts.status='silenced' AND application_alerts.silenced_until < now()) THEN 'active' ELSE application_alerts.status END,recovered_at=NULL RETURNING first_seen_at=last_seen_at`, x.ID, x.RuleID, x.RuleName, x.Namespace, x.ApplicationName, x.Fingerprint, x.Severity, x.Summary, evidence, x.Confidence, x.Recommendation, now).Scan(&created)
+	if err != nil {
+		return x, false, err
+	}
+	return x, created, nil
+}
+
+func (s *PostgresStore) ResolveInactiveAlerts(ctx context.Context, activeIDs []string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE application_alerts SET status='recovered',recovered_at=now() WHERE status IN ('active','acknowledged','silenced') AND NOT (id=ANY($1::text[]))`, activeIDs)
+	return err
+}
+
+func (s *PostgresStore) ListAlerts(ctx context.Context, namespaces []string) ([]domain.Alert, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id,rule_id,rule_name,namespace,application_name,fingerprint,severity,status,summary,evidence,confidence,recommendation,first_seen_at,last_seen_at,acknowledged_by,acknowledged_at,silenced_until,recovered_at FROM application_alerts WHERE cardinality($1::text[])=0 OR namespace=ANY($1) ORDER BY CASE WHEN status='active' THEN 0 WHEN status='acknowledged' THEN 1 ELSE 2 END,last_seen_at DESC`, namespaces)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []domain.Alert{}
+	for rows.Next() {
+		var x domain.Alert
+		var ev []byte
+		var first, last time.Time
+		var ack, sil, rec *time.Time
+		if err := rows.Scan(&x.ID, &x.RuleID, &x.RuleName, &x.Namespace, &x.ApplicationName, &x.Fingerprint, &x.Severity, &x.Status, &x.Summary, &ev, &x.Confidence, &x.Recommendation, &first, &last, &x.AcknowledgedBy, &ack, &sil, &rec); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(ev, &x.Evidence)
+		x.FirstSeenAt = first.UTC().Format(time.RFC3339Nano)
+		x.LastSeenAt = last.UTC().Format(time.RFC3339Nano)
+		if ack != nil {
+			x.AcknowledgedAt = ack.UTC().Format(time.RFC3339Nano)
+		}
+		if sil != nil {
+			x.SilencedUntil = sil.UTC().Format(time.RFC3339Nano)
+		}
+		if rec != nil {
+			x.RecoveredAt = rec.UTC().Format(time.RFC3339Nano)
+		}
+		result = append(result, x)
+	}
+	return result, rows.Err()
+}
+
+func (s *PostgresStore) UpdateAlertStatus(ctx context.Context, id, status, operator string, silencedUntil *time.Time, namespaces []string) error {
+	result, err := s.pool.Exec(ctx, `UPDATE application_alerts SET status=$2,acknowledged_by=CASE WHEN $2='acknowledged' THEN $3 ELSE acknowledged_by END,acknowledged_at=CASE WHEN $2='acknowledged' THEN now() ELSE acknowledged_at END,silenced_until=CASE WHEN $2='silenced' THEN $4 ELSE silenced_until END WHERE id=$1 AND (cardinality($5::text[])=0 OR namespace=ANY($5))`, id, status, operator, silencedUntil, namespaces)
+	if err == nil && result.RowsAffected() == 0 {
+		return ErrAlertNotFound
+	}
+	return err
+}
+
+func (s *PostgresStore) ListFailureFingerprints(ctx context.Context, namespaces []string) ([]domain.FailureFingerprint, error) {
+	rows, err := s.pool.Query(ctx, `SELECT COALESCE(d->>'code','UNKNOWN'),COUNT(*),MAX(COALESCE(finished_at,last_seen_at)),(array_agg(application_name ORDER BY last_seen_at DESC))[1],(array_agg(namespace ORDER BY last_seen_at DESC))[1],COALESCE((array_agg(d->>'severity' ORDER BY last_seen_at DESC))[1],'warning'),COALESCE((array_agg(d->>'recommendation' ORDER BY last_seen_at DESC))[1],'') FROM spark_application_history CROSS JOIN LATERAL jsonb_array_elements(diagnosis) d WHERE cardinality($1::text[])=0 OR namespace=ANY($1) GROUP BY d->>'code' ORDER BY COUNT(*) DESC`, namespaces)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []domain.FailureFingerprint{}
+	for rows.Next() {
+		var x domain.FailureFingerprint
+		var at time.Time
+		if err := rows.Scan(&x.Code, &x.Count, &at, &x.SampleApp, &x.Namespace, &x.Severity, &x.Recommendation); err != nil {
+			return nil, err
+		}
+		x.Fingerprint = x.Code
+		x.LastSeenAt = at.UTC().Format(time.RFC3339Nano)
+		result = append(result, x)
+	}
+	return result, rows.Err()
 }
 
 func (s *PostgresStore) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }

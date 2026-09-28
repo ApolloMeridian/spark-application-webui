@@ -1,4 +1,4 @@
-import { AppstoreOutlined, AuditOutlined, CloudServerOutlined, DeploymentUnitOutlined, FileAddOutlined, GlobalOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
+import { AlertOutlined, AppstoreOutlined, AuditOutlined, CloudServerOutlined, DeploymentUnitOutlined, FileAddOutlined, GlobalOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SnippetsOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
 import { Avatar, Button, Dropdown, Layout, Menu, Select, Space, Tag, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
@@ -16,14 +16,16 @@ export function AppShell() {
   const { session, logout, setRole } = useAuth(); const { t, locale, setLocale } = useI18n();
   const visibleNamespaces = session?.namespaces?.length ? runtimeConfig.cluster.namespaces.filter((value) => session.namespaces.includes(value)) : runtimeConfig.cluster.namespaces;
   useEffect(() => { const onResize = () => window.innerWidth < 960 && setCollapsed(true); window.addEventListener('resize', onResize); return () => window.removeEventListener('resize', onResize); }, []);
-  const selected = location.pathname.startsWith('/applications') ? '/applications' : location.pathname.startsWith('/submit') ? '/submit' : location.pathname.startsWith('/audit') ? '/audit' : location.pathname.startsWith('/users') ? '/users' : '/overview';
+  const selected = location.pathname.startsWith('/applications') ? '/applications' : location.pathname.startsWith('/templates') ? '/templates' : location.pathname.startsWith('/alerts') ? '/alerts' : location.pathname.startsWith('/submit') ? '/submit' : location.pathname.startsWith('/audit') ? '/audit' : location.pathname.startsWith('/users') ? '/users' : '/overview';
   const menuItems = useMemo(() => [
     { key: '/overview', icon: <AppstoreOutlined />, label: t('overview') },
     { key: '/applications', icon: <DeploymentUnitOutlined />, label: t('applications') },
+	...(runtimeConfig.features.templates ? [{ key: '/templates', icon: <SnippetsOutlined />, label: locale === 'en-US' ? 'Templates' : '作业模板' }] : []),
+	...(runtimeConfig.features.alerts ? [{ key: '/alerts', icon: <AlertOutlined />, label: locale === 'en-US' ? 'Alerts' : '告警中心' }] : []),
     ...(runtimeConfig.features.submit && session?.role === 'admin' ? [{ key: '/submit', icon: <FileAddOutlined />, label: t('submitApplication') }] : []),
     ...(runtimeConfig.features.audit && session?.role === 'admin' ? [{ key: '/audit', icon: <AuditOutlined />, label: t('audit') }] : []),
     ...(runtimeConfig.auth.mode === 'local' && session?.role === 'admin' ? [{ key: '/users', icon: <TeamOutlined />, label: t('userManagement') }] : []),
-  ], [session?.role, t]);
+  ], [session?.role, t, locale]);
   return (
     <Layout className="app-layout">
       <Sider width={236} collapsedWidth={72} collapsed={collapsed} trigger={null} className="app-sider">

@@ -64,6 +64,16 @@ await page.getByText('Visual QA validation', { exact: true }).waitFor({ state: '
 await page.getByText('Visual QA terminal cleanup', { exact: true }).waitFor({ state: 'visible' });
 await page.screenshot({ path: `${output}/audit-1440.png`, fullPage: true });
 
+await page.getByRole('menu').getByText('Templates', { exact: true }).click();
+await page.waitForURL('**/templates');
+await page.getByText('Streaming baseline', { exact: true }).waitFor({ state: 'visible' });
+await page.screenshot({ path: `${output}/templates-1440.png`, fullPage: true });
+
+await page.getByRole('menu').getByText('Alerts', { exact: true }).click();
+await page.waitForURL('**/alerts');
+await page.getByText('Repeated Kubernetes failures or retries detected', { exact: true }).waitFor({ state: 'visible' });
+await page.screenshot({ path: `${output}/alerts-1440.png`, fullPage: true });
+
 await page.getByRole('menu').getByText('Submit Spark Application', { exact: true }).click();
 await page.waitForURL('**/submit');
 await page.getByRole('button', { name: 'Submit to cluster' }).waitFor({ state: 'visible' });

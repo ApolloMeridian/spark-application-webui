@@ -1,13 +1,17 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -93,6 +97,23 @@ func (s *Service) StartWatch(ctx context.Context) {
 			}
 		}()
 	}
+}
+
+func (s *Service) StartAlertEvaluator(ctx context.Context) {
+	ticker := time.NewTicker(s.config.AlertEvaluationInterval)
+	go func() {
+		defer ticker.Stop()
+		for {
+			if err := s.EvaluateAlerts(ctx, nil); err != nil && ctx.Err() == nil {
+				s.logger.Warn("alert evaluation failed", "error", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 }
 
 func (s *Service) Subscribe(ctx context.Context, namespaces []string) <-chan domain.ApplicationChange {
@@ -1043,10 +1064,485 @@ func max(a, b float64) float64 {
 	return b
 }
 
+func (s *Service) templateStore() (store.TemplateStore, error) {
+	value, ok := s.audits.(store.TemplateStore)
+	if !ok {
+		return nil, fmt.Errorf("template storage is unavailable")
+	}
+	return value, nil
+}
+
+func (s *Service) alertStore() (store.AlertStore, error) {
+	value, ok := s.audits.(store.AlertStore)
+	if !ok {
+		return nil, fmt.Errorf("alert storage is unavailable")
+	}
+	return value, nil
+}
+
+func (s *Service) ListTemplates(ctx context.Context, namespaces []string, includeDisabled bool) ([]domain.ApplicationTemplate, error) {
+	value, err := s.templateStore()
+	if err != nil {
+		return nil, err
+	}
+	return value.ListTemplates(ctx, allowedNamespaces(s.config.Namespaces, namespaces), includeDisabled)
+}
+
+func (s *Service) GetTemplate(ctx context.Context, id string) (domain.ApplicationTemplate, error) {
+	value, err := s.templateStore()
+	if err != nil {
+		return domain.ApplicationTemplate{}, err
+	}
+	return value.GetTemplate(ctx, id)
+}
+
+func validateTemplate(item domain.ApplicationTemplate) error {
+	if strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.Manifest) == "" {
+		return &kube.APIError{StatusCode: 400, Message: "template name and manifest are required"}
+	}
+	if strings.Contains(strings.ToLower(item.Manifest), "kind: secret") || regexp.MustCompile(`(?mi)^\s*(stringData|data):\s*$`).MatchString(item.Manifest) {
+		return &kube.APIError{StatusCode: 400, Message: "templates cannot contain Kubernetes Secret data"}
+	}
+	seen := map[string]bool{}
+	for _, p := range item.Parameters {
+		if !regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`).MatchString(p.Name) || seen[p.Name] {
+			return &kube.APIError{StatusCode: 400, Message: "template parameter names must be unique identifiers"}
+		}
+		seen[p.Name] = true
+		if p.Pattern != "" {
+			if _, err := regexp.Compile(p.Pattern); err != nil {
+				return &kube.APIError{StatusCode: 400, Message: "invalid parameter pattern: " + p.Name}
+			}
+		}
+		if strings.Contains(strings.ToLower(p.Name), "secret") || strings.Contains(strings.ToLower(p.Name), "password") || strings.Contains(strings.ToLower(p.Name), "token") {
+			return &kube.APIError{StatusCode: 400, Message: "secret values cannot be template parameters; reference an existing Kubernetes Secret instead"}
+		}
+	}
+	return nil
+}
+
+func (s *Service) SaveTemplate(ctx context.Context, item domain.ApplicationTemplate, operator string) (domain.ApplicationTemplate, error) {
+	if !s.config.NamespaceAllowed(item.Namespace) {
+		return item, &kube.APIError{StatusCode: 403, Message: "namespace is not configured for this service"}
+	}
+	if err := validateTemplate(item); err != nil {
+		return item, err
+	}
+	value, err := s.templateStore()
+	if err != nil {
+		return item, err
+	}
+	item.CreatedBy = operator
+	return value.SaveTemplate(ctx, item)
+}
+
+func (s *Service) CopyTemplate(ctx context.Context, id, name, operator string) (domain.ApplicationTemplate, error) {
+	value, err := s.templateStore()
+	if err != nil {
+		return domain.ApplicationTemplate{}, err
+	}
+	item, err := value.GetTemplate(ctx, id)
+	if err != nil {
+		return item, err
+	}
+	originalName := item.Name
+	item.ID = ""
+	item.Name = strings.TrimSpace(name)
+	if item.Name == "" {
+		item.Name = originalName + " copy"
+	}
+	item.Disabled = false
+	item.Versions = nil
+	return s.SaveTemplate(ctx, item, operator)
+}
+
+func (s *Service) DeleteTemplate(ctx context.Context, id string) error {
+	value, err := s.templateStore()
+	if err != nil {
+		return err
+	}
+	return value.DeleteTemplate(ctx, id)
+}
+
+func validateParameter(p domain.TemplateParameter, value string) error {
+	if p.Required && value == "" {
+		return fmt.Errorf("parameter %s is required", p.Name)
+	}
+	if value == "" {
+		return nil
+	}
+	switch p.Type {
+	case "integer":
+		if _, err := strconv.Atoi(value); err != nil {
+			return fmt.Errorf("parameter %s must be an integer", p.Name)
+		}
+	case "number":
+		if _, err := strconv.ParseFloat(value, 64); err != nil {
+			return fmt.Errorf("parameter %s must be a number", p.Name)
+		}
+	case "boolean":
+		if _, err := strconv.ParseBool(value); err != nil {
+			return fmt.Errorf("parameter %s must be a boolean", p.Name)
+		}
+	case "string", "":
+	default:
+		return fmt.Errorf("parameter %s has unsupported type", p.Name)
+	}
+	if len(p.Enum) > 0 && !containsString(p.Enum, value) {
+		return fmt.Errorf("parameter %s is not an allowed value", p.Name)
+	}
+	if p.Pattern != "" {
+		matched, _ := regexp.MatchString(p.Pattern, value)
+		if !matched {
+			return fmt.Errorf("parameter %s does not match its pattern", p.Name)
+		}
+	}
+	return nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) RenderTemplate(ctx context.Context, id string, values map[string]string) (domain.ManifestPreview, error) {
+	storeValue, err := s.templateStore()
+	if err != nil {
+		return domain.ManifestPreview{}, err
+	}
+	item, err := storeValue.GetTemplate(ctx, id)
+	if err != nil {
+		return domain.ManifestPreview{}, err
+	}
+	if item.Disabled {
+		return domain.ManifestPreview{}, &kube.APIError{StatusCode: 409, Message: "template is disabled"}
+	}
+	manifest := item.Manifest
+	for _, p := range item.Parameters {
+		value := values[p.Name]
+		if value == "" {
+			value = p.Default
+		}
+		if err := validateParameter(p, value); err != nil {
+			return domain.ManifestPreview{}, &kube.APIError{StatusCode: 400, Message: err.Error()}
+		}
+		manifest = strings.ReplaceAll(manifest, "{{"+p.Name+"}}", value)
+	}
+	if unresolved := regexp.MustCompile(`\{\{[A-Za-z][A-Za-z0-9_]*\}\}`).FindString(manifest); unresolved != "" {
+		return domain.ManifestPreview{}, &kube.APIError{StatusCode: 400, Message: "unresolved template parameter: " + unresolved}
+	}
+	return domain.ManifestPreview{Namespace: item.Namespace, ServerYAML: manifest, OriginalYAML: item.Manifest}, nil
+}
+
+func (s *Service) SetFavorite(ctx context.Context, userID, namespace, application string, favorite bool) error {
+	value, err := s.templateStore()
+	if err != nil {
+		return err
+	}
+	return value.SetFavorite(ctx, userID, namespace, application, favorite)
+}
+func (s *Service) ListFavorites(ctx context.Context, userID string) ([]domain.ApplicationFavorite, error) {
+	value, err := s.templateStore()
+	if err != nil {
+		return nil, err
+	}
+	return value.ListFavorites(ctx, userID)
+}
+
+func (s *Service) BatchPreview(ctx context.Context, operation string, items []domain.BatchActionItem) ([]domain.BatchActionItem, error) {
+	result := make([]domain.BatchActionItem, 0, len(items))
+	for _, item := range items {
+		app, err := s.GetApplication(ctx, item.Namespace, item.Name)
+		if err != nil {
+			item.Allowed = false
+			item.Reason = err.Error()
+		} else if operation == "kill" && !containsString([]string{"RUNNING", "SUBMITTED"}, app.State) {
+			item.Allowed = false
+			item.Reason = "application is not running or submitted"
+		} else if operation == "delete" && !terminalState(app.State) {
+			item.Allowed = false
+			item.Reason = "application is not terminal"
+		} else {
+			item.Allowed = true
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+func (s *Service) BatchExecute(ctx context.Context, operation, operator, reason string, items []domain.BatchActionItem) (domain.BatchActionResult, error) {
+	preview, err := s.BatchPreview(ctx, operation, items)
+	if err != nil {
+		return domain.BatchActionResult{}, err
+	}
+	result := domain.BatchActionResult{Operation: strings.ToUpper(operation), Items: []domain.OperationAudit{}}
+	for _, item := range preview {
+		if !item.Allowed {
+			audit := domain.NewOperationAudit(newID(), item.Namespace, item.Name, operator, strings.ToUpper(operation), reason, "FAILED", item.Reason)
+			_ = s.persistAudit(ctx, audit)
+			result.Items = append(result.Items, audit)
+			continue
+		}
+		var audit domain.OperationAudit
+		if operation == "kill" {
+			audit, err = s.KillApplication(ctx, item.Namespace, item.Name, operator, reason)
+		} else {
+			audit, err = s.DeleteApplication(ctx, item.Namespace, item.Name, operator, reason)
+		}
+		if err != nil {
+			audit = domain.NewOperationAudit(newID(), item.Namespace, item.Name, operator, strings.ToUpper(operation), reason, "FAILED", err.Error())
+			_ = s.persistAudit(ctx, audit)
+		}
+		result.Items = append(result.Items, audit)
+	}
+	return result, nil
+}
+
+func validRule(rule domain.AlertRule) error {
+	if strings.TrimSpace(rule.Name) == "" {
+		return fmt.Errorf("rule name is required")
+	}
+	if !containsString([]string{"failure", "pending", "resource", "retries"}, rule.Type) {
+		return fmt.Errorf("unsupported alert rule type")
+	}
+	if !containsString([]string{"info", "warning", "error"}, rule.Severity) {
+		return fmt.Errorf("unsupported severity")
+	}
+	return nil
+}
+func (s *Service) ListAlertRules(ctx context.Context, namespaces []string) ([]domain.AlertRule, error) {
+	value, err := s.alertStore()
+	if err != nil {
+		return nil, err
+	}
+	return value.ListAlertRules(ctx, allowedNamespaces(s.config.Namespaces, namespaces))
+}
+func (s *Service) SaveAlertRule(ctx context.Context, rule domain.AlertRule, operator string) (domain.AlertRule, error) {
+	if err := validRule(rule); err != nil {
+		return rule, &kube.APIError{StatusCode: 400, Message: err.Error()}
+	}
+	for _, ns := range rule.Namespaces {
+		if !s.config.NamespaceAllowed(ns) {
+			return rule, &kube.APIError{StatusCode: 403, Message: "namespace is not configured: " + ns}
+		}
+	}
+	rule.CreatedBy = operator
+	value, err := s.alertStore()
+	if err != nil {
+		return rule, err
+	}
+	return value.SaveAlertRule(ctx, rule)
+}
+func (s *Service) DeleteAlertRule(ctx context.Context, id string) error {
+	value, err := s.alertStore()
+	if err != nil {
+		return err
+	}
+	return value.DeleteAlertRule(ctx, id)
+}
+
+func alertFingerprint(rule domain.AlertRule, app domain.SparkApplication, code string) string {
+	sum := sha256.Sum256([]byte(rule.ID + "\x00" + app.Namespace + "\x00" + app.Name + "\x00" + code))
+	return hex.EncodeToString(sum[:12])
+}
+func ruleApplies(rule domain.AlertRule, app domain.SparkApplication) bool {
+	return len(rule.Namespaces) == 0 || containsString(rule.Namespaces, app.Namespace)
+}
+func evaluateRule(rule domain.AlertRule, app domain.SparkApplication, now time.Time) (domain.Alert, bool) {
+	alert := domain.Alert{RuleID: rule.ID, RuleName: rule.Name, Namespace: app.Namespace, ApplicationName: app.Name, Severity: rule.Severity, Status: "active", Confidence: "high"}
+	code := ""
+	switch rule.Type {
+	case "failure":
+		if !containsString([]string{"FAILED", "SUBMISSION_FAILED", "FAILING"}, app.State) {
+			return alert, false
+		}
+		code = "application-failure"
+		alert.Summary = "SparkApplication is in a failed state"
+		alert.Evidence = []string{"state=" + app.State, app.ErrorMessage}
+		alert.Recommendation = "Review diagnostics, Kubernetes events, and Driver logs."
+	case "pending":
+		if !containsString([]string{"PENDING", "SUBMITTED"}, app.State) {
+			return alert, false
+		}
+		minutes := rule.ThresholdMinutes
+		if minutes <= 0 {
+			minutes = 10
+		}
+		created, _ := time.Parse(time.RFC3339, app.CreatedAt)
+		if now.Sub(created) < time.Duration(minutes)*time.Minute {
+			return alert, false
+		}
+		code = "long-pending"
+		alert.Summary = fmt.Sprintf("SparkApplication has been pending for more than %d minutes", minutes)
+		alert.Evidence = []string{"state=" + app.State, app.PendingReason}
+		alert.Recommendation = "Inspect scheduling, image pull, quota, and volume events."
+	case "resource":
+		threshold := rule.ThresholdValue
+		if threshold <= 0 {
+			threshold = .95
+		}
+		requested := app.Driver.Request
+		used := domain.ResourceAmount{}
+		if app.Driver.Current != nil {
+			used = *app.Driver.Current
+		}
+		for _, x := range app.Executors {
+			addResources(&requested, x.Resources.Request)
+			if x.Resources.Current != nil {
+				addResources(&used, *x.Resources.Current)
+			}
+		}
+		cpuRatio, memoryRatio := 0.0, 0.0
+		if requested.CPU > 0 {
+			cpuRatio = used.CPU / requested.CPU
+		}
+		if requested.MemoryGiB > 0 {
+			memoryRatio = used.MemoryGiB / requested.MemoryGiB
+		}
+		if max(cpuRatio, memoryRatio) < threshold {
+			return alert, false
+		}
+		code = "resource-pressure"
+		alert.Summary = "SparkApplication resource usage exceeded its configured threshold"
+		alert.Evidence = []string{fmt.Sprintf("cpu ratio=%.2f", cpuRatio), fmt.Sprintf("memory ratio=%.2f", memoryRatio)}
+		alert.Confidence = "medium"
+		alert.Recommendation = "Inspect sustained usage before adjusting Driver or Executor requests."
+	case "retries":
+		minimum := rule.MinimumRetries
+		if minimum <= 0 {
+			minimum = 3
+		}
+		count := int64(0)
+		for _, event := range app.Events {
+			if strings.Contains(strings.ToLower(event.Reason), "fail") || strings.Contains(strings.ToLower(event.Reason), "backoff") {
+				count += maxInt64(event.Count, 1)
+			}
+		}
+		if int(count) < minimum {
+			return alert, false
+		}
+		code = "repeated-retries"
+		alert.Summary = "Repeated Kubernetes failures or retries detected"
+		alert.Evidence = []string{fmt.Sprintf("failure event count=%d", count)}
+		alert.Recommendation = "Review the aggregated events and fix the repeated root cause before retrying."
+	}
+	alert.Fingerprint = alertFingerprint(rule, app, code)
+	alert.ID = "alert-" + alert.Fingerprint
+	alert.Evidence = compactEvidence(alert.Evidence)
+	return alert, true
+}
+func compactEvidence(values []string) []string {
+	result := []string{}
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			result = append(result, v)
+		}
+	}
+	return result
+}
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func (s *Service) EvaluateAlerts(ctx context.Context, namespaces []string) error {
+	value, err := s.alertStore()
+	if err != nil {
+		return err
+	}
+	rules, err := value.ListAlertRules(ctx, allowedNamespaces(s.config.Namespaces, namespaces))
+	if err != nil {
+		return err
+	}
+	apps, err := s.ListApplicationsForNamespaces(ctx, namespaces)
+	if err != nil {
+		return err
+	}
+	active := []string{}
+	now := time.Now().UTC()
+	for _, rule := range rules {
+		if !rule.Enabled {
+			continue
+		}
+		for _, app := range apps {
+			if !ruleApplies(rule, app) {
+				continue
+			}
+			alert, matched := evaluateRule(rule, app, now)
+			if !matched {
+				continue
+			}
+			active = append(active, alert.ID)
+			_, created, upsertErr := value.UpsertAlert(ctx, alert)
+			if upsertErr != nil {
+				return upsertErr
+			}
+			if created && rule.NotifyWebhook {
+				s.sendAlertWebhook(alert)
+			}
+		}
+	}
+	return value.ResolveInactiveAlerts(ctx, active)
+}
+func (s *Service) sendAlertWebhook(alert domain.Alert) {
+	if s.config.AlertWebhookURL == "" {
+		return
+	}
+	payload, _ := json.Marshal(alert)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), s.config.AlertWebhookTimeout)
+		defer cancel()
+		request, _ := http.NewRequestWithContext(ctx, http.MethodPost, s.config.AlertWebhookURL, bytes.NewReader(payload))
+		request.Header.Set("Content-Type", "application/json")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			s.logger.Warn("alert webhook failed", "error", err)
+			return
+		}
+		_ = response.Body.Close()
+		if response.StatusCode >= 300 {
+			s.logger.Warn("alert webhook returned error", "status", response.Status)
+		}
+	}()
+}
+func (s *Service) ListAlerts(ctx context.Context, namespaces []string) ([]domain.Alert, error) {
+	value, err := s.alertStore()
+	if err != nil {
+		return nil, err
+	}
+	return value.ListAlerts(ctx, allowedNamespaces(s.config.Namespaces, namespaces))
+}
+func (s *Service) UpdateAlertStatus(ctx context.Context, id, status, operator string, silencedUntil *time.Time, namespaces []string) error {
+	if !containsString([]string{"acknowledged", "silenced", "active"}, status) {
+		return &kube.APIError{StatusCode: 400, Message: "invalid alert status"}
+	}
+	value, err := s.alertStore()
+	if err != nil {
+		return err
+	}
+	return value.UpdateAlertStatus(ctx, id, status, operator, silencedUntil, allowedNamespaces(s.config.Namespaces, namespaces))
+}
+func (s *Service) ListFailureFingerprints(ctx context.Context, namespaces []string) ([]domain.FailureFingerprint, error) {
+	value, err := s.alertStore()
+	if err != nil {
+		return nil, err
+	}
+	return value.ListFailureFingerprints(ctx, allowedNamespaces(s.config.Namespaces, namespaces))
+}
+
 func HTTPStatus(err error) int {
 	var apiErr *kube.APIError
 	if errors.As(err, &apiErr) && apiErr.StatusCode > 0 {
 		return apiErr.StatusCode
+	}
+	if errors.Is(err, store.ErrTemplateNotFound) || errors.Is(err, store.ErrSnapshotNotFound) || errors.Is(err, store.ErrAlertNotFound) {
+		return http.StatusNotFound
 	}
 	return 500
 }

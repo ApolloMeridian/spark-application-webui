@@ -1,7 +1,7 @@
 # Spark Control Center frontend image built from this repository.
 image:
   repository: spark-control-center
-  tag: "1.1.0"
+  tag: "1.2.0"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -37,6 +37,9 @@ runtimeConfig:
     sparkUi: true
     submit: true
     executorLogs: false
+    templates: true
+    batchOperations: true
+    alerts: true
 
 # Same-origin /api reverse proxy. Enable when backend.enabled=true or supply an upstream URL.
 apiProxy:
@@ -121,7 +124,7 @@ backend:
   replicaCount: 1
   image:
     repository: spark-control-center-backend
-    tag: "1.1.0"
+    tag: "1.2.0"
     pullPolicy: IfNotPresent
   service:
     port: 8081
@@ -164,6 +167,14 @@ loki:
   url: http://loki-gateway.loki.svc.cluster.local
   queryTimeout: 15s
   maxEntries: 5000
+
+# Active alert evaluation and optional generic webhook delivery.
+alerts:
+  evaluationInterval: 1m
+  webhook:
+    enabled: false
+    url: ""
+    timeout: 10s
 
 # Existing PostgreSQL is recommended. This chart does not install a database.
 database:

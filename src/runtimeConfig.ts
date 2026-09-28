@@ -39,6 +39,9 @@ export interface RuntimeConfig {
     sparkUi: boolean;
     submit: boolean;
     executorLogs: boolean;
+		templates: boolean;
+		batchOperations: boolean;
+		alerts: boolean;
   };
 }
 
@@ -67,7 +70,7 @@ const defaults: RuntimeConfig = {
   cluster: { name: 'spark-demo', namespaces: ['spark-prod', 'spark-ml', 'spark-streaming', 'spark-sandbox'] },
   dashboard: { refreshIntervalSeconds: 10, defaultHistoryDays: 7 },
   historyServer: { enabled: false, baseUrl: '' },
-  features: { kill: true, audit: true, sparkUi: true, submit: true, executorLogs: true },
+  features: { kill: true, audit: true, sparkUi: true, submit: true, executorLogs: true, templates: true, batchOperations: true, alerts: true },
 };
 
 function normalizeBaseUrl(value: string) {
