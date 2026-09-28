@@ -12,6 +12,20 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: spark_control_center_test
+          POSTGRES_USER: spark_test
+          POSTGRES_PASSWORD: spark_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U spark_test -d spark_control_center_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -39,6 +53,8 @@ jobs:
 
       - name: Test backend
         working-directory: backend
+        env:
+          TEST_POSTGRES_DSN: postgres://spark_test:spark_test@127.0.0.1:5432/spark_control_center_test?sslmode=disable
         run: go test ./...
 
       - name: Vet backend

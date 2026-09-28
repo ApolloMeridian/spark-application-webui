@@ -70,3 +70,46 @@ func TestPostgresApplicationHistoryRoundTrip(t *testing.T) {
 		t.Fatalf("expected submitted and failed history counts, got %#v", summary)
 	}
 }
+
+func TestPostgresOIDCAutoCreateUsesEmptyNamespaceArray(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	store, err := Open(ctx, dsn, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	suffix := now.Format("20060102150405.000000000")
+	username := "oidc-" + suffix
+	candidate := domain.User{
+		ID:          "oidc-integration-" + suffix,
+		Username:    username,
+		DisplayName: "OIDC Integration User",
+		Email:       username + "@example.invalid",
+		Role:        domain.RoleViewer,
+		AuthSource:  "oidc",
+		CreatedAt:   now.Format(time.RFC3339Nano),
+		UpdatedAt:   now.Format(time.RFC3339Nano),
+		Namespaces:  nil,
+	}
+	created, err := store.UpsertOIDCUser(ctx, candidate, username, "https://issuer.example.invalid", candidate.ID, true)
+	if err != nil {
+		t.Fatalf("auto-create OIDC user with no namespace assignment: %v", err)
+	}
+	if created.Namespaces == nil || len(created.Namespaces) != 0 {
+		t.Fatalf("expected a non-nil empty namespace list, got %#v", created.Namespaces)
+	}
+	persisted, err := store.FindUserByID(ctx, candidate.ID)
+	if err != nil {
+		t.Fatalf("read auto-created OIDC user: %v", err)
+	}
+	if persisted.Namespaces == nil || len(persisted.Namespaces) != 0 {
+		t.Fatalf("expected PostgreSQL to persist an empty namespace array, got %#v", persisted.Namespaces)
+	}
+}

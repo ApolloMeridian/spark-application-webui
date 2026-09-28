@@ -126,7 +126,10 @@ CREATE TABLE IF NOT EXISTS operation_audit (
 		`ALTER TABLE local_users ADD COLUMN IF NOT EXISTS oidc_issuer text`,
 		`ALTER TABLE local_users ADD COLUMN IF NOT EXISTS oidc_subject text`,
 		`ALTER TABLE local_users ALTER COLUMN password_hash DROP NOT NULL`,
-		`ALTER TABLE local_users ADD COLUMN IF NOT EXISTS namespaces text[] NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE local_users ADD COLUMN IF NOT EXISTS namespaces text[]`,
+		`UPDATE local_users SET namespaces='{}'::text[] WHERE namespaces IS NULL`,
+		`ALTER TABLE local_users ALTER COLUMN namespaces SET DEFAULT '{}'::text[]`,
+		`ALTER TABLE local_users ALTER COLUMN namespaces SET NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS local_users_role_idx ON local_users (role, disabled)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS local_users_oidc_identity_idx ON local_users (oidc_issuer, oidc_subject) WHERE oidc_subject IS NOT NULL`,
 		`CREATE TABLE IF NOT EXISTS local_user_sessions (
@@ -403,7 +406,7 @@ func (s *PostgresStore) BootstrapInitialAdmin(ctx context.Context, user domain.U
 	}
 	_, err = tx.Exec(ctx, `
 INSERT INTO local_users (id, username, username_normalized, display_name, email, role, namespaces, auth_source, password_hash, disabled, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,'local',$8,false,$9,$9)`, user.ID, user.Username, normalized, user.DisplayName, user.Email, user.Role, user.Namespaces, passwordHash, createdAt)
+VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::text[], '{}'::text[]),'local',$8,false,$9,$9)`, user.ID, user.Username, normalized, user.DisplayName, user.Email, user.Role, user.Namespaces, passwordHash, createdAt)
 	if isUniqueViolation(err) {
 		return localauth.ErrUsernameExists
 	}
@@ -478,7 +481,7 @@ func (s *PostgresStore) CreateUser(ctx context.Context, user domain.User, normal
 	}
 	_, err = s.pool.Exec(ctx, `
 INSERT INTO local_users (id, username, username_normalized, display_name, email, role, namespaces, auth_source, password_hash, disabled, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,'local',$8,$9,$10,$10)`, user.ID, user.Username, normalized, user.DisplayName, user.Email, user.Role, user.Namespaces, passwordHash, user.Disabled, createdAt)
+VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::text[], '{}'::text[]),'local',$8,$9,$10,$10)`, user.ID, user.Username, normalized, user.DisplayName, user.Email, user.Role, user.Namespaces, passwordHash, user.Disabled, createdAt)
 	if isUniqueViolation(err) {
 		return localauth.ErrUsernameExists
 	}
@@ -519,7 +522,7 @@ func (s *PostgresStore) UpdateUser(ctx context.Context, user domain.User, passwo
 		return err
 	}
 	command, err := tx.Exec(ctx, `
-UPDATE local_users SET display_name=$2, email=$3, role=$4, namespaces=$5, disabled=$6, updated_at=$7,
+UPDATE local_users SET display_name=$2, email=$3, role=$4, namespaces=COALESCE($5::text[], '{}'::text[]), disabled=$6, updated_at=$7,
 password_hash=COALESCE($8, password_hash) WHERE id=$1`, user.ID, user.DisplayName, user.Email, user.Role, user.Namespaces, user.Disabled, updatedAt, passwordHash)
 	if err != nil {
 		return fmt.Errorf("update user: %w", err)
@@ -610,6 +613,9 @@ func (s *PostgresStore) DeleteSessionsForUser(ctx context.Context, userID string
 }
 
 func (s *PostgresStore) UpsertOIDCUser(ctx context.Context, candidate domain.User, normalized, issuer, subject string, autoCreate bool) (domain.User, error) {
+	if candidate.Namespaces == nil {
+		candidate.Namespaces = []string{}
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return domain.User{}, err
@@ -634,7 +640,7 @@ FROM local_users WHERE oidc_issuer=$1 AND oidc_subject=$2 FOR UPDATE`, issuer, s
 		}
 		_, err = tx.Exec(ctx, `
 INSERT INTO local_users (id, username, username_normalized, display_name, email, role, namespaces, auth_source, oidc_issuer, oidc_subject, password_hash, disabled, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,$7,'oidc',$8,$9,NULL,false,$10,$10)`, candidate.ID, candidate.Username, normalized, candidate.DisplayName, candidate.Email, candidate.Role, candidate.Namespaces, issuer, subject, createdAt)
+VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::text[], '{}'::text[]),'oidc',$8,$9,NULL,false,$10,$10)`, candidate.ID, candidate.Username, normalized, candidate.DisplayName, candidate.Email, candidate.Role, candidate.Namespaces, issuer, subject, createdAt)
 		if isUniqueViolation(err) {
 			return domain.User{}, localauth.ErrUsernameExists
 		}
