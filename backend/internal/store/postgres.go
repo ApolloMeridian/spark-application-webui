@@ -350,12 +350,12 @@ func (s *PostgresStore) HistorySummary(ctx context.Context, from, to time.Time, 
 	result := domain.HistorySummary{From: from.UTC().Format(time.RFC3339), To: to.UTC().Format(time.RFC3339)}
 	err := s.pool.QueryRow(ctx, `
 SELECT
-  count(*) FILTER (WHERE created_at >= $1 AND created_at <= $2 AND (cardinality($3::text[])=0 OR namespace=ANY($3))),
+  count(*) FILTER (WHERE created_at >= $1 AND created_at <= $2 AND (COALESCE(cardinality($3::text[]),0)=0 OR namespace=ANY($3))),
   count(*) FILTER (
     WHERE state IN ('FAILED', 'SUBMISSION_FAILED')
       AND COALESCE(finished_at, last_seen_at) >= $1
       AND COALESCE(finished_at, last_seen_at) <= $2
-      AND (cardinality($3::text[])=0 OR namespace=ANY($3))
+      AND (COALESCE(cardinality($3::text[]),0)=0 OR namespace=ANY($3))
   )
 FROM spark_application_history`, from, to, namespaces).Scan(&result.Submitted, &result.Failed)
 	if err != nil {
@@ -742,7 +742,7 @@ func (s *PostgresStore) ListTemplates(ctx context.Context, namespaces []string, 
 	rows, err := s.pool.Query(ctx, `
 SELECT id,name,description,namespace,manifest,parameters,current_version,disabled,created_by,created_at,updated_at
 FROM application_templates
-WHERE (cardinality($1::text[])=0 OR namespace=ANY($1)) AND ($2 OR NOT disabled)
+WHERE (COALESCE(cardinality($1::text[]),0)=0 OR namespace=ANY($1)) AND ($2 OR NOT disabled)
 ORDER BY updated_at DESC`, namespaces, includeDisabled)
 	if err != nil {
 		return nil, fmt.Errorf("list application templates: %w", err)
@@ -877,7 +877,7 @@ func (s *PostgresStore) ListFavorites(ctx context.Context, userID string) ([]dom
 }
 
 func (s *PostgresStore) ListAlertRules(ctx context.Context, namespaces []string) ([]domain.AlertRule, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,current_version,created_by,created_at,updated_at FROM alert_rules WHERE cardinality($1::text[])=0 OR cardinality(namespaces)=0 OR namespaces && $1 ORDER BY updated_at DESC`, namespaces)
+	rows, err := s.pool.Query(ctx, `SELECT id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,current_version,created_by,created_at,updated_at FROM alert_rules WHERE COALESCE(cardinality($1::text[]),0)=0 OR cardinality(namespaces)=0 OR namespaces && $1 ORDER BY updated_at DESC`, namespaces)
 	if err != nil {
 		return nil, err
 	}
@@ -955,7 +955,7 @@ func (s *PostgresStore) ResolveInactiveAlerts(ctx context.Context, activeIDs []s
 }
 
 func (s *PostgresStore) ListAlerts(ctx context.Context, namespaces []string) ([]domain.Alert, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,rule_id,rule_name,namespace,application_name,fingerprint,severity,status,summary,evidence,confidence,recommendation,first_seen_at,last_seen_at,acknowledged_by,acknowledged_at,silenced_until,recovered_at FROM application_alerts WHERE cardinality($1::text[])=0 OR namespace=ANY($1) ORDER BY CASE WHEN status='active' THEN 0 WHEN status='acknowledged' THEN 1 ELSE 2 END,last_seen_at DESC`, namespaces)
+	rows, err := s.pool.Query(ctx, `SELECT id,rule_id,rule_name,namespace,application_name,fingerprint,severity,status,summary,evidence,confidence,recommendation,first_seen_at,last_seen_at,acknowledged_by,acknowledged_at,silenced_until,recovered_at FROM application_alerts WHERE COALESCE(cardinality($1::text[]),0)=0 OR namespace=ANY($1) ORDER BY CASE WHEN status='active' THEN 0 WHEN status='acknowledged' THEN 1 ELSE 2 END,last_seen_at DESC`, namespaces)
 	if err != nil {
 		return nil, err
 	}
@@ -987,7 +987,7 @@ func (s *PostgresStore) ListAlerts(ctx context.Context, namespaces []string) ([]
 }
 
 func (s *PostgresStore) UpdateAlertStatus(ctx context.Context, id, status, operator string, silencedUntil *time.Time, namespaces []string) error {
-	result, err := s.pool.Exec(ctx, `UPDATE application_alerts SET status=$2,acknowledged_by=CASE WHEN $2='acknowledged' THEN $3 ELSE acknowledged_by END,acknowledged_at=CASE WHEN $2='acknowledged' THEN now() ELSE acknowledged_at END,silenced_until=CASE WHEN $2='silenced' THEN $4 ELSE silenced_until END WHERE id=$1 AND (cardinality($5::text[])=0 OR namespace=ANY($5))`, id, status, operator, silencedUntil, namespaces)
+	result, err := s.pool.Exec(ctx, `UPDATE application_alerts SET status=$2,acknowledged_by=CASE WHEN $2='acknowledged' THEN $3 ELSE acknowledged_by END,acknowledged_at=CASE WHEN $2='acknowledged' THEN now() ELSE acknowledged_at END,silenced_until=CASE WHEN $2='silenced' THEN $4 ELSE silenced_until END WHERE id=$1 AND (COALESCE(cardinality($5::text[]),0)=0 OR namespace=ANY($5))`, id, status, operator, silencedUntil, namespaces)
 	if err == nil && result.RowsAffected() == 0 {
 		return ErrAlertNotFound
 	}
@@ -995,7 +995,7 @@ func (s *PostgresStore) UpdateAlertStatus(ctx context.Context, id, status, opera
 }
 
 func (s *PostgresStore) ListFailureFingerprints(ctx context.Context, namespaces []string) ([]domain.FailureFingerprint, error) {
-	rows, err := s.pool.Query(ctx, `SELECT COALESCE(d->>'code','UNKNOWN'),COUNT(*),MAX(COALESCE(finished_at,last_seen_at)),(array_agg(application_name ORDER BY last_seen_at DESC))[1],(array_agg(namespace ORDER BY last_seen_at DESC))[1],COALESCE((array_agg(d->>'severity' ORDER BY last_seen_at DESC))[1],'warning'),COALESCE((array_agg(d->>'recommendation' ORDER BY last_seen_at DESC))[1],'') FROM spark_application_history CROSS JOIN LATERAL jsonb_array_elements(diagnosis) d WHERE cardinality($1::text[])=0 OR namespace=ANY($1) GROUP BY d->>'code' ORDER BY COUNT(*) DESC`, namespaces)
+	rows, err := s.pool.Query(ctx, `SELECT COALESCE(d->>'code','UNKNOWN'),COUNT(*),MAX(COALESCE(finished_at,last_seen_at)),(array_agg(application_name ORDER BY last_seen_at DESC))[1],(array_agg(namespace ORDER BY last_seen_at DESC))[1],COALESCE((array_agg(d->>'severity' ORDER BY last_seen_at DESC))[1],'warning'),COALESCE((array_agg(d->>'recommendation' ORDER BY last_seen_at DESC))[1],'') FROM spark_application_history CROSS JOIN LATERAL jsonb_array_elements(diagnosis) d WHERE COALESCE(cardinality($1::text[]),0)=0 OR namespace=ANY($1) GROUP BY d->>'code' ORDER BY COUNT(*) DESC`, namespaces)
 	if err != nil {
 		return nil, err
 	}
