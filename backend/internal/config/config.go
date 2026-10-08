@@ -11,6 +11,14 @@ import (
 )
 
 type Config struct {
+	WorkflowsEnabled        bool
+	SchedulerEnabled        bool
+	SchedulerInterval       time.Duration
+	WorkflowTimeZone        string
+	WorkflowMaxNodes        int
+	WorkflowMaxRuns         int
+	WorkflowMaxTasks        int
+	WorkflowCatchupLimit    int
 	HTTPAddr                string
 	ClusterName             string
 	Namespaces              []string
@@ -61,6 +69,14 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
+		WorkflowsEnabled:        boolEnv("WORKFLOWS_ENABLED", true),
+		SchedulerEnabled:        boolEnv("WORKFLOW_SCHEDULER_ENABLED", true),
+		SchedulerInterval:       durationEnv("WORKFLOW_SCHEDULER_INTERVAL", 5*time.Second),
+		WorkflowTimeZone:        env("WORKFLOW_TIMEZONE", "Asia/Shanghai"),
+		WorkflowMaxNodes:        intEnv("WORKFLOW_MAX_NODES", 50),
+		WorkflowMaxRuns:         intEnv("WORKFLOW_MAX_ACTIVE_RUNS", 20),
+		WorkflowMaxTasks:        intEnv("WORKFLOW_MAX_ACTIVE_TASKS", 50),
+		WorkflowCatchupLimit:    intEnv("WORKFLOW_MAX_CATCHUP_RUNS", 20),
 		HTTPAddr:                env("HTTP_ADDR", ":8081"),
 		ClusterName:             env("KUBERNETES_CLUSTER_NAME", "kubernetes"),
 		Namespaces:              splitCSV(env("WATCH_NAMESPACES", "spark")),
@@ -110,6 +126,15 @@ func Load() (Config, error) {
 	}
 	if len(cfg.Namespaces) == 0 {
 		return Config{}, fmt.Errorf("WATCH_NAMESPACES must contain at least one namespace")
+	}
+	if cfg.SchedulerInterval < time.Second {
+		return Config{}, fmt.Errorf("WORKFLOW_SCHEDULER_INTERVAL must be at least 1s")
+	}
+	if _, err := time.LoadLocation(cfg.WorkflowTimeZone); err != nil {
+		return Config{}, fmt.Errorf("invalid WORKFLOW_TIMEZONE")
+	}
+	if cfg.WorkflowMaxNodes < 1 || cfg.WorkflowMaxNodes > 100 || cfg.WorkflowMaxRuns < 1 || cfg.WorkflowMaxRuns > 100 || cfg.WorkflowMaxTasks < 1 || cfg.WorkflowMaxTasks > 1000 || cfg.WorkflowCatchupLimit < 1 || cfg.WorkflowCatchupLimit > 200 {
+		return Config{}, fmt.Errorf("workflow limits are outside supported bounds")
 	}
 	if cfg.MetricsQueryStep <= 0 || cfg.MetricsCPURateWindow <= 0 || cfg.MetricsLookback <= 0 {
 		return Config{}, fmt.Errorf("Prometheus lookback, query step, and CPU rate window must be positive durations")

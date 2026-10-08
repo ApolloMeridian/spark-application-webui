@@ -16,6 +16,7 @@ import { UsersPage } from './pages/UsersPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { TemplatesPage } from './pages/TemplatesPage';
 import { AlertsPage } from './pages/AlertsPage';
+import { WorkflowsPage } from './pages/WorkflowsPage';
 import { runtimeConfig } from './runtimeConfig';
 
 function ProtectedRoute() {
@@ -55,13 +56,16 @@ function ThemedApp() {
                 <Route path="/applications/:namespace/:name/spark-ui" element={<SparkUIPage />} />
 				<Route path="/templates" element={<TemplatesPage />} />
 				<Route path="/alerts" element={<AlertsPage />} />
+				<Route path="/projects" element={<WorkflowsPage />} />
+				<Route path="/schedules" element={<WorkflowsPage />} />
+				<Route path="/workflow-history" element={<WorkflowsPage />} />
                 <Route element={<LocalAccountRoute />}>
                   <Route path="/profile" element={<ProfilePage />} />
                 </Route>
                 <Route element={<AdminRoute />}>
                   <Route path="/submit" element={<SubmitApplicationPage />} />
                   <Route path="/audit" element={<AuditPage />} />
-                  <Route element={<LocalAccountRoute />}><Route path="/users" element={<UsersPage />} /></Route>
+                  <Route path="/users" element={<UsersPage />} />
                 </Route>
               </Route>
             </Route>

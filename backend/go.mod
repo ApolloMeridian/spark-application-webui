@@ -7,6 +7,7 @@ toolchain go1.24.13
 require (
 	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/jackc/pgx/v5 v5.7.6
+	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/crypto v0.37.0
 	golang.org/x/oauth2 v0.30.0
 	sigs.k8s.io/yaml v1.4.0

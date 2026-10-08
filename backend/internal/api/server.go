@@ -23,6 +23,7 @@ import (
 	"spark-control-center/backend/internal/localauth"
 	"spark-control-center/backend/internal/oidcauth"
 	"spark-control-center/backend/internal/service"
+	"spark-control-center/backend/internal/workflow"
 )
 
 type ApplicationService interface {
@@ -64,6 +65,7 @@ type ManagementService interface {
 }
 
 type Server struct {
+	flows    *workflow.Service
 	config   config.Config
 	service  ApplicationService
 	auth     *localauth.Service
@@ -73,8 +75,11 @@ type Server struct {
 	errors   atomic.Uint64
 }
 
-func New(cfg config.Config, applicationService ApplicationService, authService *localauth.Service, oidcService *oidcauth.Service, logger *slog.Logger) http.Handler {
+func New(cfg config.Config, applicationService ApplicationService, authService *localauth.Service, oidcService *oidcauth.Service, logger *slog.Logger, workflows ...*workflow.Service) http.Handler {
 	server := &Server{config: cfg, service: applicationService, auth: authService, oidc: oidcService, logger: logger}
+	if len(workflows) > 0 {
+		server.flows = workflows[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /readyz", server.ready)
@@ -122,7 +127,8 @@ func New(cfg config.Config, applicationService ApplicationService, authService *
 	mux.HandleFunc("PATCH /v1/alert-rules/{id}", server.saveAlertRule)
 	mux.HandleFunc("DELETE /v1/alert-rules/{id}", server.deleteAlertRule)
 	mux.HandleFunc("GET /v1/diagnostics/fingerprints", server.listFingerprints)
-	return server.middleware(server.sameOrigin(server.authenticate(mux)))
+	server.registerWorkflows(mux)
+	return server.middleware(server.sameOrigin(server.authenticate(server.auditMutations(mux))))
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -141,10 +147,15 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
-func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = fmt.Fprintf(w, "# HELP spark_control_center_http_requests_total Total HTTP requests.\n# TYPE spark_control_center_http_requests_total counter\nspark_control_center_http_requests_total %d\n", s.requests.Load())
 	_, _ = fmt.Fprintf(w, "# HELP spark_control_center_http_errors_total Total HTTP 5xx responses.\n# TYPE spark_control_center_http_errors_total counter\nspark_control_center_http_errors_total %d\n", s.errors.Load())
+	if s.flows != nil {
+		if metrics, err := s.flows.Metrics(r.Context()); err == nil {
+			_, _ = io.WriteString(w, metrics)
+		}
+	}
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
@@ -243,6 +254,16 @@ func (s *Server) listApplications(w http.ResponseWriter, r *http.Request) {
 	filters := r.URL.Query()
 	filtered := make([]domain.SparkApplication, 0, len(apps))
 	for _, app := range apps {
+		if s.flows != nil {
+			allowed, err := s.flows.ApplicationTenant(r.Context(), currentUser(r), app.Namespace, app.Name)
+			if err != nil {
+				s.writeServiceError(w, err)
+				return
+			}
+			if !allowed {
+				continue
+			}
+		}
 		if matches(app, filters.Get("keyword"), filters.Get("state"), filters.Get("owner"), filters.Get("namespace")) {
 			filtered = append(filtered, app)
 		}
@@ -336,6 +357,15 @@ func (s *Server) applicationStream(w http.ResponseWriter, r *http.Request) {
 		case change, open := <-changes:
 			if !open {
 				return
+			}
+			if s.flows != nil {
+				allowed, err := s.flows.ApplicationTenant(r.Context(), currentUser(r), change.Namespace, change.Name)
+				if err != nil {
+					return
+				}
+				if !allowed {
+					continue
+				}
 			}
 			data, _ := json.Marshal(change)
 			_, _ = fmt.Fprintf(w, "event: application\ndata: %s\n\n", data)
@@ -694,6 +724,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		Email       string          `json:"email"`
 		Role        domain.UserRole `json:"role"`
 		Namespaces  []string        `json:"namespaces"`
+		TenantID    string          `json:"tenantId"`
 		Password    string          `json:"password"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
@@ -706,7 +737,7 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, err := s.auth.CreateUser(r.Context(), currentUser(r), localauth.CreateUserInput{
-		Username: body.Username, DisplayName: body.DisplayName, Email: body.Email, Role: body.Role, Namespaces: body.Namespaces, Password: body.Password,
+		Username: body.Username, DisplayName: body.DisplayName, Email: body.Email, Role: body.Role, Namespaces: body.Namespaces, Password: body.Password, TenantID: body.TenantID,
 	})
 	if err != nil {
 		s.writeAuthError(w, err)
@@ -721,6 +752,7 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		Email       *string          `json:"email"`
 		Role        *domain.UserRole `json:"role"`
 		Namespaces  *[]string        `json:"namespaces"`
+		TenantID    *string          `json:"tenantId"`
 		Disabled    *bool            `json:"disabled"`
 		Password    *string          `json:"password"`
 	}
@@ -736,7 +768,7 @@ func (s *Server) updateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	user, err := s.auth.UpdateUser(r.Context(), currentUser(r), r.PathValue("id"), localauth.UpdateUserInput{
-		DisplayName: body.DisplayName, Email: body.Email, Role: body.Role, Namespaces: body.Namespaces, Disabled: body.Disabled, Password: body.Password,
+		DisplayName: body.DisplayName, Email: body.Email, Role: body.Role, Namespaces: body.Namespaces, Disabled: body.Disabled, Password: body.Password, TenantID: body.TenantID,
 	})
 	if err != nil {
 		s.writeAuthError(w, err)
@@ -824,13 +856,13 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 		s.writeServiceError(w, err)
 		return
 	}
-	if len(principal.Namespaces) == 0 {
-		s.writeJSON(w, http.StatusOK, audits)
-		return
-	}
 	filtered := make([]domain.OperationAudit, 0, len(audits))
 	for _, audit := range audits {
-		if userCanAccessNamespace(principal, audit.Namespace) {
+		tenantID := principal.TenantID
+		if tenantID == "" {
+			tenantID = "default"
+		}
+		if (audit.TenantID == "" || audit.TenantID == tenantID) && (audit.Namespace == "" || userCanAccessNamespace(principal, audit.Namespace)) {
 			filtered = append(filtered, audit)
 		}
 	}
@@ -1055,6 +1087,17 @@ func (s *Server) decodeBatch(w http.ResponseWriter, r *http.Request, principal d
 	for _, item := range body.Items {
 		if !s.requireNamespace(w, principal, item.Namespace) {
 			return body, false
+		}
+		if s.flows != nil {
+			allowed, err := s.flows.ApplicationTenant(r.Context(), principal, item.Namespace, item.Name)
+			if err != nil {
+				s.writeServiceError(w, err)
+				return body, false
+			}
+			if !allowed {
+				s.writeError(w, 404, fmt.Errorf("resource not found in this tenant"))
+				return body, false
+			}
 		}
 	}
 	return body, true
@@ -1285,6 +1328,20 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			http.SetCookie(w, sessionCookie(r, "", time.Unix(1, 0), -1))
 			s.writeAuthError(w, err)
 			return
+		}
+		if s.flows != nil && strings.HasPrefix(r.URL.Path, "/v1/namespaces/") {
+			parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+			if len(parts) >= 5 && parts[3] == "applications" && parts[4] != "dry-run" {
+				allowed, err := s.flows.ApplicationTenant(r.Context(), user, parts[2], parts[4])
+				if err != nil {
+					s.writeServiceError(w, err)
+					return
+				}
+				if !allowed {
+					s.writeError(w, 404, fmt.Errorf("resource not found in this tenant"))
+					return
+				}
+			}
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, user)))
 	})

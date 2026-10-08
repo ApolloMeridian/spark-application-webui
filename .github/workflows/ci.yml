@@ -61,6 +61,13 @@ jobs:
         working-directory: backend
         run: go vet ./...
 
+      - name: Build and smoke-test production containers
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          docker build -t "spark-control-center:${version}" .
+          docker build -f backend/Dockerfile -t "spark-control-center-backend:${version}" .
+          QA_VERSION="${version}" node scripts/container-workflow-smoke.mjs
+
       - name: Set up Helm
         uses: azure/setup-helm@v4
 

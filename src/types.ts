@@ -13,6 +13,7 @@ export type UserRole = 'viewer' | 'admin';
 export type Locale = 'zh-CN' | 'en-US';
 
 export interface UserAccount {
+	 tenantId?: string;
   id: string;
   username: string;
   displayName: string;
@@ -26,6 +27,7 @@ export interface UserAccount {
 }
 
 export interface CreateUserInput {
+	 tenantId?: string;
   username: string;
   displayName: string;
   email: string;
@@ -35,6 +37,7 @@ export interface CreateUserInput {
 }
 
 export interface UpdateUserInput {
+	 tenantId?: string;
   displayName?: string;
   email?: string;
   role?: 'viewer' | 'admin';
@@ -92,7 +95,7 @@ export interface OperationAudit {
   applicationName: string;
   namespace: string;
   operator: string;
-  operation: 'KILL' | 'DELETE' | 'SUBMIT';
+  operation: string;
   reason?: string;
   timestamp: string;
   result: 'SUCCESS' | 'FAILED';
@@ -190,7 +193,7 @@ export interface ApplicationFilters {
 
 export interface ApplicationList { items: SparkApplication[]; page: number; pageSize: number; total: number }
 export interface TemplateParameter { name: string; description?: string; type: 'string' | 'integer' | 'number' | 'boolean'; required: boolean; default?: string; enum?: string[]; pattern?: string }
-export interface TemplateVersion { version: number; manifest: string; createdBy: string; createdAt: string }
+export interface TemplateVersion { version: number; manifest: string; parameters?: TemplateParameter[]; createdBy: string; createdAt: string }
 export interface ApplicationTemplate { id: string; name: string; description?: string; namespace: string; manifest: string; parameters: TemplateParameter[]; version: number; disabled: boolean; createdBy: string; createdAt: string; updatedAt: string; versions?: TemplateVersion[] }
 export interface ApplicationFavorite { namespace: string; application: string }
 export interface BatchActionItem { namespace: string; name: string; allowed?: boolean; reason?: string }

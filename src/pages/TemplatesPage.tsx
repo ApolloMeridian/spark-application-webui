@@ -1,40 +1,540 @@
-import { CopyOutlined, DeleteOutlined, EditOutlined, FileAddOutlined, PlayCircleOutlined } from '@ant-design/icons';
-import { Alert, App, Button, Card, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, Typography } from 'antd';
-import { useCallback, useEffect, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { useAuth } from '../auth';
-import { PageHeader } from '../components/PageHeader';
-import { TemplateParametersEditor } from '../components/TemplateParametersEditor';
-import { useI18n } from '../i18n';
-import { cleanApplicationManifest } from '../manifests';
-import { runtimeConfig } from '../runtimeConfig';
-import { operationsService } from '../service';
-import type { ApplicationTemplate } from '../types';
-import { formatTimestamp, permittedNamespaces } from '../utils';
+import {
+  CopyOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  FileAddOutlined,
+  PlayCircleOutlined,
+  HistoryOutlined,
+} from "@ant-design/icons";
+import {
+  Alert,
+  App,
+  Button,
+  Card,
+  Drawer,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Popconfirm,
+  Select,
+  Space,
+  Switch,
+  Table,
+  Tag,
+  Typography,
+} from "antd";
+import { useCallback, useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { useAuth } from "../auth";
+import { PageHeader } from "../components/PageHeader";
+import { TemplateParametersEditor } from "../components/TemplateParametersEditor";
+import { useI18n } from "../i18n";
+import { cleanApplicationManifest } from "../manifests";
+import { runtimeConfig } from "../runtimeConfig";
+import { operationsService } from "../service";
+import type { ApplicationTemplate } from "../types";
+import { formatTimestamp, permittedNamespaces } from "../utils";
 
 type TemplateForm = Partial<ApplicationTemplate>;
 
 export function TemplatesPage() {
-  const { locale } = useI18n(); const en = locale === 'en-US'; const { session } = useAuth(); const navigate = useNavigate(); const location = useLocation(); const { message } = App.useApp();
-  const availableNamespaces = permittedNamespaces(runtimeConfig.cluster.namespaces, session?.namespaces);
+  const { locale } = useI18n();
+  const en = locale === "en-US";
+  const { session } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { message } = App.useApp();
+  const availableNamespaces = permittedNamespaces(
+    runtimeConfig.cluster.namespaces,
+    session?.namespaces,
+  );
   const [saving, setSaving] = useState(false);
-  const [items, setItems] = useState<ApplicationTemplate[]>([]); const [loading, setLoading] = useState(true); const [error, setError] = useState(''); const [editing, setEditing] = useState<TemplateForm>(); const [rendering, setRendering] = useState<ApplicationTemplate>(); const [values, setValues] = useState<Record<string, string>>({});
-  const load = useCallback(async () => { setLoading(true); setError(''); try { setItems(await operationsService.listTemplates(session?.role === 'admin')); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setLoading(false); } }, [session?.role]);
-  useEffect(() => { void load(); const state = location.state as { manifest?: string; namespace?: string } | null; if (state?.manifest && session?.role === 'admin') { try { setEditing({ name: '', namespace: state.namespace, manifest: cleanApplicationManifest(state.manifest, state.namespace), parameters: [], disabled: false }); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } } }, [load, location.state, session?.role]);
-  const save = async () => { if (!editing) return; setSaving(true); try { if (!editing.name?.trim() || !editing.namespace) throw new Error(en ? 'Name and namespace are required' : '请填写名称和命名空间'); await operationsService.saveTemplate({ ...editing, manifest: cleanApplicationManifest(editing.manifest || '', editing.namespace), parameters: editing.parameters || [] }); message.success(en ? 'Template saved' : '模板已保存'); setEditing(undefined); void load(); } catch (e) { message.error(e instanceof Error ? e.message : String(e)); } finally { setSaving(false); } };
-  const render = async () => { if (!rendering) return; try { const result = await operationsService.renderTemplate(rendering.id, values); navigate('/submit', { state: { manifest: result.serverYaml, namespace: rendering.namespace, source: rendering.name } }); } catch (e) { message.error(e instanceof Error ? e.message : String(e)); } };
-  return <>
-    <PageHeader title={en ? 'Application templates' : '作业模板'} subtitle={en ? 'Versioned, parameterized SparkApplication YAML without embedded secrets.' : '支持版本记录和参数表单的 SparkApplication YAML，不保存 Secret 明文。'} extra={session?.role === 'admin' && <Button type="primary" icon={<FileAddOutlined />} onClick={() => setEditing({ namespace: availableNamespaces[0] || '', manifest: '', parameters: [], disabled: false })}>{en ? 'New template' : '新建模板'}</Button>} />
-    {error && <Alert type="error" showIcon message={error} action={<Button onClick={load}>{en ? 'Retry' : '重试'}</Button>} />}
-    <Card className="table-card"><Table rowKey="id" loading={loading} dataSource={items} scroll={{ x: 1050 }} columns={[
-      { title: en ? 'Template' : '模板', dataIndex: 'name', render: (name, row) => <Space><Typography.Text strong>{name}</Typography.Text>{row.disabled && <Tag>{en ? 'Disabled' : '已禁用'}</Tag>}</Space> },
-      { title: en ? 'Namespace' : '命名空间', dataIndex: 'namespace' }, { title: en ? 'Version' : '版本', dataIndex: 'version', render: (v) => <Tag color="blue">v{v}</Tag> },
-      { title: en ? 'Parameters' : '参数', render: (_, row) => row.parameters.length }, { title: en ? 'Updated' : '更新时间', dataIndex: 'updatedAt', render: (value) => formatTimestamp(value) },
-      { title: en ? 'Actions' : '操作', fixed: 'right', width: 220, render: (_, row) => <Space><Button size="small" icon={<PlayCircleOutlined />} disabled={row.disabled || session?.role !== 'admin'} onClick={() => { setRendering(row); setValues(Object.fromEntries(row.parameters.map((p) => [p.name, p.default || '']))); }}>{en ? 'Use' : '使用'}</Button>{session?.role === 'admin' && <><Button size="small" type="text" aria-label={en ? `Edit ${row.name}` : `编辑 ${row.name}`} icon={<EditOutlined />} onClick={async () => { try { const full = await operationsService.getTemplate(row.id); setEditing({ ...full, manifest: cleanApplicationManifest(full.manifest, full.namespace) }); } catch (e) { message.error(e instanceof Error ? e.message : String(e)); } }} /><Button size="small" type="text" icon={<CopyOutlined />} onClick={async () => { await operationsService.copyTemplate(row.id, `${row.name} copy`); void load(); }} /><Button size="small" danger type="text" icon={<DeleteOutlined />} onClick={() => Modal.confirm({ title: en ? 'Delete this template?' : '删除此模板？', onOk: async () => { await operationsService.deleteTemplate(row.id); void load(); } })} /></>}</Space> },
-    ]} /></Card>
-    <Modal open={Boolean(editing)} title={editing?.id ? (en ? 'Edit template' : '编辑模板') : (en ? 'New template' : '新建模板')} width="min(1050px, 94vw)" styles={{ body: { maxHeight: 'calc(100vh - 240px)', overflowY: 'auto' } }} onCancel={() => setEditing(undefined)} onOk={save} confirmLoading={saving} okText={en ? 'Save' : '保存'}>
-      {editing && <Form layout="vertical"><Space wrap style={{ width: '100%' }}><Form.Item label={en ? 'Name' : '名称'} required><Input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></Form.Item><Form.Item label={en ? 'Namespace' : '命名空间'} required><Select style={{ width: 220 }} value={editing.namespace} options={availableNamespaces.map((x) => ({ value: x, label: x }))} onChange={(namespace) => setEditing({ ...editing, namespace })} /></Form.Item><Form.Item label={en ? 'Disabled' : '禁用'}><Switch checked={editing.disabled} onChange={(disabled) => setEditing({ ...editing, disabled })} /></Form.Item></Space><Form.Item label={en ? 'Description' : '描述'}><Input value={editing.description} onChange={(e) => setEditing({ ...editing, description: e.target.value })} /></Form.Item><Form.Item label={en ? 'SparkApplication YAML' : 'SparkApplication YAML'} extra={en ? 'Runtime status, server metadata, and last-applied snapshots are removed on save.' : '保存时自动移除运行状态、服务端元数据及 last-applied 快照。'} required><Input.TextArea className="yaml-editor" autoSize={{ minRows: 12, maxRows: 26 }} value={editing.manifest} onChange={(e) => setEditing({ ...editing, manifest: e.target.value })} /></Form.Item><Form.Item label={en ? 'Parameter definitions' : '参数定义'}><TemplateParametersEditor en={en} parameters={editing.parameters || []} onChange={(parameters) => setEditing({ ...editing, parameters })} /></Form.Item></Form>}
-    </Modal>
-    <Modal open={Boolean(rendering)} title={en ? `Use ${rendering?.name}` : `使用 ${rendering?.name}`} onCancel={() => setRendering(undefined)} onOk={render} okText={en ? 'Render and validate' : '渲染并校验'}>{rendering?.parameters.map((p) => <div key={p.name} style={{ marginBottom: 14 }}><Typography.Text strong>{p.name}{p.required ? ' *' : ''}</Typography.Text><Typography.Paragraph type="secondary">{p.description}</Typography.Paragraph>{p.enum?.length ? <Select style={{ width: '100%' }} value={values[p.name]} options={p.enum.map((x) => ({ value: x, label: x }))} onChange={(v) => setValues({ ...values, [p.name]: v })} /> : p.type === 'number' || p.type === 'integer' ? <InputNumber style={{ width: '100%' }} value={Number(values[p.name] || 0)} onChange={(v) => setValues({ ...values, [p.name]: String(v ?? '') })} /> : <Input value={values[p.name]} onChange={(e) => setValues({ ...values, [p.name]: e.target.value })} />}</div>)}</Modal>
-  </>;
+  const [history, setHistory] = useState<ApplicationTemplate>();
+  const [versionYaml, setVersionYaml] = useState("");
+  const [items, setItems] = useState<ApplicationTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState<TemplateForm>();
+  const [rendering, setRendering] = useState<ApplicationTemplate>();
+  const [values, setValues] = useState<Record<string, string>>({});
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setItems(
+        await operationsService.listTemplates(session?.role === "admin"),
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [session?.role]);
+  useEffect(() => {
+    void load();
+    const state = location.state as {
+      manifest?: string;
+      namespace?: string;
+    } | null;
+    if (state?.manifest && session?.role === "admin") {
+      try {
+        setEditing({
+          name: "",
+          namespace: state.namespace,
+          manifest: cleanApplicationManifest(state.manifest, state.namespace),
+          parameters: [],
+          disabled: false,
+        });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    }
+  }, [load, location.state, session?.role]);
+  const save = async () => {
+    if (!editing) return;
+    setSaving(true);
+    try {
+      if (!editing.name?.trim() || !editing.namespace)
+        throw new Error(
+          en ? "Name and namespace are required" : "请填写名称和命名空间",
+        );
+      await operationsService.saveTemplate({
+        ...editing,
+        manifest: cleanApplicationManifest(
+          editing.manifest || "",
+          editing.namespace,
+        ),
+        parameters: editing.parameters || [],
+      });
+      message.success(en ? "Template saved" : "模板已保存");
+      setEditing(undefined);
+      void load();
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const render = async () => {
+    if (!rendering) return;
+    try {
+      const result = await operationsService.renderTemplate(
+        rendering.id,
+        values,
+      );
+      navigate("/submit", {
+        state: {
+          manifest: result.serverYaml,
+          namespace: rendering.namespace,
+          source: rendering.name,
+        },
+      });
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+    }
+  };
+  return (
+    <>
+      <PageHeader
+        title={en ? "Application templates" : "作业模板"}
+        subtitle={
+          en
+            ? "Versioned, parameterized SparkApplication YAML without embedded secrets."
+            : "支持版本记录和参数表单的 SparkApplication YAML，不保存 Secret 明文。"
+        }
+        extra={
+          session?.role === "admin" && (
+            <Button
+              type="primary"
+              icon={<FileAddOutlined />}
+              onClick={() =>
+                setEditing({
+                  namespace: availableNamespaces[0] || "",
+                  manifest: "",
+                  parameters: [],
+                  disabled: false,
+                })
+              }
+            >
+              {en ? "New template" : "新建模板"}
+            </Button>
+          )
+        }
+      />
+      {error && (
+        <Alert
+          type="error"
+          showIcon
+          message={error}
+          action={<Button onClick={load}>{en ? "Retry" : "重试"}</Button>}
+        />
+      )}
+      <Card className="table-card">
+        <Table
+          rowKey="id"
+          loading={loading}
+          dataSource={items}
+          scroll={{ x: 1050 }}
+          columns={[
+            {
+              title: en ? "Template" : "模板",
+              dataIndex: "name",
+              render: (name, row) => (
+                <Space>
+                  <Typography.Text strong>{name}</Typography.Text>
+                  {row.disabled && <Tag>{en ? "Disabled" : "已禁用"}</Tag>}
+                </Space>
+              ),
+            },
+            { title: en ? "Namespace" : "命名空间", dataIndex: "namespace" },
+            {
+              title: en ? "Version" : "版本",
+              dataIndex: "version",
+              render: (v) => <Tag color="blue">v{v}</Tag>,
+            },
+            {
+              title: en ? "Parameters" : "参数",
+              render: (_, row) => row.parameters.length,
+            },
+            {
+              title: en ? "Updated" : "更新时间",
+              dataIndex: "updatedAt",
+              render: (value) => formatTimestamp(value),
+            },
+            {
+              title: en ? "Actions" : "操作",
+              fixed: "right",
+              width: 270,
+              render: (_, row) => (
+                <Space>
+                  <Button
+                    size="small"
+                    icon={<HistoryOutlined />}
+                    onClick={async () => {
+                      try {
+                        setHistory(await operationsService.getTemplate(row.id));
+                      } catch (e) {
+                        message.error(String(e));
+                      }
+                    }}
+                  >
+                    {en ? "Versions" : "版本"}
+                  </Button>
+                  <Button
+                    size="small"
+                    icon={<PlayCircleOutlined />}
+                    disabled={row.disabled || session?.role !== "admin"}
+                    onClick={() => {
+                      setRendering(row);
+                      setValues(
+                        Object.fromEntries(
+                          row.parameters.map((p) => [p.name, p.default || ""]),
+                        ),
+                      );
+                    }}
+                  >
+                    {en ? "Use" : "使用"}
+                  </Button>
+                  {session?.role === "admin" && (
+                    <>
+                      <Button
+                        size="small"
+                        type="text"
+                        aria-label={
+                          en ? `Edit ${row.name}` : `编辑 ${row.name}`
+                        }
+                        icon={<EditOutlined />}
+                        onClick={async () => {
+                          try {
+                            const full = await operationsService.getTemplate(
+                              row.id,
+                            );
+                            setEditing({
+                              ...full,
+                              manifest: cleanApplicationManifest(
+                                full.manifest,
+                                full.namespace,
+                              ),
+                            });
+                          } catch (e) {
+                            message.error(
+                              e instanceof Error ? e.message : String(e),
+                            );
+                          }
+                        }}
+                      />
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<CopyOutlined />}
+                        onClick={async () => {
+                          await operationsService.copyTemplate(
+                            row.id,
+                            `${row.name} copy`,
+                          );
+                          void load();
+                        }}
+                      />
+                      <Button
+                        size="small"
+                        danger
+                        type="text"
+                        icon={<DeleteOutlined />}
+                        onClick={() =>
+                          Modal.confirm({
+                            title: en
+                              ? "Delete this template?"
+                              : "删除此模板？",
+                            onOk: async () => {
+                              await operationsService.deleteTemplate(row.id);
+                              void load();
+                            },
+                          })
+                        }
+                      />
+                    </>
+                  )}
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Card>
+      <Modal
+        open={Boolean(editing)}
+        title={
+          editing?.id
+            ? en
+              ? "Edit template"
+              : "编辑模板"
+            : en
+              ? "New template"
+              : "新建模板"
+        }
+        width="min(1050px, 94vw)"
+        styles={{
+          body: { maxHeight: "calc(100vh - 240px)", overflowY: "auto" },
+        }}
+        onCancel={() => setEditing(undefined)}
+        onOk={save}
+        confirmLoading={saving}
+        okText={en ? "Save" : "保存"}
+      >
+        {editing && (
+          <Form layout="vertical">
+            <Space wrap style={{ width: "100%" }}>
+              <Form.Item label={en ? "Name" : "名称"} required>
+                <Input
+                  value={editing.name}
+                  onChange={(e) =>
+                    setEditing({ ...editing, name: e.target.value })
+                  }
+                />
+              </Form.Item>
+              <Form.Item label={en ? "Namespace" : "命名空间"} required>
+                <Select
+                  style={{ width: 220 }}
+                  value={editing.namespace}
+                  options={availableNamespaces.map((x) => ({
+                    value: x,
+                    label: x,
+                  }))}
+                  onChange={(namespace) =>
+                    setEditing({ ...editing, namespace })
+                  }
+                />
+              </Form.Item>
+              <Form.Item label={en ? "Disabled" : "禁用"}>
+                <Switch
+                  checked={editing.disabled}
+                  onChange={(disabled) => setEditing({ ...editing, disabled })}
+                />
+              </Form.Item>
+            </Space>
+            <Form.Item label={en ? "Description" : "描述"}>
+              <Input
+                value={editing.description}
+                onChange={(e) =>
+                  setEditing({ ...editing, description: e.target.value })
+                }
+              />
+            </Form.Item>
+            <Form.Item
+              label={en ? "SparkApplication YAML" : "SparkApplication YAML"}
+              extra={
+                en
+                  ? "Runtime status, server metadata, and last-applied snapshots are removed on save."
+                  : "保存时自动移除运行状态、服务端元数据及 last-applied 快照。"
+              }
+              required
+            >
+              <Input.TextArea
+                className="yaml-editor"
+                autoSize={{ minRows: 12, maxRows: 26 }}
+                value={editing.manifest}
+                onChange={(e) =>
+                  setEditing({ ...editing, manifest: e.target.value })
+                }
+              />
+            </Form.Item>
+            <Form.Item label={en ? "Parameter definitions" : "参数定义"}>
+              <TemplateParametersEditor
+                en={en}
+                parameters={editing.parameters || []}
+                onChange={(parameters) =>
+                  setEditing({ ...editing, parameters })
+                }
+              />
+            </Form.Item>
+          </Form>
+        )}
+      </Modal>
+      <Modal
+        open={Boolean(rendering)}
+        title={en ? `Use ${rendering?.name}` : `使用 ${rendering?.name}`}
+        onCancel={() => setRendering(undefined)}
+        onOk={render}
+        okText={en ? "Render and validate" : "渲染并校验"}
+      >
+        {rendering?.parameters.map((p) => (
+          <div key={p.name} style={{ marginBottom: 14 }}>
+            <Typography.Text strong>
+              {p.name}
+              {p.required ? " *" : ""}
+            </Typography.Text>
+            <Typography.Paragraph type="secondary">
+              {p.description}
+            </Typography.Paragraph>
+            {p.enum?.length ? (
+              <Select
+                style={{ width: "100%" }}
+                value={values[p.name]}
+                options={p.enum.map((x) => ({ value: x, label: x }))}
+                onChange={(v) => setValues({ ...values, [p.name]: v })}
+              />
+            ) : p.type === "number" || p.type === "integer" ? (
+              <InputNumber
+                style={{ width: "100%" }}
+                value={Number(values[p.name] || 0)}
+                onChange={(v) =>
+                  setValues({ ...values, [p.name]: String(v ?? "") })
+                }
+              />
+            ) : (
+              <Input
+                value={values[p.name]}
+                onChange={(e) =>
+                  setValues({ ...values, [p.name]: e.target.value })
+                }
+              />
+            )}
+          </div>
+        ))}
+      </Modal>
+      <Drawer
+        open={Boolean(history)}
+        onClose={() => setHistory(undefined)}
+        title={`${history?.name || ""} · ${en ? "Version history" : "版本历史"}`}
+        width="min(820px, 94vw)"
+      >
+        <Alert
+          type="info"
+          message={
+            en
+              ? "Restore creates a new current version. Historical version deletion physically removes the stored manifest and parameters."
+              : "回溯创建新的当前版本；删除历史版本会从数据库清除对应 YAML 和参数。"
+          }
+        />
+        <Table
+          rowKey="version"
+          pagination={false}
+          dataSource={history?.versions || []}
+          columns={[
+            {
+              title: en ? "Version" : "版本",
+              dataIndex: "version",
+              render: (v) => `v${v}`,
+            },
+            {
+              title: en ? "Created" : "创建时间",
+              dataIndex: "createdAt",
+              render: (v) => formatTimestamp(v),
+            },
+            {
+              title: en ? "Actions" : "操作",
+              render: (_, v) => (
+                <Space>
+                  <Button
+                    size="small"
+                    onClick={() => setVersionYaml(v.manifest)}
+                  >
+                    {en ? "View YAML" : "查看 YAML"}
+                  </Button>
+                  {session?.role === "admin" && history && (
+                    <>
+                      <Popconfirm
+                        title={en ? "Restore this version?" : "回溯此版本？"}
+                        onConfirm={async () => {
+                          await operationsService.templateVersionAction(
+                            history.id,
+                            v.version,
+                            false,
+                          );
+                          setHistory(
+                            await operationsService.getTemplate(history.id),
+                          );
+                          await load();
+                        }}
+                      >
+                        <Button size="small">{en ? "Restore" : "回溯"}</Button>
+                      </Popconfirm>
+                      <Popconfirm
+                        title={
+                          en
+                            ? "Permanently delete this version?"
+                            : "永久删除此历史版本？"
+                        }
+                        onConfirm={async () => {
+                          await operationsService.templateVersionAction(
+                            history.id,
+                            v.version,
+                            true,
+                          );
+                          setHistory(
+                            await operationsService.getTemplate(history.id),
+                          );
+                        }}
+                      >
+                        <Button
+                          size="small"
+                          danger
+                          disabled={v.version === history.version}
+                          icon={<DeleteOutlined />}
+                        />
+                      </Popconfirm>
+                    </>
+                  )}
+                </Space>
+              ),
+            },
+          ]}
+        />
+      </Drawer>
+      <Modal
+        open={Boolean(versionYaml)}
+        onCancel={() => setVersionYaml("")}
+        title="SparkApplication YAML"
+        footer={null}
+        width="min(900px, 94vw)"
+      >
+        <Input.TextArea
+          className="yaml-editor"
+          value={versionYaml}
+          readOnly
+          autoSize={{ minRows: 12, maxRows: 28 }}
+        />
+      </Modal>
+    </>
+  );
 }

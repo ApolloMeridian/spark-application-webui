@@ -81,6 +81,22 @@ spec:
             {{- end }}
             - name: ALERT_EVALUATION_INTERVAL
               value: {{ .Values.alerts.evaluationInterval | quote }}
+            - name: WORKFLOWS_ENABLED
+              value: {{ .Values.workflows.enabled | quote }}
+            - name: WORKFLOW_TIMEZONE
+              value: {{ .Values.workflows.timeZone | quote }}
+            - name: WORKFLOW_MAX_NODES
+              value: {{ .Values.workflows.maxNodes | quote }}
+            - name: WORKFLOW_SCHEDULER_ENABLED
+              value: {{ .Values.workflows.scheduler.enabled | quote }}
+            - name: WORKFLOW_SCHEDULER_INTERVAL
+              value: {{ .Values.workflows.scheduler.scanInterval | quote }}
+            - name: WORKFLOW_MAX_ACTIVE_RUNS
+              value: {{ .Values.workflows.scheduler.maxActiveRuns | quote }}
+            - name: WORKFLOW_MAX_ACTIVE_TASKS
+              value: {{ .Values.workflows.scheduler.maxActiveTasks | quote }}
+            - name: WORKFLOW_MAX_CATCHUP_RUNS
+              value: {{ .Values.workflows.scheduler.maxCatchupRuns | quote }}
             - name: ALERT_WEBHOOK_TIMEOUT
               value: {{ .Values.alerts.webhook.timeout | quote }}
             {{- if .Values.alerts.webhook.enabled }}

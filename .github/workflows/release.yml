@@ -74,6 +74,9 @@ jobs:
           docker build -t "spark-control-center:${{ steps.version.outputs.value }}" .
           docker build -f backend/Dockerfile -t "spark-control-center-backend:${{ steps.version.outputs.value }}" .
 
+      - name: Smoke-test workflow recovery in release containers
+        run: QA_VERSION="${{ steps.version.outputs.value }}" node scripts/container-workflow-smoke.mjs
+
       - name: Package release assets
         shell: bash
         run: |

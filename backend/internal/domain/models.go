@@ -16,6 +16,7 @@ type User struct {
 	Email       string   `json:"email"`
 	Role        UserRole `json:"role"`
 	Namespaces  []string `json:"namespaces"`
+	TenantID    string   `json:"tenantId"`
 	AuthSource  string   `json:"authSource"`
 	Disabled    bool     `json:"disabled"`
 	CreatedAt   string   `json:"createdAt"`
@@ -169,6 +170,7 @@ type HistorySummary struct {
 }
 
 type OperationAudit struct {
+	TenantID        string `json:"tenantId,omitempty"`
 	ID              string `json:"id"`
 	ApplicationName string `json:"applicationName"`
 	Namespace       string `json:"namespace"`
@@ -191,10 +193,11 @@ type TemplateParameter struct {
 }
 
 type TemplateVersion struct {
-	Version   int    `json:"version"`
-	Manifest  string `json:"manifest"`
-	CreatedBy string `json:"createdBy"`
-	CreatedAt string `json:"createdAt"`
+	Version    int                 `json:"version"`
+	Manifest   string              `json:"manifest"`
+	CreatedBy  string              `json:"createdBy"`
+	CreatedAt  string              `json:"createdAt"`
+	Parameters []TemplateParameter `json:"parameters"`
 }
 
 type ApplicationTemplate struct {

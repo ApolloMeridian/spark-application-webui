@@ -16,15 +16,20 @@ export function AppShell() {
   const { session, logout, setRole } = useAuth(); const { t, locale, setLocale } = useI18n();
   const visibleNamespaces = session?.namespaces?.length ? runtimeConfig.cluster.namespaces.filter((value) => session.namespaces.includes(value)) : runtimeConfig.cluster.namespaces;
   useEffect(() => { const onResize = () => window.innerWidth < 960 && setCollapsed(true); window.addEventListener('resize', onResize); return () => window.removeEventListener('resize', onResize); }, []);
-  const selected = location.pathname.startsWith('/applications') ? '/applications' : location.pathname.startsWith('/templates') ? '/templates' : location.pathname.startsWith('/alerts') ? '/alerts' : location.pathname.startsWith('/submit') ? '/submit' : location.pathname.startsWith('/audit') ? '/audit' : location.pathname.startsWith('/users') ? '/users' : '/overview';
+  const selected = ['/projects', '/schedules', '/workflow-history'].includes(location.pathname) ? location.pathname : location.pathname.startsWith('/applications') ? '/applications' : location.pathname.startsWith('/templates') ? '/templates' : location.pathname.startsWith('/alerts') ? '/alerts' : location.pathname.startsWith('/submit') ? '/submit' : location.pathname.startsWith('/audit') ? '/audit' : location.pathname.startsWith('/users') ? '/users' : '/overview';
   const menuItems = useMemo(() => [
     { key: '/overview', icon: <AppstoreOutlined />, label: t('overview') },
     { key: '/applications', icon: <DeploymentUnitOutlined />, label: t('applications') },
+    ...(runtimeConfig.features.workflows ? [
+      { key: '/projects', icon: <DeploymentUnitOutlined />, label: locale === 'en-US' ? 'Projects & workflows' : '项目与工作流' },
+      { key: '/schedules', icon: <CloudServerOutlined />, label: locale === 'en-US' ? 'Schedules' : '定时调度' },
+      { key: '/workflow-history', icon: <AuditOutlined />, label: locale === 'en-US' ? 'Execution history' : '执行历史' },
+    ] : []),
 	...(runtimeConfig.features.templates ? [{ key: '/templates', icon: <SnippetsOutlined />, label: locale === 'en-US' ? 'Templates' : '作业模板' }] : []),
 	...(runtimeConfig.features.alerts ? [{ key: '/alerts', icon: <AlertOutlined />, label: locale === 'en-US' ? 'Alerts' : '告警中心' }] : []),
     ...(runtimeConfig.features.submit && session?.role === 'admin' ? [{ key: '/submit', icon: <FileAddOutlined />, label: t('submitApplication') }] : []),
     ...(runtimeConfig.features.audit && session?.role === 'admin' ? [{ key: '/audit', icon: <AuditOutlined />, label: t('audit') }] : []),
-    ...(runtimeConfig.auth.mode === 'local' && session?.role === 'admin' ? [{ key: '/users', icon: <TeamOutlined />, label: t('userManagement') }] : []),
+    ...(session?.role === 'admin' ? [{ key: '/users', icon: <TeamOutlined />, label: t('userManagement') }] : []),
   ], [session?.role, t, locale]);
   return (
     <Layout className="app-layout">

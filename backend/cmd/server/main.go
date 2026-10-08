@@ -22,6 +22,7 @@ import (
 	metrics "spark-control-center/backend/internal/prometheus"
 	"spark-control-center/backend/internal/service"
 	"spark-control-center/backend/internal/store"
+	"spark-control-center/backend/internal/workflow"
 )
 
 func main() {
@@ -78,8 +79,10 @@ func main() {
 	defer watchCancel()
 	applicationService.StartWatch(watchContext)
 	applicationService.StartAlertEvaluator(watchContext)
+	workflows := workflow.New(audits, applicationService, cfg, logger)
+	workflows.Start(watchContext)
 	server := &http.Server{
-		Addr: cfg.HTTPAddr, Handler: api.New(cfg, applicationService, authService, oidcService, logger),
+		Addr: cfg.HTTPAddr, Handler: api.New(cfg, applicationService, authService, oidcService, logger, workflows),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 90 * time.Second, IdleTimeout: 120 * time.Second,
 	}
 

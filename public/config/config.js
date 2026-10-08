@@ -34,6 +34,7 @@ window.__SPARK_CONTROL_CENTER_CONFIG__ = {
     baseUrl: '',
   },
   features: {
+    workflows: false, // Workflow orchestration requires the PostgreSQL backend.
     kill: true,
     audit: true,
     sparkUi: true,

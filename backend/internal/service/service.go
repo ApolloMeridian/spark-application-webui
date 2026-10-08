@@ -1168,6 +1168,7 @@ func (s *Service) SaveTemplate(ctx context.Context, item domain.ApplicationTempl
 		return item, err
 	}
 	item.CreatedBy = operator
+	if item.ID!="" { prior,err:=value.GetTemplate(ctx,item.ID);if err!=nil{return item,err};if prior.Namespace!=item.Namespace{return item,&kube.APIError{StatusCode:400,Message:"a versioned template cannot move between namespaces; copy it instead"}} }
 	return value.SaveTemplate(ctx, item)
 }
 

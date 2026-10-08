@@ -20,6 +20,8 @@ Spark Control Center is a web console for operating Apache Spark applications on
 - Authenticate with PostgreSQL local accounts or optional OIDC/Keycloak; enforce `viewer` and `admin` permissions plus per-user namespace access in both UI and API.
 - Persist users, sessions, lifecycle snapshots, failure diagnostics, and operation audit records in PostgreSQL.
 - Deploy with the included Helm chart and namespace-scoped Kubernetes RBAC.
+- Organize tenant-isolated projects, versioned DAG workflows and Spark YAML tasks; schedule with timezone-aware Cron or preview/confirm backfills. [Workflow guide](docs/WORKFLOWS.md).
+- Restore or permanently delete historical template/workflow versions, browse project-scoped execution histories, and recover orchestration state from PostgreSQL after backend replacement.
 
 ## Screenshots
 
@@ -38,6 +40,12 @@ Spark Control Center is a web console for operating Apache Spark applications on
 | ![Versioned SparkApplication templates](docs/images/templates-1440.png) | ![Proactive alert center](docs/images/alerts-1440.png) |
 
 All screenshots use deterministic mock data. They contain no production cluster details or credentials.
+
+| Workflow DAG | Cron scheduling |
+| --- | --- |
+| ![Workflow and task editor](docs/images/workflow-editor-1440.png) | ![Cron schedule preview](docs/images/workflow-schedule-1440.png) |
+
+![Project execution history](docs/images/workflow-history-1440.png)
 
 ## Architecture
 
@@ -79,15 +87,15 @@ go vet ./...
 Build images without a registry prefix:
 
 ```bash
-docker build -t spark-control-center:1.2.4 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.2.4 .
+docker build -t spark-control-center:1.4.0 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.0 .
 ```
 
-GitHub Release `v1.2.4` contains Docker-loadable image tar files and the packaged Helm chart.
+GitHub Release `v1.4.0` contains Docker-loadable image tar files and the packaged Helm chart.
 
 ```bash
-docker load -i spark-control-center-1.2.4.tar
-docker load -i spark-control-center-backend-1.2.4.tar
+docker load -i spark-control-center-1.4.0.tar
+docker load -i spark-control-center-backend-1.4.0.tar
 ```
 
 ## Helm deployment

@@ -53,6 +53,7 @@ type Service struct {
 }
 
 type CreateUserInput struct {
+	TenantID    string
 	Username    string
 	DisplayName string
 	Email       string
@@ -62,6 +63,7 @@ type CreateUserInput struct {
 }
 
 type UpdateUserInput struct {
+	TenantID    *string
 	DisplayName *string
 	Email       *string
 	Role        *domain.UserRole
@@ -222,7 +224,11 @@ func (s *Service) CreateUser(ctx context.Context, actor domain.User, input Creat
 		return domain.User{}, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	user := domain.User{ID: newID(), Username: username, DisplayName: cleanDisplayName(input.DisplayName, username), Email: email, Role: input.Role, Namespaces: cleanNamespaces(input.Namespaces), AuthSource: "local", CreatedAt: now, UpdatedAt: now}
+	tenant := strings.TrimSpace(input.TenantID)
+	if tenant == "" {
+		tenant = "default"
+	}
+	user := domain.User{ID: newID(), TenantID: tenant, Username: username, DisplayName: cleanDisplayName(input.DisplayName, username), Email: email, Role: input.Role, Namespaces: cleanNamespaces(input.Namespaces), AuthSource: "local", CreatedAt: now, UpdatedAt: now}
 	if err := s.store.CreateUser(ctx, user, normalized, string(hash)); err != nil {
 		return domain.User{}, err
 	}
@@ -322,6 +328,12 @@ func (s *Service) DeleteUser(ctx context.Context, actor domain.User, id string) 
 
 func (s *Service) applyUpdate(user *domain.User, input UpdateUserInput) (*string, bool, error) {
 	sensitive := false
+	if input.TenantID != nil {
+		if strings.TrimSpace(*input.TenantID) == "" {
+			return nil, false, ErrInvalidInput
+		}
+		user.TenantID = strings.TrimSpace(*input.TenantID)
+	}
 	if input.DisplayName != nil {
 		user.DisplayName = cleanDisplayName(*input.DisplayName, user.Username)
 	}

@@ -3,6 +3,24 @@
   "type": "object",
   "required": ["image", "runtimeConfig", "service"],
   "properties": {
+    "workflows": {
+      "type": "object", "additionalProperties": false,
+      "required": ["enabled", "timeZone", "maxNodes", "scheduler"],
+      "properties": {
+        "enabled": { "type": "boolean" }, "timeZone": { "type": "string", "minLength": 1 },
+        "maxNodes": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "scheduler": {
+          "type": "object", "additionalProperties": false,
+          "required": ["enabled", "scanInterval", "maxActiveRuns", "maxActiveTasks", "maxCatchupRuns"],
+          "properties": {
+            "enabled": { "type": "boolean" }, "scanInterval": { "type": "string", "pattern": "^[1-9][0-9]*(s|m)$" },
+            "maxActiveRuns": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "maxActiveTasks": { "type": "integer", "minimum": 1, "maximum": 1000 },
+            "maxCatchupRuns": { "type": "integer", "minimum": 1, "maximum": 200 }
+          }
+        }
+      }
+    },
     "replicaCount": { "type": "integer", "minimum": 1 },
     "image": {
       "type": "object",

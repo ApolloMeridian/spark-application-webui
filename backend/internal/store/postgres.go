@@ -76,6 +76,17 @@ func Open(ctx context.Context, dsn string, maxConnections int32) (*PostgresStore
 }
 
 func (s *PostgresStore) migrate(ctx context.Context) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(14001401)`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(14001400)`); err != nil {
+		return err
+	}
 	statements := []string{`
 CREATE TABLE IF NOT EXISTS operation_audit (
   id text PRIMARY KEY,
@@ -237,11 +248,14 @@ CREATE TABLE IF NOT EXISTS operation_audit (
 		`CREATE INDEX IF NOT EXISTS application_alerts_status_idx ON application_alerts (status, last_seen_at DESC)`,
 	}
 	for _, statement := range statements {
-		if _, err := s.pool.Exec(ctx, statement); err != nil {
+		if _, err := tx.Exec(ctx, statement); err != nil {
 			return fmt.Errorf("migrate audit schema: %w", err)
 		}
 	}
-	return nil
+	if err := s.migrateWorkflows(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStore) Insert(ctx context.Context, audit domain.OperationAudit) error {
@@ -251,10 +265,10 @@ func (s *PostgresStore) Insert(ctx context.Context, audit domain.OperationAudit)
 	}
 	_, err = s.pool.Exec(ctx, `
 INSERT INTO operation_audit
-  (id, application_name, namespace, operator_name, operation, reason, occurred_at, result, message)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+  (id, application_name, namespace, operator_name, operation, reason, occurred_at, result, message,tenant_id)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		audit.ID, audit.ApplicationName, audit.Namespace, audit.Operator, audit.Operation,
-		audit.Reason, when, audit.Result, audit.Message)
+		audit.Reason, when, audit.Result, audit.Message, audit.TenantID)
 	if err != nil {
 		return fmt.Errorf("insert audit record: %w", err)
 	}
@@ -266,7 +280,7 @@ func (s *PostgresStore) List(ctx context.Context, limit int) ([]domain.Operation
 		limit = 1000
 	}
 	rows, err := s.pool.Query(ctx, `
-SELECT id, application_name, namespace, operator_name, operation, reason, occurred_at, result, message
+SELECT id, application_name, namespace, operator_name, operation, reason, occurred_at, result, message,tenant_id
 FROM operation_audit ORDER BY occurred_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query audit records: %w", err)
@@ -277,7 +291,7 @@ FROM operation_audit ORDER BY occurred_at DESC LIMIT $1`, limit)
 		var audit domain.OperationAudit
 		var when time.Time
 		if err := rows.Scan(&audit.ID, &audit.ApplicationName, &audit.Namespace, &audit.Operator,
-			&audit.Operation, &audit.Reason, &when, &audit.Result, &audit.Message); err != nil {
+			&audit.Operation, &audit.Reason, &when, &audit.Result, &audit.Message, &audit.TenantID); err != nil {
 			return nil, fmt.Errorf("scan audit record: %w", err)
 		}
 		audit.Timestamp = when.UTC().Format(time.RFC3339Nano)
@@ -425,9 +439,9 @@ func (s *PostgresStore) FindUserCredentials(ctx context.Context, normalized stri
 	var passwordHash string
 	var createdAt, updatedAt time.Time
 	err := s.pool.QueryRow(ctx, `
-SELECT id, username, display_name, email, role, namespaces, auth_source, disabled, created_at, updated_at, password_hash
+SELECT id, username, display_name, email, role, namespaces, tenant_id, auth_source, disabled, created_at, updated_at, password_hash
 FROM local_users WHERE username_normalized=$1 AND auth_source='local'`, normalized).Scan(
-		&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt, &passwordHash)
+		&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.TenantID, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt, &passwordHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.User{}, "", localauth.ErrUserNotFound
 	}
@@ -442,8 +456,8 @@ func (s *PostgresStore) FindUserByID(ctx context.Context, id string) (domain.Use
 	var user domain.User
 	var createdAt, updatedAt time.Time
 	err := s.pool.QueryRow(ctx, `
-SELECT id, username, display_name, email, role, namespaces, auth_source, disabled, created_at, updated_at
-FROM local_users WHERE id=$1`, id).Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt)
+SELECT id, username, display_name, email, role, namespaces, tenant_id, auth_source, disabled, created_at, updated_at
+FROM local_users WHERE id=$1`, id).Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.TenantID, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.User{}, localauth.ErrUserNotFound
 	}
@@ -456,7 +470,7 @@ FROM local_users WHERE id=$1`, id).Scan(&user.ID, &user.Username, &user.DisplayN
 
 func (s *PostgresStore) ListUsers(ctx context.Context) ([]domain.User, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT id, username, display_name, email, role, namespaces, auth_source, disabled, created_at, updated_at
+SELECT id, username, display_name, email, role, namespaces, tenant_id, auth_source, disabled, created_at, updated_at
 FROM local_users ORDER BY created_at ASC, username ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
@@ -466,7 +480,7 @@ FROM local_users ORDER BY created_at ASC, username ASC`)
 	for rows.Next() {
 		var user domain.User
 		var createdAt, updatedAt time.Time
-		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.TenantID, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
 		setUserTimes(&user, createdAt, updatedAt)
@@ -481,10 +495,14 @@ func (s *PostgresStore) CreateUser(ctx context.Context, user domain.User, normal
 		return err
 	}
 	_, err = s.pool.Exec(ctx, `
-INSERT INTO local_users (id, username, username_normalized, display_name, email, role, namespaces, auth_source, password_hash, disabled, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::text[], '{}'::text[]),'local',$8,$9,$10,$10)`, user.ID, user.Username, normalized, user.DisplayName, user.Email, user.Role, user.Namespaces, passwordHash, user.Disabled, createdAt)
+INSERT INTO local_users (id, username, username_normalized, display_name, email, role, namespaces, auth_source, password_hash, disabled, created_at, updated_at, tenant_id)
+VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::text[], '{}'::text[]),'local',$8,$9,$10,$10,COALESCE(NULLIF($11,''),'default'))`, user.ID, user.Username, normalized, user.DisplayName, user.Email, user.Role, user.Namespaces, passwordHash, user.Disabled, createdAt, user.TenantID)
 	if isUniqueViolation(err) {
 		return localauth.ErrUsernameExists
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+		return fmt.Errorf("%w: tenant does not exist", localauth.ErrInvalidInput)
 	}
 	if err != nil {
 		return fmt.Errorf("create user: %w", err)
@@ -524,7 +542,11 @@ func (s *PostgresStore) UpdateUser(ctx context.Context, user domain.User, passwo
 	}
 	command, err := tx.Exec(ctx, `
 UPDATE local_users SET display_name=$2, email=$3, role=$4, namespaces=COALESCE($5::text[], '{}'::text[]), disabled=$6, updated_at=$7,
-password_hash=COALESCE($8, password_hash) WHERE id=$1`, user.ID, user.DisplayName, user.Email, user.Role, user.Namespaces, user.Disabled, updatedAt, passwordHash)
+password_hash=COALESCE($8, password_hash), tenant_id=COALESCE(NULLIF($9,''),'default') WHERE id=$1`, user.ID, user.DisplayName, user.Email, user.Role, user.Namespaces, user.Disabled, updatedAt, passwordHash, user.TenantID)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+		return fmt.Errorf("%w: tenant does not exist", localauth.ErrInvalidInput)
+	}
 	if err != nil {
 		return fmt.Errorf("update user: %w", err)
 	}
@@ -586,11 +608,11 @@ func (s *PostgresStore) FindSession(ctx context.Context, tokenHash string, now t
 	var session domain.UserSession
 	var createdAt, updatedAt time.Time
 	err := s.pool.QueryRow(ctx, `
-SELECT u.id, u.username, u.display_name, u.email, u.role, u.namespaces, u.auth_source, u.disabled, u.created_at, u.updated_at,
+SELECT u.id, u.username, u.display_name, u.email, u.role, u.namespaces, u.tenant_id, u.auth_source, u.disabled, u.created_at, u.updated_at,
        s.token_hash, s.user_id, s.expires_at
 FROM local_user_sessions s JOIN local_users u ON u.id=s.user_id
 WHERE s.token_hash=$1 AND s.expires_at>$2`, tokenHash, now).Scan(
-		&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt,
+		&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.TenantID, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt,
 		&session.TokenHash, &session.UserID, &session.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.User{}, domain.UserSession{}, localauth.ErrUserNotFound
@@ -628,9 +650,9 @@ func (s *PostgresStore) UpsertOIDCUser(ctx context.Context, candidate domain.Use
 	var user domain.User
 	var createdAt, updatedAt time.Time
 	err = tx.QueryRow(ctx, `
-SELECT id, username, display_name, email, role, namespaces, auth_source, disabled, created_at, updated_at
+SELECT id, username, display_name, email, role, namespaces, tenant_id, auth_source, disabled, created_at, updated_at
 FROM local_users WHERE oidc_issuer=$1 AND oidc_subject=$2 FOR UPDATE`, issuer, subject).Scan(
-		&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt)
+		&user.ID, &user.Username, &user.DisplayName, &user.Email, &user.Role, &user.Namespaces, &user.TenantID, &user.AuthSource, &user.Disabled, &createdAt, &updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if !autoCreate {
 			return domain.User{}, localauth.ErrUserNotFound
@@ -651,6 +673,7 @@ VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::text[], '{}'::text[]),'oidc',$8,$9,NULL,f
 		if err := tx.Commit(ctx); err != nil {
 			return domain.User{}, err
 		}
+		candidate.TenantID = "default"
 		return candidate, nil
 	}
 	if err != nil {
@@ -786,7 +809,7 @@ FROM application_templates WHERE id=$1`, id))
 	if err != nil {
 		return item, err
 	}
-	rows, err := s.pool.Query(ctx, `SELECT version,manifest,created_by,created_at FROM application_template_versions WHERE template_id=$1 ORDER BY version DESC`, id)
+	rows, err := s.pool.Query(ctx, `SELECT version,manifest,created_by,created_at,parameters FROM application_template_versions WHERE template_id=$1 ORDER BY version DESC`, id)
 	if err != nil {
 		return item, err
 	}
@@ -794,7 +817,11 @@ FROM application_templates WHERE id=$1`, id))
 	for rows.Next() {
 		var version domain.TemplateVersion
 		var at time.Time
-		if err := rows.Scan(&version.Version, &version.Manifest, &version.CreatedBy, &at); err != nil {
+		var parameters []byte
+		if err := rows.Scan(&version.Version, &version.Manifest, &version.CreatedBy, &at, &parameters); err != nil {
+			return item, err
+		}
+		if err := json.Unmarshal(parameters, &version.Parameters); err != nil {
 			return item, err
 		}
 		version.CreatedAt = at.UTC().Format(time.RFC3339Nano)
