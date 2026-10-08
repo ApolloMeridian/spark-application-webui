@@ -77,16 +77,19 @@ func ExpandDates(value string, baseline time.Time, zone string) (string, error) 
 }
 
 func ParseCron(expression, zone string) (cron.Schedule, error) {
-	if len(strings.Fields(expression)) != 5 {
-		return nil, fmt.Errorf("cron requires five fields: minute hour day month weekday")
+	if count := len(strings.Fields(expression)); count != 5 && count != 6 {
+		return nil, fmt.Errorf("cron requires six fields (second minute hour day month weekday), or five legacy fields")
 	}
 	if _, err := time.LoadLocation(zone); err != nil {
 		return nil, err
 	}
-	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	parser := cron.NewParser(cron.SecondOptional | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	return parser.Parse("CRON_TZ=" + zone + " " + expression)
 }
 func CronPreview(expression, zone string, from time.Time, count int) ([]string, error) {
+	return CronPreviewWindow(expression, zone, from, time.Time{}, time.Time{}, count)
+}
+func CronPreviewWindow(expression, zone string, from, start, end time.Time, count int) ([]string, error) {
 	schedule, err := ParseCron(expression, zone)
 	if err != nil {
 		return nil, err
@@ -94,15 +97,46 @@ func CronPreview(expression, zone string, from time.Time, count int) ([]string, 
 	if count < 1 || count > 200 {
 		return nil, fmt.Errorf("preview count must be 1-200")
 	}
+	if !start.IsZero() && !end.IsZero() && end.Before(start) {
+		return nil, fmt.Errorf("invalid schedule range or Cron: end precedes start")
+	}
+	if !start.IsZero() && !start.Before(from) {
+		from = start.Add(-time.Nanosecond)
+	}
 	result := []string{}
 	for i := 0; i < count; i++ {
 		from = schedule.Next(from)
 		if from.IsZero() {
-			return nil, fmt.Errorf("cron has no future occurrences")
+			break
+		}
+		if !end.IsZero() && from.After(end) {
+			break
 		}
 		result = append(result, from.UTC().Format(time.RFC3339Nano))
 	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("invalid schedule range or Cron: no execution occurs within the valid future window")
+	}
 	return result, nil
+}
+
+// Binary-search the last missed occurrence. With second-level Cron a linear
+// scan across long downtime could otherwise hold the dispatch lock for hours.
+func latestOccurrence(schedule cron.Schedule, due, now time.Time) time.Time {
+	if due.IsZero() || due.After(now) {
+		return time.Time{}
+	}
+	low, high := due.Unix()-1, now.Unix()
+	for high-low > 1 {
+		middle := low + (high-low)/2
+		next := schedule.Next(time.Unix(middle, 0))
+		if !next.IsZero() && !next.After(now) {
+			low = middle
+		} else {
+			high = middle
+		}
+	}
+	return schedule.Next(time.Unix(low, 0))
 }
 
 func RenderNode(node domain.WorkflowNode, baseline time.Time, zone, taskID string, attempt int) (string, string, error) {

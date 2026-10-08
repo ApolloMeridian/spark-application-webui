@@ -20,7 +20,7 @@ Spark Control Center 是面向 Kubernetes 上 Apache Spark 作业的运维控制
 - 支持 PostgreSQL 本地账号和可选 OIDC/Keycloak 登录，并在前后端同时落实 `viewer`、`admin` 及用户级命名空间权限。
 - 使用 PostgreSQL 保存用户、会话、生命周期快照、失败诊断和操作审计。
 - 通过内置 Helm Chart 和命名空间级 RBAC 部署。
-- 支持租户隔离的项目、版本化 DAG 工作流及 Spark YAML 任务，使用带时区的 Cron 调度或预览确认补数。[工作流使用说明](docs/WORKFLOWS.zh-CN.md)。
+- 支持租户隔离的项目、版本化 DAG 工作流及 Spark YAML 任务，通过连接点拖拽连线、下拉菜单配置秒级带时区 Cron，或预览确认补数。[工作流使用说明](docs/WORKFLOWS.zh-CN.md)。
 - 回溯或永久删除模板/工作流历史版本，按项目查看两类执行历史，并从 PostgreSQL 恢复后端重建前的编排状态。
 
 ## 运行截图
@@ -30,6 +30,8 @@ Spark Control Center 是面向 Kubernetes 上 Apache Spark 作业的运维控制
 ![Cron 定时配置与预览](docs/images/workflow-schedule-1440.png)
 
 ![项目执行历史](docs/images/workflow-history-1440.png)
+
+![操作审计组合筛选](docs/images/audit-1440.png)
 
 | 运行总览 | Spark 作业列表 |
 | --- | --- |
@@ -87,15 +89,15 @@ go vet ./...
 使用不含仓库前缀的名称构建：
 
 ```bash
-docker build -t spark-control-center:1.4.0 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.0 .
+docker build -t spark-control-center:1.4.1 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.1 .
 ```
 
-GitHub `v1.4.0` Release 提供可由 Docker 直接载入的镜像 tar 文件和打包后的 Helm Chart：
+GitHub `v1.4.1` Release 提供可由 Docker 直接载入的镜像 tar 文件和打包后的 Helm Chart：
 
 ```bash
-docker load -i spark-control-center-1.4.0.tar
-docker load -i spark-control-center-backend-1.4.0.tar
+docker load -i spark-control-center-1.4.1.tar
+docker load -i spark-control-center-backend-1.4.1.tar
 ```
 
 ## Helm 部署

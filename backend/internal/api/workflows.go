@@ -73,6 +73,8 @@ func (s *Server) workflowRequest(w http.ResponseWriter, r *http.Request) {
 			Cron     string `json:"cron"`
 			TimeZone string `json:"timeZone"`
 			From     string `json:"from"`
+			StartsAt string `json:"startsAt"`
+			EndsAt   string `json:"endsAt"`
 			Count    int    `json:"count"`
 		}
 		if err = decode(&body); err == nil {
@@ -83,8 +85,18 @@ func (s *Server) workflowRequest(w http.ResponseWriter, r *http.Request) {
 			if body.Count == 0 {
 				body.Count = 10
 			}
+			if body.Count < 1 || body.Count > 10 {
+				err = &requestError{"preview count must be 1-10"}
+			}
+			var start, end time.Time
+			if err == nil && body.StartsAt != "" {
+				start, err = time.Parse(time.RFC3339Nano, body.StartsAt)
+			}
+			if err == nil && body.EndsAt != "" {
+				end, err = time.Parse(time.RFC3339Nano, body.EndsAt)
+			}
 			if err == nil {
-				result, err = workflow.CronPreview(body.Cron, body.TimeZone, at, body.Count)
+				result, err = workflow.CronPreviewWindow(body.Cron, body.TimeZone, at, start, end, body.Count)
 				if err != nil {
 					err = &requestError{err.Error()}
 				}

@@ -405,6 +405,37 @@ func TestPostgresCronDedupBackfillAndRoleRevocation(t *testing.T) {
 	}
 }
 
+func TestPostgresSecondCronFireOnceAndWindow(t *testing.T) {
+	s, user, project, _ := fixture(t)
+	ctx := context.Background()
+	flow := single(t, s, user, project)
+	start := time.Now().UTC().Truncate(time.Minute).Add(2 * time.Minute)
+	end := start.Add(12 * time.Second)
+	schedule, err := s.SaveSchedule(ctx, user, domain.WorkflowSchedule{ProjectID: project.ID, WorkflowID: flow.ID, Name: "Second schedule", Cron: "*/5 * * * * *", TimeZone: "UTC", Enabled: true, Misfire: "fire_once", StartsAt: stamp(start), EndsAt: stamp(end)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if schedule.NextRunAt != stamp(start) {
+		t.Fatalf("inclusive start lost: %s", schedule.NextRunAt)
+	}
+	// Years of downtime must select only the latest occurrence inside the window.
+	now := start.AddDate(5, 0, 0)
+	if err = s.tickForTest(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.tickForTest(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	runs := runsOf(t, s, user, project.ID)
+	if len(runs) != 1 || runs[0].ScheduledAt != stamp(start.Add(10*time.Second)) {
+		t.Fatalf("unexpected second-level occurrences: %#v", runs)
+	}
+	schedules, err := s.ListSchedules(ctx, user, project.ID)
+	if err != nil || len(schedules) != 1 || schedules[0].Enabled {
+		t.Fatalf("expired schedule still enabled: %#v, %v", schedules, err)
+	}
+}
+
 func TestPostgresTemplateHistoryAndFrozenWorkflow(t *testing.T) {
 	s, user, project, _ := fixture(t)
 	ctx := context.Background()

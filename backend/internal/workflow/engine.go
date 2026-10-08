@@ -183,6 +183,15 @@ func (s *Service) fireSchedules(ctx context.Context, tx pgx.Tx, now time.Time) e
 				return e
 			}
 		} else if flow.Enabled {
+			if x.Misfire == "fire_once" {
+				upper := now
+				if !end.IsZero() && end.Before(upper) {
+					upper = end
+				}
+				if latest := latestOccurrence(parser, due, upper); !latest.IsZero() {
+					due = latest
+				}
+			}
 			fired := 0
 			limit := s.cfg.WorkflowCatchupLimit
 			if limit == 0 {
@@ -196,10 +205,6 @@ func (s *Service) fireSchedules(ctx context.Context, tx pgx.Tx, now time.Time) e
 				shouldFire := true
 				if x.Misfire == "skip" && now.Sub(due) > s.cfg.SchedulerInterval*2+time.Second {
 					shouldFire = false
-				}
-				if x.Misfire == "fire_once" && !next.IsZero() && !next.After(now) {
-					due = next
-					continue
 				}
 				if shouldFire {
 					if _, e = s.createRun(ctx, tx, owner, flow, due, "schedule", x.ID); e != nil {

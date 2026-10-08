@@ -211,11 +211,16 @@ export const workflowService = {
       `${projectPath(project)}/schedules/${encodeURIComponent(key)}`,
       "DELETE",
     ),
-  cronPreview: (cron: string, timeZone: string) =>
+  cronPreview: (
+    cron: string,
+    timeZone: string,
+    window: { startsAt?: string; endsAt?: string } = {},
+  ) =>
     workflowRequest<string[]>("/workflows/cron-preview", "POST", {
       cron,
       timeZone,
       count: 10,
+      ...window,
     }),
   runs: (project: string) =>
     workflowRequest<WorkflowRun[]>(`${projectPath(project)}/runs`),

@@ -33,7 +33,7 @@ import {
   Typography,
   Upload,
 } from "antd";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { parse, stringify } from "yaml";
 import dayjs from "dayjs";
@@ -41,6 +41,7 @@ import { useAuth } from "../auth";
 import { useI18n } from "../i18n";
 import { PageHeader } from "../components/PageHeader";
 import { WorkflowEditor, WorkflowGraph } from "../components/WorkflowEditor";
+import { CronEditor } from "../components/CronEditor";
 import { runtimeConfig } from "../runtimeConfig";
 import { operationsService } from "../service";
 import type { ApplicationTemplate } from "../types";
@@ -55,6 +56,7 @@ import {
   type WorkflowSchedule,
   type WorkflowVersion,
   type TaskRun,
+  type Tenant,
 } from "../workflows";
 
 const colors: Record<string, string> = {
@@ -98,11 +100,17 @@ export function WorkflowsPage() {
     session?.namespaces,
   );
   const [projects, setProjects] = useState<Project[]>([]);
+  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [projectsReady, setProjectsReady] = useState(false);
+  const loadRevision = useRef(0);
+  const projectRevision = useRef(0);
+  const currentProject = useRef("");
   const projectKey = `spark-console-project-${session?.id}-${session?.tenantId || "default"}`;
   const [project, setProject] = useState(
     () => localStorage.getItem(projectKey) || "",
   );
   const [flows, setFlows] = useState<Workflow[]>([]);
+  currentProject.current = project;
   const [schedules, setSchedules] = useState<WorkflowSchedule[]>([]);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [tasks, setTasks] = useState<TaskRun[]>([]);
@@ -114,6 +122,21 @@ export function WorkflowsPage() {
   const [editing, setEditing] = useState<Workflow>();
   const [schedule, setSchedule] = useState<Partial<WorkflowSchedule>>();
   const [preview, setPreview] = useState<string[]>([]);
+  const [previewError, setPreviewError] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const previewRevision = useRef(0);
+  useEffect(() => {
+    ++previewRevision.current;
+    setPreview([]);
+    setPreviewError("");
+    setPreviewLoading(false);
+  }, [
+    schedule?.cron,
+    schedule?.timeZone,
+    schedule?.startsAt,
+    schedule?.endsAt,
+    schedule?.id,
+  ]);
   const [versionFlow, setVersionFlow] = useState<Workflow>();
   const [versions, setVersions] = useState<WorkflowVersion[]>([]);
   const [snapshot, setSnapshot] = useState("");
@@ -123,7 +146,7 @@ export function WorkflowsPage() {
     Record<string, Record<string, string>>
   >({});
   const [backfill, setBackfill] = useState<Workflow>();
-  const [backfillCron, setBackfillCron] = useState("0 2 * * *");
+  const [backfillCron, setBackfillCron] = useState("0 0 2 * * *");
   const [backfillZone, setBackfillZone] = useState(
     runtimeConfig.timeZone || "Asia/Shanghai",
   );
@@ -147,22 +170,34 @@ export function WorkflowsPage() {
   const report = (e: unknown) =>
     message.error(e instanceof Error ? e.message : String(e));
   const loadProjects = useCallback(async () => {
+    const revision = ++projectRevision.current;
+    ++loadRevision.current;
+    setProjectsReady(false);
     try {
       const items = await api.projects();
+      if (revision !== projectRevision.current) return;
       setProjects(items);
       setProject((old) =>
         items.some((p) => p.id === old) ? old : items[0]?.id || "",
       );
+      setError("");
+      setProjectsReady(true);
     } catch (e) {
+      if (revision !== projectRevision.current) return;
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [session?.tenantId]);
   const load = useCallback(async () => {
-    if (!project) {
+    const revision = ++loadRevision.current;
+    if (!projectsReady) return;
+    if (!project || !projects.some((p) => p.id === project)) {
       setFlows([]);
       setRuns([]);
       setTasks([]);
       setSchedules([]);
+      setRunDetail(undefined);
+      setLoading(false);
+      setError("");
       return;
     }
     setLoading(true);
@@ -174,26 +209,49 @@ export function WorkflowsPage() {
         api.runs(project),
         api.taskRuns(project),
       ]);
+      if (
+        revision !== loadRevision.current ||
+        currentProject.current !== project
+      )
+        return;
       setFlows(f);
       setSchedules(s);
       setRuns(r);
       setTasks(t);
       setRunDetail((old) => (old ? r.find((x) => x.id === old.id) : undefined));
     } catch (e) {
+      if (
+        revision !== loadRevision.current ||
+        currentProject.current !== project
+      )
+        return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (revision === loadRevision.current) setLoading(false);
     }
-  }, [project]);
+  }, [project, projectsReady, projects]);
   useEffect(() => {
     void loadProjects();
+    let active = true;
+    void api
+      .tenants()
+      .then((items) => {
+        if (active) setTenants(items);
+      })
+      .catch(() => undefined);
     void operationsService
       .listTemplates()
       .then(setTemplates)
       .catch(() => undefined);
+    return () => {
+      active = false;
+      ++loadRevision.current;
+      ++projectRevision.current;
+    };
   }, [loadProjects]);
   useEffect(() => {
     if (project) localStorage.setItem(projectKey, project);
+    else localStorage.removeItem(projectKey);
   }, [project, projectKey]);
   useEffect(() => {
     void load();
@@ -546,7 +604,15 @@ export function WorkflowsPage() {
         }
         extra={
           <Space>
-            <Tag color="blue">{session?.tenantId || "default"}</Tag>
+            <Tag color="blue">
+              {tenants.find((t) => t.id === (session?.tenantId || "default"))
+                ?.name ||
+                (session?.tenantId === "default" || !session?.tenantId
+                  ? "default"
+                  : en
+                    ? "Current tenant"
+                    : "当前租户")}
+            </Tag>
             <Button
               icon={<ReloadOutlined />}
               onClick={() => {
@@ -616,13 +682,21 @@ export function WorkflowsPage() {
                 onConfirm={async () => {
                   try {
                     await api.deleteProject(project);
+                    ++loadRevision.current;
+                    setProject("");
+                    setError("");
                     await loadProjects();
                   } catch (e) {
                     report(e);
                   }
                 }}
               >
-                <Button danger size="small" icon={<DeleteOutlined />} />
+                <Button
+                  danger
+                  size="small"
+                  icon={<DeleteOutlined />}
+                  aria-label={en ? "Delete project" : "删除项目"}
+                />
               </Popconfirm>
             </>
           )}
@@ -664,7 +738,7 @@ export function WorkflowsPage() {
               />
             </Card>
           </div>
-          <Card className="table-card">
+          <Card className="table-card workflow-tabs-card">
             <Tabs
               activeKey={activeTab}
               onChange={(tab) =>
@@ -890,7 +964,7 @@ export function WorkflowsPage() {
                               projectId: project,
                               workflowId: flows[0]?.id,
                               name: "",
-                              cron: "0 2 * * *",
+                              cron: "0 0 2 * * *",
                               timeZone:
                                 runtimeConfig.timeZone ||
                                 Intl.DateTimeFormat().resolvedOptions()
@@ -1297,42 +1371,15 @@ export function WorkflowsPage() {
               />
             </Form.Item>
           </Space>
-          <Form.Item
-            label="Cron"
-            extra={
-              en
-                ? "Five fields: minute hour day month weekday"
-                : "五段：分钟 小时 日 月 星期"
-            }
-          >
-            <Space.Compact style={{ width: "100%" }}>
-              <Input
-                value={schedule?.cron}
-                onChange={(e) => {
-                  setSchedule({ ...schedule, cron: e.target.value });
-                  setPreview([]);
-                }}
-              />
-              <Select
-                placeholder={en ? "Presets" : "常用周期"}
-                style={{ width: 200 }}
-                options={[
-                  { value: "0 * * * *", label: en ? "Every hour" : "每小时" },
-                  {
-                    value: "0 2 * * *",
-                    label: en ? "Daily at 02:00" : "每天 02:00",
-                  },
-                  {
-                    value: "0 2 * * 1",
-                    label: en ? "Monday at 02:00" : "周一 02:00",
-                  },
-                ]}
-                onChange={(cron) => {
-                  setSchedule({ ...schedule, cron });
-                  setPreview([]);
-                }}
-              />
-            </Space.Compact>
+          <Form.Item label="Cron">
+            <CronEditor
+              en={en}
+              value={schedule?.cron ?? ""}
+              onChange={(cron) => {
+                setSchedule({ ...schedule, cron });
+                setPreview([]);
+              }}
+            />
           </Form.Item>
           <Space wrap>
             <Form.Item label={en ? "IANA time zone" : "IANA 时区"}>
@@ -1386,21 +1433,43 @@ export function WorkflowsPage() {
             />
           </Form.Item>
           <Button
+            loading={previewLoading}
             onClick={async () => {
+              const revision = ++previewRevision.current;
+              setPreview([]);
+              setPreviewError("");
+              setPreviewLoading(true);
               try {
-                setPreview(
-                  await api.cronPreview(
-                    schedule?.cron || "",
-                    schedule?.timeZone || "UTC",
-                  ),
+                const times = await api.cronPreview(
+                  schedule?.cron || "",
+                  schedule?.timeZone || "UTC",
+                  { startsAt: schedule?.startsAt, endsAt: schedule?.endsAt },
                 );
+                if (revision === previewRevision.current) setPreview(times);
               } catch (e) {
-                report(e);
+                if (revision === previewRevision.current)
+                  setPreviewError(
+                    (en
+                      ? "Time range / Cron configuration is incorrect, or the preview could not be loaded: "
+                      : "时间范围 / Cron 配置不正确，或预览请求失败：") +
+                      (e instanceof Error ? e.message : String(e)),
+                  );
+              } finally {
+                if (revision === previewRevision.current)
+                  setPreviewLoading(false);
               }
             }}
           >
             {en ? "Preview next 10 executions" : "预览下次 10 次执行"}
           </Button>
+          {previewError && (
+            <Alert
+              showIcon
+              type="error"
+              message={previewError}
+              style={{ marginTop: 12 }}
+            />
+          )}
           {preview.length > 0 && (
             <div className="workflow-cron-preview">
               {preview.map((at) => (
@@ -1449,10 +1518,11 @@ export function WorkflowsPage() {
         />
         <Form layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item label="Cron">
-            <Input
+            <CronEditor
+              en={en}
               value={backfillCron}
-              onChange={(e) => {
-                setBackfillCron(e.target.value);
+              onChange={(cron) => {
+                setBackfillCron(cron);
                 setBackfillPreview(undefined);
               }}
             />

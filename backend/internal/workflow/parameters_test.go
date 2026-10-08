@@ -39,13 +39,53 @@ func TestCronTimezoneAndValidation(t *testing.T) {
 	if err != nil || leap[0] != "2028-02-29T00:00:00Z" {
 		t.Fatalf("leap %v %v", leap, err)
 	}
-	for _, expression := range []string{"* * * * * *", "61 * * * *", "@hourly"} {
+	for _, expression := range []string{"* * * * * * *", "61 * * * *", "60 * * * * *", "@hourly"} {
 		if _, err := ParseCron(expression, "UTC"); err == nil {
 			t.Errorf("accepted %s", expression)
 		}
 	}
 	if _, err := ParseCron("* * * * *", "Mars/Base"); err == nil {
 		t.Fatal("invalid timezone accepted")
+	}
+}
+
+func TestSecondCronPreviewAndValidityWindow(t *testing.T) {
+	from := time.Date(2026, 10, 8, 2, 0, 0, 0, time.UTC)
+	start := from.Add(10 * time.Second)
+	end := from.Add(21 * time.Second)
+	times, err := CronPreviewWindow("*/5 * * * * *", "Asia/Shanghai", from, start, end, 10)
+	if err != nil || len(times) != 3 || times[0] != stamp(start) || times[2] != stamp(from.Add(20*time.Second)) {
+		t.Fatal(times, err)
+	}
+	legacy, err := CronPreview("* * * * *", "UTC", from, 2)
+	if err != nil || legacy[0] != stamp(from.Add(time.Minute)) {
+		t.Fatal(legacy, err)
+	}
+	limited, err := CronPreviewWindow("* * * * * *", "UTC", from, from.Add(time.Second), from.Add(time.Minute), 10)
+	if err != nil || len(limited) != 10 {
+		t.Fatal(limited, err)
+	}
+	for _, bounds := range [][2]time.Time{
+		{start, start.Add(-time.Second)}, {from.Add(-time.Minute), from.Add(-time.Second)}, {from.Add(time.Second), from.Add(4 * time.Second)},
+	} {
+		if _, err := CronPreviewWindow("*/5 * * * * *", "UTC", from, bounds[0], bounds[1], 10); err == nil {
+			t.Fatal("accepted empty or invalid window", bounds)
+		}
+	}
+}
+
+func TestLatestSecondOccurrenceAfterLongDowntime(t *testing.T) {
+	now := time.Date(2026, 10, 8, 2, 0, 17, 450000000, time.UTC)
+	for _, expression := range []string{"* * * * * *", "*/5 * * * * *", "0 2 * * *"} {
+		parser, err := ParseCron(expression, "UTC")
+		if err != nil {
+			t.Fatal(err)
+		}
+		due := parser.Next(now.AddDate(-5, 0, 0))
+		last := latestOccurrence(parser, due, now)
+		if last.IsZero() || last.After(now) || !parser.Next(last).After(now) {
+			t.Fatal(expression, last)
+		}
 	}
 }
 

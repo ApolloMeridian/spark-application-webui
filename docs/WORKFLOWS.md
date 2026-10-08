@@ -1,6 +1,6 @@
 # Projects, workflows and scheduled Spark jobs
 
-Version 1.4.0 adds PostgreSQL-backed orchestration. It does not depend on an external DolphinScheduler installation and runs only SparkApplication nodes, not arbitrary scripts.
+PostgreSQL-backed orchestration was introduced in 1.4.0; 1.4.1 improves the editor, audit filters and second-level scheduling. It does not depend on an external DolphinScheduler installation and runs only SparkApplication nodes, not arbitrary scripts.
 
 ## Tenant and permission boundaries
 
@@ -12,7 +12,7 @@ Viewers can browse authorized projects, workflow versions, task/run details, log
 
 1. Create a project, then create a workflow inside it.
 2. Add SparkApplication YAML nodes or select a specific template version. Set node values using YAML `key: value`; parameter definitions use the existing typed form.
-3. Select upstream tasks in the form or select a canvas node and use **Connect from selected**. Drag nodes to arrange the DAG. Cycles, unknown dependencies and duplicate IDs are rejected by both UI and backend.
+3. Drag a border port onto another task to connect, or select upstream tasks in the form. Multiple incoming/outgoing dependencies are supported and reflected in both views. Links automatically choose facing ports based on node positions. Select a link to remove it; keyboard users can press Enter on a port, then select a downstream task. Drag nodes to arrange the DAG. Cycles, unknown dependencies and duplicate IDs are rejected by both UI and backend.
 4. Save. Each save creates an immutable version containing the entire DAG, node YAML, selected template version, parameter definitions and values.
 5. Use **Run → Dry run & preview** to inspect generated manifests. Each actual dispatch also performs Kubernetes server-side dry-run before CREATE. Manual execution defaults to the current time as its parameter baseline.
 
@@ -47,7 +47,11 @@ runTimestamp: $[yyyyMMddHHmmssSSS]
 
 Whole offsets use calendar days, preserving local wall time across DST. Fractional offsets use elapsed durations: `-1/24` is one hour, `-1/1440` one minute. Backfill uses each selected occurrence, not the time at which the worker eventually dispatches it. Parameters also support typed `{{name}}` placeholders. Use Kubernetes Secret references; do not place credentials in YAML or parameters.
 
-Schedules use five-field Cron (**minute hour day-of-month month day-of-week**), with explicit IANA timezone, optional validity window, enable/disable and next-ten preview. When day-of-month and day-of-week are both restricted, either matching field triggers, following standard Cron OR semantics. Nonexistent DST wall times are skipped; repeated wall times can yield distinct UTC occurrences. Impossible expressions and invalid timezones are rejected. Editing a schedule recalculates its next occurrence from now; already-created runs retain their snapshots.
+Schedules support six-field Cron (**second minute hour day-of-month month day-of-week**); existing five-field expressions remain valid and run at second 0. Dropdowns configure second/minute intervals, hourly, daily, weekly, monthly and yearly schedules, with a custom expression option. Cron steps are field-based (`*/7` seconds resets at each minute), not elapsed-duration timers. Monthly dates absent from a month are skipped.
+
+The next-execution preview returns at most ten future occurrences strictly inside the optional validity window (inclusive boundaries), using the configured IANA timezone. If only two executions fit, only two are shown; if none fit, a time range / Cron error is displayed. Changing the Cron, timezone or validity window clears stale preview results. When day-of-month and day-of-week are both restricted, either matching field triggers, following standard Cron OR semantics. Nonexistent DST wall times are skipped; repeated wall times can yield distinct UTC occurrences. Impossible expressions and invalid timezones are rejected. Editing a schedule recalculates its next occurrence from now; already-created runs retain their snapshots.
+
+Second-level occurrences do not guarantee real-time dispatch. The backend polls at `workflows.scheduler.scanInterval` (default `5s`, minimum `1s`); use `1s` for finer scanning and review overlap, misfire and concurrency limits before enabling frequent schedules. The `fire_once` policy locates the latest missed occurrence without iterating through every missed second after prolonged downtime.
 
 Misfire policies: `skip` skips occurrences older than two scan intervals plus one second; `fire_once` creates only the latest missed occurrence; `catch_up` creates up to the configured limit, then skips the remaining backlog and records an audit. Disabled workflows do not accumulate missed runs. The workflow overlap strategy applies to both automatic and manual runs. Backfill preview/confirmation supports up to 200 occurrences across at most 366 days; a repeated explicit confirmation intentionally creates new instances.
 
@@ -60,6 +64,8 @@ Workers coordinate through a transaction-scoped PostgreSQL advisory lock. Only o
 Template/workflow history offers **View**, **Restore**, and **Delete**. Restore creates a new monotonically increasing current version. The current version cannot be deleted. Deleting a historical version physically removes its PostgreSQL row and YAML/parameter/snapshot content. Execution snapshots remain independent so existing runs and their evidence do not change. A workflow/project can be deleted only after its execution history is explicitly removed. History deletion cascades task history but retains Kubernetes jobs and ownership isolation. Schedule ownership is revalidated against the current user role, account status, namespace permissions and tenant before each trigger/dispatch; revoked owners block scheduling and stop active runs.
 
 Human configuration mutations, restores/deletions, run actions and backfills are audited. Automatic triggers, dispatches, blocked schedules and workflow completion are also audited. Read-only polling is not audited. Passwords and request bodies are never included in configuration-action audit messages.
+
+Operation Audit offers combined operator, operation, result and keyword filters. Operation tags use semantic colors (deletion red, termination orange, submission blue, configuration cyan, restore purple) and wrap long names without overlapping the result column. Workflow pages display the current tenant name and safely clear project data/selection when the last project is removed.
 
 ## Helm and operations
 
@@ -81,8 +87,8 @@ The frontend feature switch derives from backend availability and `workflows.ena
 Before upgrading, back up PostgreSQL. Migrations are additive and all older users are assigned `default`. To stop reconciliation without losing state, set `workflows.scheduler.enabled=false`; jobs already submitted to Kubernetes continue independently. Re-enable to recover persisted runs. Disabling the scheduler also pauses application of queued cancel actions; leave it enabled until requested cancellations finish. Do not run an older backend concurrently with the new scheduler during rollback.
 
 ```bash
-docker build -t spark-control-center:1.4.0 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.0 .
+docker build -t spark-control-center:1.4.1 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.1 .
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace \
   -f charts/spark-control-center/examples/values-production.yaml \

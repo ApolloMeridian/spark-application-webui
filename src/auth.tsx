@@ -35,9 +35,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (runtimeConfig.auth.mode === 'mock') return;
     const controller = new AbortController();
     fetch(apiUrl(runtimeConfig.auth.oidc.sessionPath), { credentials: 'include', signal: controller.signal, headers: { Accept: 'application/json' } })
-      .then(async (response) => { if (!response.ok) throw new Error('No active session'); setSession(await response.json() as Session); })
-      .catch(() => setSession(null))
-      .finally(() => setLoading(false));
+      .then(async (response) => {
+        if (!response.ok) throw new Error('No active session');
+        const user = await response.json() as Session;
+        if (!controller.signal.aborted) setSession(user);
+      })
+      .catch(() => { if (!controller.signal.aborted) setSession(null); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, []);
 

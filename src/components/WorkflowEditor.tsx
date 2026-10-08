@@ -15,7 +15,9 @@ import {
   Tag,
   Typography,
 } from "antd";
-import { useRef, useState } from "react";
+import { useState } from "react";
+import { WorkflowGraph } from "./WorkflowGraph";
+export { WorkflowGraph } from "./WorkflowGraph";
 import { stringify, parse } from "yaml";
 import { TemplateParametersEditor } from "./TemplateParametersEditor";
 import type { ApplicationTemplate } from "../types";
@@ -32,153 +34,6 @@ export function strategyOptions(en: boolean) {
     { value: "serial_wait", label: en ? "Serial wait" : "串行等待" },
     { value: "serial_discard", label: en ? "Serial discard" : "串行抛弃" },
   ];
-}
-export function WorkflowGraph({
-  nodes,
-  onChange,
-  selected,
-  onSelect,
-  en,
-}: {
-  nodes: WorkflowNode[];
-  onChange?: (nodes: WorkflowNode[]) => void;
-  selected?: string;
-  onSelect: (id: string) => void;
-  en: boolean;
-}) {
-  const [connect, setConnect] = useState(false);
-  const drag = useRef<{
-    id: string;
-    x: number;
-    y: number;
-    left: number;
-    top: number;
-  }>();
-  const width = Math.max(760, ...nodes.map((n) => n.x + 235));
-  const height = Math.max(250, ...nodes.map((n) => n.y + 110));
-  return (
-    <>
-      <Space style={{ marginBottom: 10 }}>
-        <Typography.Text type="secondary">
-          {en
-            ? "Drag to arrange. Select a task to edit; dependencies run only after all parents succeed."
-            : "拖动调整布局，选择任务进行编辑；所有上游成功后才运行。"}
-        </Typography.Text>
-        {onChange && (
-          <Button
-            size="small"
-            disabled={!selected}
-            type={connect ? "primary" : "default"}
-            onClick={() => setConnect(!connect)}
-          >
-            {en ? "Connect from selected" : "从选中节点连线"}
-          </Button>
-        )}
-      </Space>
-      <div className="workflow-canvas-scroll">
-        <div
-          className="workflow-canvas"
-          style={{ width, height }}
-          onPointerMove={(e) => {
-            const current = drag.current;
-            if (!current || !onChange) return;
-            onChange(
-              nodes.map((n) =>
-                n.id === current.id
-                  ? {
-                      ...n,
-                      x: Math.max(10, current.left + e.clientX - current.x),
-                      y: Math.max(10, current.top + e.clientY - current.y),
-                    }
-                  : n,
-              ),
-            );
-          }}
-          onPointerUp={() => {
-            drag.current = undefined;
-          }}
-        >
-          <svg width={width} height={height} className="workflow-edges">
-            <defs>
-              <marker
-                id="workflow-arrow"
-                markerWidth="9"
-                markerHeight="9"
-                refX="8"
-                refY="4"
-                orient="auto"
-              >
-                <path d="M0,0 L8,4 L0,8" fill="#7a96ba" />
-              </marker>
-            </defs>
-            {nodes.flatMap((n) =>
-              n.dependsOn.map((dep) => {
-                const parent = nodes.find((x) => x.id === dep);
-                if (!parent) return null;
-                return (
-                  <path
-                    key={`${dep}-${n.id}`}
-                    d={`M${parent.x + 210},${parent.y + 37} C${parent.x + 245},${parent.y + 37} ${n.x - 35},${n.y + 37} ${n.x},${n.y + 37}`}
-                    fill="none"
-                    stroke="#7a96ba"
-                    strokeWidth="2"
-                    markerEnd="url(#workflow-arrow)"
-                  />
-                );
-              }),
-            )}
-          </svg>
-          {nodes.map((n, i) => (
-            <button
-              key={n.id}
-              type="button"
-              className={`workflow-node ${selected === n.id ? "selected" : ""}`}
-              style={{ left: n.x, top: n.y }}
-              onPointerDown={(e) => {
-                if (connect || !onChange) return;
-                drag.current = {
-                  id: n.id,
-                  x: e.clientX,
-                  y: e.clientY,
-                  left: n.x,
-                  top: n.y,
-                };
-                e.currentTarget.setPointerCapture(e.pointerId);
-              }}
-              onClick={() => {
-                if (connect && selected && selected !== n.id && onChange) {
-                  onChange(
-                    nodes.map((x) =>
-                      x.id === n.id
-                        ? {
-                            ...x,
-                            dependsOn: [...new Set([...x.dependsOn, selected])],
-                          }
-                        : x,
-                    ),
-                  );
-                  setConnect(false);
-                } else onSelect(n.id);
-              }}
-            >
-              <span className="workflow-node-number">
-                {String(i + 1).padStart(2, "0")}
-              </span>
-              <span>
-                <strong>{n.name}</strong>
-                <small>
-                  {n.namespace} ·{" "}
-                  {n.templateId
-                    ? `Template v${n.templateVersion}`
-                    : "SparkApplication"}
-                </small>
-              </span>
-            </button>
-          ))}
-        </div>
-      </div>
-    </>
-  );
 }
 
 export function WorkflowEditor({
