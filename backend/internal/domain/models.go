@@ -246,6 +246,7 @@ type AlertRule struct {
 	ThresholdMinutes int      `json:"thresholdMinutes,omitempty"`
 	ThresholdValue   float64  `json:"thresholdValue,omitempty"`
 	MinimumRetries   int      `json:"minimumRetries,omitempty"`
+	DiagnosticCodes  []string `json:"diagnosticCodes,omitempty"`
 	Severity         string   `json:"severity"`
 	NotifyWebhook    bool     `json:"notifyWebhook"`
 	Version          int      `json:"version"`

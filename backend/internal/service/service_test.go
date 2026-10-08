@@ -31,6 +31,7 @@ type fakeKubernetes struct {
 	deletedPods      []string
 	created          kube.Object
 	createErr        error
+	events           []domain.KubernetesEvent
 }
 
 func (f *fakeKubernetes) Ready(context.Context, string) error { return nil }
@@ -85,7 +86,7 @@ func (f *fakeKubernetes) PodLog(context.Context, string, string, int) ([]string,
 	return []string{"INFO ready"}, nil
 }
 func (f *fakeKubernetes) ListEvents(context.Context, string) ([]domain.KubernetesEvent, error) {
-	return []domain.KubernetesEvent{}, nil
+	return f.events, nil
 }
 
 type fakePrometheus struct{}
@@ -157,6 +158,7 @@ func (f *fakeAlertStore) ListFailureFingerprints(context.Context, []string) ([]d
 
 func runningObject() kube.Object {
 	return kube.Object{
+		"apiVersion": "sparkoperator.k8s.io/v1beta2", "kind": "SparkApplication",
 		"metadata": map[string]any{"name": "demo", "namespace": "spark", "uid": "uid-1", "creationTimestamp": "2026-09-20T00:00:00Z", "labels": map[string]any{"owner": "data-team"}},
 		"spec":     map[string]any{"image": "spark:3.5", "sparkVersion": "3.5.3", "driver": map[string]any{"cores": float64(1), "memory": "2g"}, "executor": map[string]any{"cores": float64(2), "memory": "4g"}},
 		"status":   map[string]any{"applicationState": map[string]any{"state": "RUNNING"}, "driverInfo": map[string]any{"podName": "demo-driver"}, "submissionID": "sub-1"},
@@ -270,6 +272,8 @@ func TestDryRunSanitizesManifestAndReturnsServerPreview(t *testing.T) {
 func TestPrepareCloneRemovesRuntimeState(t *testing.T) {
 	object := runningObject()
 	object["metadata"].(map[string]any)["resourceVersion"] = "42"
+	object["metadata"].(map[string]any)["managedFields"] = []any{map[string]any{"f:executorState": map[string]any{"old-executor": map[string]any{}}}}
+	object["metadata"].(map[string]any)["annotations"] = map[string]any{"kubectl.kubernetes.io/last-applied-configuration": "old manifest", consoleOwnerAnnotation: "old-user", "custom/config": "keep"}
 	svc := New(config.Config{Namespaces: []string{"spark"}}, &fakeKubernetes{object: object}, fakePrometheus{}, &fakeStore{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	preview, err := svc.PrepareApplication(context.Background(), "spark", "demo", "clone")
 	if err != nil || preview.Name != "demo-copy" {
@@ -281,6 +285,45 @@ func TestPrepareCloneRemovesRuntimeState(t *testing.T) {
 	}
 	if kube.String(prepared, "metadata", "resourceVersion") != "" || kube.String(prepared, "status", "applicationState", "state") != "" || kube.String(prepared, "metadata", "name") != "demo-copy" {
 		t.Fatalf("clone retained runtime state: %#v", prepared)
+	}
+	annotations := kube.StringMap(prepared, "metadata", "annotations")
+	if annotations["kubectl.kubernetes.io/last-applied-configuration"] != "" || annotations[consoleOwnerAnnotation] != "" || annotations["custom/config"] != "keep" {
+		t.Fatalf("clone has incorrect annotations: %#v", annotations)
+	}
+}
+
+func TestDiagnosticRulesMatchMultipleAndFutureCodes(t *testing.T) {
+	app := domain.SparkApplication{Namespace: "spark", Name: "demo", Diagnostics: []domain.ApplicationDiagnostic{
+		{Code: "VOLUME_MOUNT", Summary: "Volume missing", Detail: "FailedMount: ConfigMap not found", Recommendation: "Check ConfigMap"},
+		{Code: "FUTURE_DIAGNOSIS", Summary: "New diagnosis"},
+	}}
+	rule := domain.AlertRule{ID: "diagnostic", Name: "Diagnoses", Type: "diagnostic", Severity: "error"}
+	alerts := evaluateRuleAlerts(rule, app, time.Now())
+	if len(alerts) != 2 || alerts[0].ID == alerts[1].ID || alerts[0].Recommendation != "Check ConfigMap" {
+		t.Fatalf("expected independent alerts for all diagnoses: %#v", alerts)
+	}
+	rule.DiagnosticCodes = []string{"VOLUME_MOUNT"}
+	if selected := evaluateRuleAlerts(rule, app, time.Now()); len(selected) != 1 || selected[0].ID != alerts[0].ID {
+		t.Fatalf("expected only selected diagnostic: %#v", selected)
+	}
+	rule.DiagnosticCodes = []string{"OOM"}
+	if len(evaluateRuleAlerts(rule, app, time.Now())) != 0 {
+		t.Fatal("unmatched codes must not create alerts")
+	}
+	if _, matched := evaluateRule(domain.AlertRule{Type: "unknown"}, app, time.Now()); matched {
+		t.Fatal("unknown rule types must not create alerts")
+	}
+}
+
+func TestEvaluateDiagnosticAlertsCollectsEventOnlyFailures(t *testing.T) {
+	alerts := &fakeAlertStore{rules: []domain.AlertRule{{ID: "volumes", Name: "Volumes", Type: "diagnostic", DiagnosticCodes: []string{"VOLUME_MOUNT"}, Severity: "error", Enabled: true}}}
+	kubernetes := &fakeKubernetes{object: runningObject(), events: []domain.KubernetesEvent{{Type: "Warning", Reason: "FailedMount", Message: "MountVolume: configmap not found", InvolvedObject: "demo-driver"}}}
+	svc := New(config.Config{Namespaces: []string{"spark"}}, kubernetes, fakePrometheus{}, alerts, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := svc.EvaluateAlerts(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if alerts.upserts != 1 {
+		t.Fatalf("event-only mount failure was not evaluated: %d alerts", alerts.upserts)
 	}
 }
 

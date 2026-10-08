@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -146,5 +147,54 @@ func TestPostgresUpsertAlertReturnsPersistedTimestamps(t *testing.T) {
 	}
 	if created || updatedAlert.FirstSeenAt != createdAlert.FirstSeenAt || updatedAlert.LastSeenAt == "" {
 		t.Fatalf("expected updated alert with stable firstSeenAt, got created=%v alert=%#v", created, updatedAlert)
+	}
+}
+
+func TestPostgresDiagnosticRuleRoundTripAndVersionHistory(t *testing.T) {
+	dsn := os.Getenv("TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("TEST_POSTGRES_DSN is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s, err := Open(ctx, dsn, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	rule, err := s.SaveAlertRule(ctx, domain.AlertRule{Name: "diagnoses", Type: "diagnostic", DiagnosticCodes: []string{"VOLUME_MOUNT", "FUTURE_DIAGNOSIS"}, Severity: "error", Enabled: true, CreatedBy: "integration"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.DeleteAlertRule(context.Background(), rule.ID) }()
+	rules, err := s.ListAlertRules(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, saved := range rules {
+		if saved.ID == rule.ID {
+			found = len(saved.DiagnosticCodes) == 2 && saved.DiagnosticCodes[0] == "VOLUME_MOUNT"
+		}
+	}
+	if !found {
+		t.Fatal("diagnostic codes did not survive PostgreSQL round trip")
+	}
+	rule.DiagnosticCodes = nil // Empty means every current and future diagnostic code.
+	updated, err := s.SaveAlertRule(ctx, rule)
+	if err != nil || updated.Version != 2 {
+		t.Fatalf("update diagnostic rule: %#v, %v", updated, err)
+	}
+	var count int
+	if err := s.pool.QueryRow(ctx, `SELECT cardinality(diagnostic_codes) FROM alert_rules WHERE id=$1`, rule.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("empty diagnostic codes must be an empty array: %d, %v", count, err)
+	}
+	var snapshot domain.AlertRule
+	var raw []byte
+	if err := s.pool.QueryRow(ctx, `SELECT snapshot FROM alert_rule_versions WHERE rule_id=$1 AND version=1`, rule.ID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &snapshot); err != nil || len(snapshot.DiagnosticCodes) != 2 {
+		t.Fatalf("original diagnostic rule version changed: %#v, %v", snapshot, err)
 	}
 }

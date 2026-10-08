@@ -611,8 +611,19 @@ func cleanObjectForSubmission(object kube.Object, namespace, name, operator stri
 		}
 		annotations[consoleOwnerAnnotation] = operator
 	}
-	for _, field := range []string{"uid", "resourceVersion", "generation", "creationTimestamp", "managedFields", "deletionTimestamp", "deletionGracePeriodSeconds", "selfLink"} {
-		delete(metadata, field)
+	for field := range metadata {
+		if field != "name" && field != "namespace" && field != "labels" && field != "annotations" {
+			delete(metadata, field)
+		}
+	}
+	if annotations, ok := metadata["annotations"].(map[string]any); ok {
+		delete(annotations, "kubectl.kubernetes.io/last-applied-configuration")
+		if operator == "" {
+			delete(annotations, consoleOwnerAnnotation)
+		}
+		if len(annotations) == 0 {
+			delete(metadata, "annotations")
+		}
 	}
 	delete(object, "status")
 }
@@ -816,6 +827,18 @@ func diagnoseApplication(app domain.SparkApplication) []domain.ApplicationDiagno
 			return
 		}
 		seen[code] = true
+		if strings.TrimSpace(detail) == "" {
+			parts := []string{app.PendingReason}
+			for _, event := range app.Events {
+				if event.Type == "Warning" || strings.Contains(strings.ToLower(event.Reason), "fail") {
+					parts = append(parts, event.Reason+": "+event.Message)
+					if len(parts) >= 6 {
+						break
+					}
+				}
+			}
+			detail = strings.Join(compactEvidence(parts), "\n")
+		}
 		diagnostics = append(diagnostics, domain.ApplicationDiagnostic{Code: code, Severity: severity, Summary: summary, Detail: detail, Recommendation: recommendation})
 	}
 	if strings.Contains(text, "imagepullbackoff") || strings.Contains(text, "errimagepull") || strings.Contains(text, "failed to pull image") {
@@ -921,9 +944,13 @@ func sparkPodNames(objects []kube.Object, pods []kube.Pod) []string {
 }
 
 func filterEvents(events []domain.KubernetesEvent, object kube.Object, pods []kube.Pod) []domain.KubernetesEvent {
-	// Core/v1 event conversion intentionally keeps the involved object out of the public model.
-	// Match by message as a portable fallback across Kubernetes versions and event producers.
-	names := []string{kube.String(object, "metadata", "name")}
+	// Driver/Executor Pods may already be absent; their recorded names still identify relevant events.
+	names := []string{kube.String(object, "metadata", "name"), kube.String(object, "status", "driverInfo", "podName")}
+	if states, ok := kube.Map(object, "status", "executorState"); ok {
+		for podName := range states {
+			names = append(names, podName)
+		}
+	}
 	for _, pod := range pods {
 		names = append(names, pod.Name)
 	}
@@ -1109,6 +1136,9 @@ func validateTemplate(item domain.ApplicationTemplate) error {
 			return &kube.APIError{StatusCode: 400, Message: "template parameter names must be unique identifiers"}
 		}
 		seen[p.Name] = true
+		if !containsString([]string{"string", "integer", "number", "boolean", ""}, p.Type) {
+			return &kube.APIError{StatusCode: 400, Message: "unsupported parameter type: " + p.Name}
+		}
 		if p.Pattern != "" {
 			if _, err := regexp.Compile(p.Pattern); err != nil {
 				return &kube.APIError{StatusCode: 400, Message: "invalid parameter pattern: " + p.Name}
@@ -1128,6 +1158,11 @@ func (s *Service) SaveTemplate(ctx context.Context, item domain.ApplicationTempl
 	if err := validateTemplate(item); err != nil {
 		return item, err
 	}
+	manifest, err := normalizeTemplateManifest(item.Manifest, item.Namespace)
+	if err != nil {
+		return item, &kube.APIError{StatusCode: 400, Message: err.Error()}
+	}
+	item.Manifest = manifest
 	value, err := s.templateStore()
 	if err != nil {
 		return item, err
@@ -1221,7 +1256,11 @@ func (s *Service) RenderTemplate(ctx context.Context, id string, values map[stri
 	if item.Disabled {
 		return domain.ManifestPreview{}, &kube.APIError{StatusCode: 409, Message: "template is disabled"}
 	}
-	manifest := item.Manifest
+	manifest, err := normalizeTemplateManifest(item.Manifest, item.Namespace)
+	if err != nil {
+		return domain.ManifestPreview{}, &kube.APIError{StatusCode: 400, Message: err.Error()}
+	}
+	replacements := map[string]any{}
 	for _, p := range item.Parameters {
 		value := values[p.Name]
 		if value == "" {
@@ -1230,8 +1269,28 @@ func (s *Service) RenderTemplate(ctx context.Context, id string, values map[stri
 		if err := validateParameter(p, value); err != nil {
 			return domain.ManifestPreview{}, &kube.APIError{StatusCode: 400, Message: err.Error()}
 		}
-		manifest = strings.ReplaceAll(manifest, "{{"+p.Name+"}}", value)
+		var typed any = value
+		if value != "" {
+			switch p.Type {
+			case "integer":
+				typed, _ = strconv.Atoi(value)
+			case "number":
+				typed, _ = strconv.ParseFloat(value, 64)
+			case "boolean":
+				typed, _ = strconv.ParseBool(value)
+			}
+		}
+		replacements["{{"+p.Name+"}}"] = typed
 	}
+	var object kube.Object
+	if err := yaml.Unmarshal([]byte(manifest), &object); err != nil {
+		return domain.ManifestPreview{}, err
+	}
+	encoded, err := yaml.Marshal(renderTemplateValue(map[string]any(object), replacements))
+	if err != nil {
+		return domain.ManifestPreview{}, err
+	}
+	manifest = string(encoded)
 	if unresolved := regexp.MustCompile(`\{\{[A-Za-z][A-Za-z0-9_]*\}\}`).FindString(manifest); unresolved != "" {
 		return domain.ManifestPreview{}, &kube.APIError{StatusCode: 400, Message: "unresolved template parameter: " + unresolved}
 	}
@@ -1306,8 +1365,13 @@ func validRule(rule domain.AlertRule) error {
 	if strings.TrimSpace(rule.Name) == "" {
 		return fmt.Errorf("rule name is required")
 	}
-	if !containsString([]string{"failure", "pending", "resource", "retries"}, rule.Type) {
+	if !containsString([]string{"failure", "pending", "resource", "retries", "diagnostic"}, rule.Type) {
 		return fmt.Errorf("unsupported alert rule type")
+	}
+	for _, code := range rule.DiagnosticCodes {
+		if !regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`).MatchString(code) {
+			return fmt.Errorf("diagnostic codes must be uppercase identifiers")
+		}
 	}
 	if !containsString([]string{"info", "warning", "error"}, rule.Severity) {
 		return fmt.Errorf("unsupported severity")
@@ -1356,6 +1420,8 @@ func evaluateRule(rule domain.AlertRule, app domain.SparkApplication, now time.T
 	alert := domain.Alert{RuleID: rule.ID, RuleName: rule.Name, Namespace: app.Namespace, ApplicationName: app.Name, Severity: rule.Severity, Status: "active", Confidence: "high"}
 	code := ""
 	switch rule.Type {
+	case "diagnostic":
+		return alert, false // Evaluated separately, once per matching diagnostic code.
 	case "failure":
 		if !containsString([]string{"FAILED", "SUBMISSION_FAILED", "FAILING"}, app.State) {
 			return alert, false
@@ -1429,11 +1495,39 @@ func evaluateRule(rule domain.AlertRule, app domain.SparkApplication, now time.T
 		alert.Summary = "Repeated Kubernetes failures or retries detected"
 		alert.Evidence = []string{fmt.Sprintf("failure event count=%d", count)}
 		alert.Recommendation = "Review the aggregated events and fix the repeated root cause before retrying."
+	default:
+		return alert, false
 	}
 	alert.Fingerprint = alertFingerprint(rule, app, code)
 	alert.ID = "alert-" + alert.Fingerprint
 	alert.Evidence = compactEvidence(alert.Evidence)
 	return alert, true
+}
+
+func evaluateRuleAlerts(rule domain.AlertRule, app domain.SparkApplication, now time.Time) []domain.Alert {
+	if rule.Type != "diagnostic" {
+		if alert, matched := evaluateRule(rule, app, now); matched {
+			return []domain.Alert{alert}
+		}
+		return nil
+	}
+	diagnostics := app.Diagnostics
+	if len(diagnostics) == 0 {
+		diagnostics = diagnoseApplication(app)
+	}
+	seen := map[string]bool{}
+	result := []domain.Alert{}
+	for _, diagnostic := range diagnostics {
+		if seen[diagnostic.Code] || (len(rule.DiagnosticCodes) > 0 && !containsString(rule.DiagnosticCodes, diagnostic.Code)) {
+			continue
+		}
+		seen[diagnostic.Code] = true
+		fingerprint := alertFingerprint(rule, app, diagnostic.Code)
+		result = append(result, domain.Alert{ID: "alert-" + fingerprint, Fingerprint: fingerprint, RuleID: rule.ID, RuleName: rule.Name,
+			Namespace: app.Namespace, ApplicationName: app.Name, Severity: rule.Severity, Status: "active", Confidence: "high",
+			Summary: diagnostic.Summary, Evidence: compactEvidence([]string{"diagnostic=" + diagnostic.Code, diagnostic.Detail}), Recommendation: diagnostic.Recommendation})
+	}
+	return result
 }
 func compactEvidence(values []string) []string {
 	result := []string{}
@@ -1466,6 +1560,7 @@ func (s *Service) EvaluateAlerts(ctx context.Context, namespaces []string) error
 	}
 	active := []string{}
 	now := time.Now().UTC()
+	details := map[string]domain.SparkApplication{}
 	for _, rule := range rules {
 		if !rule.Enabled {
 			continue
@@ -1474,17 +1569,29 @@ func (s *Service) EvaluateAlerts(ctx context.Context, namespaces []string) error
 			if !ruleApplies(rule, app) {
 				continue
 			}
-			alert, matched := evaluateRule(rule, app, now)
-			if !matched {
-				continue
+			if rule.Type == "diagnostic" {
+				// List responses do not include Pod events; fetch them for event-only diagnoses such as FailedMount.
+				key := app.Namespace + "/" + app.Name
+				detail, cached := details[key]
+				if !cached {
+					var detailErr error
+					detail, detailErr = s.GetApplication(ctx, app.Namespace, app.Name)
+					if detailErr != nil {
+						return fmt.Errorf("collect alert diagnostics for %s: %w", key, detailErr)
+					}
+					details[key] = detail
+				}
+				app = detail
 			}
-			active = append(active, alert.ID)
-			savedAlert, _, upsertErr := value.UpsertAlert(ctx, alert)
-			if upsertErr != nil {
-				return upsertErr
-			}
-			if rule.NotifyWebhook && savedAlert.Status != "silenced" {
-				s.sendAlertWebhook(savedAlert)
+			for _, alert := range evaluateRuleAlerts(rule, app, now) {
+				active = append(active, alert.ID)
+				savedAlert, _, upsertErr := value.UpsertAlert(ctx, alert)
+				if upsertErr != nil {
+					return upsertErr
+				}
+				if rule.NotifyWebhook && savedAlert.Status != "silenced" {
+					s.sendAlertWebhook(savedAlert)
+				}
 			}
 		}
 	}

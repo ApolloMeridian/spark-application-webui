@@ -11,3 +11,15 @@ vite.config.js
 vite.config.d.ts
 design.md
 README.md
+.tools
+release
+coverage
+.env
+.env.*
+*.local.yaml
+*.pem
+*.key
+*.crt
+*.tar
+**/.tools
+*[Rr][Oo][Aa][Dd][Mm][Aa][Pp]*

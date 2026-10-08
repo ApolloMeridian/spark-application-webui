@@ -2,6 +2,7 @@ import type { AlertRule, ApplicationAlert, ApplicationChange, ApplicationFavorit
 import { seedApplications } from './mockData';
 import { apiUrl, runtimeConfig } from './runtimeConfig';
 import { sumResources } from './utils';
+import { cleanApplicationManifest, renderTemplateManifest } from './manifests';
 
 const APPS_KEY = 'spark-console-mock-applications';
 const AUDIT_KEY = 'spark-console-mock-audit';
@@ -101,17 +102,7 @@ export class MockSparkApplicationService implements SparkApplicationService {
     const app = await this.getApplication(namespace, name);
     const suffix = mode === 'clone' ? '-copy' : `-retry-${new Date().toISOString().slice(2, 16).replace(/[-T:]/g, '')}`;
     const suggestedName = `${name.slice(0, Math.max(1, 63 - suffix.length))}${suffix}`;
-    let manifest = app.yaml;
-    try {
-      const object = JSON.parse(app.yaml) as Record<string, unknown>;
-      const metadata = (object.metadata ?? {}) as Record<string, unknown>;
-      metadata.name = suggestedName; metadata.namespace = namespace;
-      ['uid', 'resourceVersion', 'generation', 'creationTimestamp', 'managedFields', 'deletionTimestamp'].forEach((key) => delete metadata[key]);
-      delete object.status; object.metadata = metadata;
-      manifest = JSON.stringify(object, null, 2);
-    } catch {
-      manifest = manifest.replace(/(^\s*name:\s*)\S+/m, `$1${suggestedName}`).replace(/(^\s*namespace:\s*)\S+/m, `$1${namespace}`);
-    }
+    const manifest = cleanApplicationManifest(app.yaml, namespace, suggestedName);
     return { name: suggestedName, namespace, originalYaml: '', serverYaml: manifest, warnings: [], dryRunAccepted: false };
   }
   async killApplication(namespace: string, name: string, operator: string, reason?: string) {
@@ -235,10 +226,10 @@ class OperationsService {
   }
   listTemplates(includeDisabled = false) { return runtimeConfig.dataMode === 'mock' ? Promise.resolve(readTemplates().filter((x) => includeDisabled || !x.disabled)) : managementRequest<ApplicationTemplate[]>(`/v1/templates?includeDisabled=${includeDisabled}`); }
   getTemplate(id: string) { if (runtimeConfig.dataMode === 'mock') { const item = readTemplates().find((x) => x.id === id); return item ? Promise.resolve(item) : Promise.reject(new Error('Template not found')); } return managementRequest<ApplicationTemplate>(`/v1/templates/${encodeURIComponent(id)}`); }
-  saveTemplate(template: Partial<ApplicationTemplate>) { if (runtimeConfig.dataMode === 'mock') { const items = readTemplates(); const now = new Date().toISOString(); const index = items.findIndex((x) => x.id === template.id); const saved = { ...demoTemplate, ...template, id: template.id || `tpl-${Date.now()}`, version: index >= 0 ? items[index].version + 1 : 1, createdAt: index >= 0 ? items[index].createdAt : now, updatedAt: now } as ApplicationTemplate; if (index >= 0) items[index] = saved; else items.unshift(saved); localStorage.setItem(TEMPLATES_KEY, JSON.stringify(items)); return Promise.resolve(saved); } const editing = Boolean(template.id); return managementRequest<ApplicationTemplate>(editing ? `/v1/templates/${encodeURIComponent(template.id!)}` : '/v1/templates', { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(template) }); }
+  async saveTemplate(template: Partial<ApplicationTemplate>) { if (runtimeConfig.dataMode === 'mock') { const items = readTemplates(); const now = new Date().toISOString(); const index = items.findIndex((x) => x.id === template.id); const saved = { ...demoTemplate, ...template, manifest: cleanApplicationManifest(template.manifest || '', template.namespace), id: template.id || `tpl-${Date.now()}`, version: index >= 0 ? items[index].version + 1 : 1, createdAt: index >= 0 ? items[index].createdAt : now, updatedAt: now } as ApplicationTemplate; if (index >= 0) items[index] = saved; else items.unshift(saved); localStorage.setItem(TEMPLATES_KEY, JSON.stringify(items)); return saved; } const editing = Boolean(template.id); return managementRequest<ApplicationTemplate>(editing ? `/v1/templates/${encodeURIComponent(template.id!)}` : '/v1/templates', { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(template) }); }
   deleteTemplate(id: string) { if (runtimeConfig.dataMode === 'mock') { localStorage.setItem(TEMPLATES_KEY, JSON.stringify(readTemplates().filter((x) => x.id !== id))); return Promise.resolve(); } return managementRequest<void>(`/v1/templates/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
   async copyTemplate(id: string, name: string) { if (runtimeConfig.dataMode === 'mock') { const item = await this.getTemplate(id); return this.saveTemplate({ ...item, id: undefined, name }); } return managementRequest<ApplicationTemplate>(`/v1/templates/${encodeURIComponent(id)}/copy`, { method: 'POST', body: JSON.stringify({ name }) }); }
-  async renderTemplate(id: string, values: Record<string, string>) { if (runtimeConfig.dataMode === 'mock') { const item = await this.getTemplate(id); let manifest = item.manifest; item.parameters.forEach((p) => { manifest = manifest.replaceAll(`{{${p.name}}}`, values[p.name] || p.default || ''); }); return { name: values.name || item.name, namespace: item.namespace, originalYaml: item.manifest, serverYaml: manifest, warnings: [], dryRunAccepted: false }; } return managementRequest<ManifestPreview>(`/v1/templates/${encodeURIComponent(id)}/render`, { method: 'POST', body: JSON.stringify({ values }) }); }
+  async renderTemplate(id: string, values: Record<string, string>) { if (runtimeConfig.dataMode === 'mock') { const item = await this.getTemplate(id); const manifest = renderTemplateManifest(item.manifest, item.namespace, item.parameters, values); return { name: values.name || item.name, namespace: item.namespace, originalYaml: item.manifest, serverYaml: manifest, warnings: [], dryRunAccepted: false }; } return managementRequest<ManifestPreview>(`/v1/templates/${encodeURIComponent(id)}/render`, { method: 'POST', body: JSON.stringify({ values }) }); }
   listFavorites() { return runtimeConfig.dataMode === 'mock' ? Promise.resolve(JSON.parse(localStorage.getItem('spark-console-favorites') || '[]') as ApplicationFavorite[]) : managementRequest<ApplicationFavorite[]>('/v1/favorites'); }
   setFavorite(namespace: string, application: string, favorite: boolean) { if (runtimeConfig.dataMode === 'mock') { const items = JSON.parse(localStorage.getItem('spark-console-favorites') || '[]') as ApplicationFavorite[]; const next = favorite ? [...items.filter((x) => x.namespace !== namespace || x.application !== application), { namespace, application }] : items.filter((x) => x.namespace !== namespace || x.application !== application); localStorage.setItem('spark-console-favorites', JSON.stringify(next)); return Promise.resolve(); } return managementRequest<void>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications/${encodeURIComponent(application)}/favorite`, { method: 'PUT', body: JSON.stringify({ favorite }) }); }
   async batchPreview(operation: 'kill' | 'delete', items: BatchActionItem[]) { if (runtimeConfig.dataMode === 'mock') { return Promise.all(items.map(async (item) => { const app = await sparkService.getApplication(item.namespace, item.name); const allowed = operation === 'kill' ? ['RUNNING', 'SUBMITTED'].includes(app.state) : ['COMPLETED', 'FAILED', 'SUBMISSION_FAILED', 'KILLED'].includes(app.state); return { ...item, allowed, reason: allowed ? undefined : `Application state ${app.state} is not eligible` }; })); } return managementRequest<BatchActionItem[]>('/v1/applications/batch/preview', { method: 'POST', body: JSON.stringify({ operation, items }) }); }

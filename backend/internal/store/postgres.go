@@ -204,6 +204,7 @@ CREATE TABLE IF NOT EXISTS operation_audit (
   updated_at timestamptz NOT NULL
 )`,
 		`ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS current_version integer NOT NULL DEFAULT 1`,
+		`ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS diagnostic_codes text[] NOT NULL DEFAULT '{}'`,
 		`CREATE TABLE IF NOT EXISTS alert_rule_versions (
   rule_id text NOT NULL REFERENCES alert_rules(id) ON DELETE CASCADE,
   version integer NOT NULL,
@@ -877,7 +878,7 @@ func (s *PostgresStore) ListFavorites(ctx context.Context, userID string) ([]dom
 }
 
 func (s *PostgresStore) ListAlertRules(ctx context.Context, namespaces []string) ([]domain.AlertRule, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,current_version,created_by,created_at,updated_at FROM alert_rules WHERE COALESCE(cardinality($1::text[]),0)=0 OR cardinality(namespaces)=0 OR namespaces && $1 ORDER BY updated_at DESC`, namespaces)
+	rows, err := s.pool.Query(ctx, `SELECT id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,current_version,created_by,created_at,updated_at,diagnostic_codes FROM alert_rules WHERE COALESCE(cardinality($1::text[]),0)=0 OR cardinality(namespaces)=0 OR namespaces && $1 ORDER BY updated_at DESC`, namespaces)
 	if err != nil {
 		return nil, err
 	}
@@ -886,7 +887,7 @@ func (s *PostgresStore) ListAlertRules(ctx context.Context, namespaces []string)
 	for rows.Next() {
 		var x domain.AlertRule
 		var c, u time.Time
-		if err := rows.Scan(&x.ID, &x.Name, &x.Type, &x.Namespaces, &x.Enabled, &x.ThresholdMinutes, &x.ThresholdValue, &x.MinimumRetries, &x.Severity, &x.NotifyWebhook, &x.Version, &x.CreatedBy, &c, &u); err != nil {
+		if err := rows.Scan(&x.ID, &x.Name, &x.Type, &x.Namespaces, &x.Enabled, &x.ThresholdMinutes, &x.ThresholdValue, &x.MinimumRetries, &x.Severity, &x.NotifyWebhook, &x.Version, &x.CreatedBy, &c, &u, &x.DiagnosticCodes); err != nil {
 			return nil, err
 		}
 		x.CreatedAt = c.UTC().Format(time.RFC3339Nano)
@@ -910,13 +911,13 @@ func (s *PostgresStore) SaveAlertRule(ctx context.Context, x domain.AlertRule) (
 		x.ID = fmt.Sprintf("rule-%d", now.UnixNano())
 		x.Version = 1
 		x.CreatedAt = now.Format(time.RFC3339Nano)
-		_, err = tx.Exec(ctx, `INSERT INTO alert_rules (id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,current_version,created_by,created_at,updated_at) VALUES ($1,$2,$3,COALESCE($4::text[], '{}'::text[]),$5,$6,$7,$8,$9,$10,1,$11,$12,$12)`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, x.CreatedBy, now)
+		_, err = tx.Exec(ctx, `INSERT INTO alert_rules (id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,current_version,created_by,created_at,updated_at,diagnostic_codes) VALUES ($1,$2,$3,COALESCE($4::text[], '{}'::text[]),$5,$6,$7,$8,$9,$10,1,$11,$12,$12,COALESCE($13::text[], '{}'::text[]))`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, x.CreatedBy, now, x.DiagnosticCodes)
 		if err != nil {
 			return x, err
 		}
 	} else {
 		var c time.Time
-		err = tx.QueryRow(ctx, `UPDATE alert_rules SET name=$2,rule_type=$3,namespaces=COALESCE($4::text[], '{}'::text[]),enabled=$5,threshold_minutes=$6,threshold_value=$7,minimum_retries=$8,severity=$9,notify_webhook=$10,current_version=current_version+1,updated_at=$11 WHERE id=$1 RETURNING created_at,current_version`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, now).Scan(&c, &x.Version)
+		err = tx.QueryRow(ctx, `UPDATE alert_rules SET name=$2,rule_type=$3,namespaces=COALESCE($4::text[], '{}'::text[]),enabled=$5,threshold_minutes=$6,threshold_value=$7,minimum_retries=$8,severity=$9,notify_webhook=$10,current_version=current_version+1,updated_at=$11,diagnostic_codes=COALESCE($12::text[], '{}'::text[]) WHERE id=$1 RETURNING created_at,current_version`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, now, x.DiagnosticCodes).Scan(&c, &x.Version)
 		if err != nil {
 			return x, err
 		}

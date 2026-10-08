@@ -45,6 +45,16 @@ describe('mock application service', () => {
     expect(preview.serverYaml).toContain('parquet-to-iceberg-copy');
     expect(preview.serverYaml).not.toContain('resourceVersion');
   });
+  it('saves and copies a runtime JSON snapshot as a reusable typed YAML template', async () => {
+    const manifest = JSON.stringify({ apiVersion: 'sparkoperator.k8s.io/v1beta2', kind: 'SparkApplication', metadata: { name: 'test', namespace: 'spark-prod', managedFields: [{ 'f:executorState': {} }], annotations: { 'kubectl.kubernetes.io/last-applied-configuration': 'old' } }, spec: { executor: { instances: '{{count}}' } }, status: { submissionID: 'old-id' } });
+    const template = await operationsService.saveTemplate({ name: 'Reusable', namespace: 'spark-prod', manifest, parameters: [{ name: 'count', type: 'integer', required: true, default: '2' }] });
+    expect(template.manifest).toContain('kind: SparkApplication');
+    expect(template.manifest).not.toMatch(/managedFields|last-applied|submissionID|status:/);
+    const copied = await operationsService.copyTemplate(template.id, 'Reusable copy');
+    expect(copied.manifest).toBe(template.manifest);
+    expect(copied.id).not.toBe(template.id);
+    expect((await operationsService.renderTemplate(copied.id, { count: '4' })).serverYaml).toContain('instances: 4');
+  });
   it('returns executor logs in the requested order', async () => {
     const app = await sparkService.getApplication('spark-prod', 'parquet-to-iceberg');
     const executor = app.executors[0];
