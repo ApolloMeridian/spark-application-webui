@@ -318,7 +318,7 @@ func (s *Service) advance(ctx context.Context, tx pgx.Tx, run *domain.WorkflowRu
 			}
 		}
 		if task.Status == "running" || task.Status == "submitting" {
-			app, err := s.apps.GetApplication(ctx, task.Namespace, task.ApplicationName)
+			app, err := s.apps.GetWorkflowApplication(ctx, task.Namespace, task.ApplicationName)
 			if err != nil {
 				var apiErr *kube.APIError
 				if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
@@ -451,7 +451,7 @@ func (s *Service) advance(ctx context.Context, tx pgx.Tx, run *domain.WorkflowRu
 		}
 		*budget--
 		// Reconcile a CREATE accepted before a crashed/uncommitted tick.
-		app, err := s.apps.GetApplication(ctx, task.Namespace, task.ApplicationName)
+		app, err := s.apps.GetWorkflowApplication(ctx, task.Namespace, task.ApplicationName)
 		if err == nil {
 			if !owned(app, task.ID) {
 				task.Status = "failed"

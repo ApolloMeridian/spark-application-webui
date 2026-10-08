@@ -29,7 +29,7 @@ type fakeApps struct {
 	crash     context.CancelFunc
 }
 
-func (f *fakeApps) GetApplication(_ context.Context, ns, name string) (domain.SparkApplication, error) {
+func (f *fakeApps) GetWorkflowApplication(_ context.Context, ns, name string) (domain.SparkApplication, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	x, ok := f.apps[ns+"/"+name]
@@ -220,7 +220,7 @@ func TestPostgresVersionsTenantAndRecovery(t *testing.T) {
 	}
 	crashCtx, cancel := context.WithCancel(ctx)
 	apps.crash = cancel
-	if err = s.Tick(crashCtx, time.Now()); !errors.Is(err, context.Canceled) {
+	if err = s.tickForTest(crashCtx, time.Now()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("crash tick err=%v", err)
 	}
 	// A different service instance has no process-local execution state.

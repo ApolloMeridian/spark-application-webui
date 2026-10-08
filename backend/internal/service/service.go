@@ -196,6 +196,23 @@ func (s *Service) ListApplicationsForNamespaces(ctx context.Context, namespaces 
 	return applications, nil
 }
 
+// GetWorkflowApplication reads only authoritative live state. Reconciliation
+// must not resurrect deleted resources from UI snapshots or wait for metrics/logs.
+func (s *Service) GetWorkflowApplication(ctx context.Context, namespace, name string) (domain.SparkApplication, error) {
+	if !s.config.NamespaceAllowed(namespace) {
+		return domain.SparkApplication{}, &kube.APIError{StatusCode: 403, Message: "namespace is not configured for this service"}
+	}
+	object, err := s.kubernetes.GetSparkApplication(ctx, namespace, name)
+	if err != nil {
+		return domain.SparkApplication{}, err
+	}
+	raw, err := json.Marshal(object)
+	if err != nil {
+		return domain.SparkApplication{}, err
+	}
+	return domain.SparkApplication{Name: name, Namespace: namespace, State: normalizedState(kube.String(object, "status", "applicationState", "state")), YAML: string(raw)}, nil
+}
+
 func (s *Service) GetApplication(ctx context.Context, namespace, name string) (domain.SparkApplication, error) {
 	if !s.config.NamespaceAllowed(namespace) {
 		return domain.SparkApplication{}, &kube.APIError{StatusCode: 403, Message: "namespace is not configured for this service"}
@@ -1168,7 +1185,15 @@ func (s *Service) SaveTemplate(ctx context.Context, item domain.ApplicationTempl
 		return item, err
 	}
 	item.CreatedBy = operator
-	if item.ID!="" { prior,err:=value.GetTemplate(ctx,item.ID);if err!=nil{return item,err};if prior.Namespace!=item.Namespace{return item,&kube.APIError{StatusCode:400,Message:"a versioned template cannot move between namespaces; copy it instead"}} }
+	if item.ID != "" {
+		prior, err := value.GetTemplate(ctx, item.ID)
+		if err != nil {
+			return item, err
+		}
+		if prior.Namespace != item.Namespace {
+			return item, &kube.APIError{StatusCode: 400, Message: "a versioned template cannot move between namespaces; copy it instead"}
+		}
+	}
 	return value.SaveTemplate(ctx, item)
 }
 

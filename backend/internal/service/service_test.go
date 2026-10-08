@@ -111,6 +111,42 @@ func (f fakeLogSource) QueryLogs(context.Context, string, string, time.Time, tim
 
 type fakeStore struct{ rows []domain.OperationAudit }
 
+type workflowKubernetes struct {
+	fakeKubernetes
+	getErr error
+}
+
+func (f *workflowKubernetes) GetSparkApplication(context.Context, string, string) (kube.Object, error) {
+	return f.object, f.getErr
+}
+func (f *workflowKubernetes) ListPods(context.Context, string) ([]kube.Pod, error) {
+	panic("workflow polling must not load UI details")
+}
+
+type workflowSnapshotStore struct {
+	fakeStore
+	lookups int
+}
+
+func (f *workflowSnapshotStore) GetApplicationSnapshot(context.Context, string, string) (domain.SparkApplication, error) {
+	f.lookups++
+	return domain.SparkApplication{State: "RUNNING"}, nil
+}
+
+func TestWorkflowPollingUsesLiveStateWithoutSnapshotFallback(t *testing.T) {
+	kubernetes := &workflowKubernetes{fakeKubernetes: fakeKubernetes{object: runningObject()}}
+	audits := &workflowSnapshotStore{}
+	svc := New(config.Config{Namespaces: []string{"spark"}}, kubernetes, nil, audits, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	app, err := svc.GetWorkflowApplication(context.Background(), "spark", "demo")
+	if err != nil || app.State != "RUNNING" || app.YAML == "" {
+		t.Fatal(app, err)
+	}
+	kubernetes.getErr = &kube.APIError{StatusCode: 404, Message: "not found"}
+	if _, err = svc.GetWorkflowApplication(context.Background(), "spark", "demo"); err == nil || audits.lookups != 0 {
+		t.Fatalf("deleted resource revived from snapshot: %v lookups=%d", err, audits.lookups)
+	}
+}
+
 func (f *fakeStore) Insert(_ context.Context, row domain.OperationAudit) error {
 	f.rows = append(f.rows, row)
 	return nil

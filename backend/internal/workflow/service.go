@@ -24,7 +24,7 @@ import (
 type Applications interface {
 	SubmitApplication(context.Context, string, string, string) (domain.SparkApplication, error)
 	DryRunApplication(context.Context, string, string, string) (domain.ManifestPreview, error)
-	GetApplication(context.Context, string, string) (domain.SparkApplication, error)
+	GetWorkflowApplication(context.Context, string, string) (domain.SparkApplication, error)
 	KillApplication(context.Context, string, string, string, string) (domain.OperationAudit, error)
 }
 type Service struct {
