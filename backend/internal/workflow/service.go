@@ -296,6 +296,10 @@ func (s *Service) prepare(ctx context.Context, user domain.User, x *domain.Workf
 			return invalid("invalid task strategy, retries or timeout")
 		}
 		if n.TemplateID != "" {
+			defaults := map[string]string{}
+			for _, p := range n.Parameters {
+				defaults[p.Name] = p.Default
+			}
 			t, err := s.store.GetTemplate(ctx, n.TemplateID)
 			if err != nil {
 				return err
@@ -311,6 +315,11 @@ func (s *Service) prepare(ctx context.Context, user domain.User, x *domain.Workf
 				if v.Version == n.TemplateVersion {
 					n.Manifest = v.Manifest
 					n.Parameters = v.Parameters
+					for j := range n.Parameters {
+						if value, ok := defaults[n.Parameters[j].Name]; ok {
+							n.Parameters[j].Default = value
+						}
+					}
 					found = true
 					break
 				}
@@ -462,7 +471,11 @@ func (s *Service) SaveWorkflow(ctx context.Context, user domain.User, x domain.W
 			if err != nil {
 				return err
 			}
-			x.Version = prior.Version + 1
+			var maximum int
+			if err := tx.QueryRow(ctx, `SELECT max_version FROM workflows WHERE id=$1 FOR UPDATE`, x.ID).Scan(&maximum); err != nil {
+				return err
+			}
+			x.Version = maximum + 1
 			x.CreatedBy = prior.CreatedBy
 		}
 		return saveVersion(ctx, tx, user, x, "WORKFLOW_SAVE")
@@ -476,6 +489,9 @@ func saveVersion(ctx context.Context, tx pgx.Tx, user domain.User, x domain.Work
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO workflows(id,project_id,current_version,definition) VALUES($1,$2,$3,$4) ON CONFLICT(id) DO UPDATE SET current_version=EXCLUDED.current_version,definition=EXCLUDED.definition,updated_at=now()`, x.ID, x.ProjectID, x.Version, data)
 	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE workflows SET max_version=GREATEST(max_version,$2) WHERE id=$1`, x.ID, x.Version); err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO workflow_versions(workflow_id,version,snapshot,created_by) VALUES($1,$2,$3,$4)`, x.ID, x.Version, data, user.Username)
@@ -552,9 +568,16 @@ func (s *Service) VersionAction(ctx context.Context, user domain.User, project, 
 				return err
 			}
 		}
-		result.Version = x.Version + 1
+		result.Version = version
 		result.UpdatedAt = stamp(time.Now())
-		return saveVersion(ctx, tx, user, result, "WORKFLOW_RESTORE")
+		data, err := json.Marshal(result)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE workflows SET current_version=$2,definition=$3,updated_at=now() WHERE id=$1`, key, version, data); err != nil {
+			return err
+		}
+		return auditTx(ctx, tx, user.Username, "WORKFLOW_RESTORE", key, fmt.Sprintf("from=%d to=%d", x.Version, version))
 	})
 	return result, err
 }
@@ -594,12 +617,16 @@ func (s *Service) TemplateVersionAction(ctx context.Context, user domain.User, k
 	if err = writable(user); err != nil {
 		return x, err
 	}
-	if remove {
-		err = s.transaction(ctx, func(tx pgx.Tx) error {
-			var current int
-			if err := tx.QueryRow(ctx, `SELECT current_version FROM application_templates WHERE id=$1 FOR UPDATE`, key).Scan(&current); err != nil {
-				return err
-			}
+	err = s.transaction(ctx, func(tx pgx.Tx) error {
+		var current int
+		var namespace string
+		if err := tx.QueryRow(ctx, `SELECT current_version,namespace FROM application_templates WHERE id=$1 FOR UPDATE`, key).Scan(&current, &namespace); err != nil {
+			return err
+		}
+		if err := s.namespace(user, namespace); err != nil {
+			return err
+		}
+		if remove {
 			if current == version {
 				return conflict("current template version cannot be deleted")
 			}
@@ -611,29 +638,22 @@ func (s *Service) TemplateVersionAction(ctx context.Context, user domain.User, k
 				return missing()
 			}
 			return auditTx(ctx, tx, user.Username, "TEMPLATE_VERSION_DELETE", key, fmt.Sprint(version))
-		})
+		}
+		var manifest string
+		var parameters []byte
+		if err := tx.QueryRow(ctx, `SELECT manifest,parameters FROM application_template_versions WHERE template_id=$1 AND version=$2`, key, version).Scan(&manifest, &parameters); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return missing()
+			}
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE application_templates SET current_version=$2,manifest=$3,parameters=$4,updated_at=now() WHERE id=$1`, key, version, manifest, parameters); err != nil {
+			return err
+		}
+		return auditTx(ctx, tx, user.Username, "TEMPLATE_RESTORE", key, fmt.Sprintf("from=%d to=%d", current, version))
+	})
+	if err != nil {
 		return x, err
 	}
-	for _, v := range x.Versions {
-		if v.Version == version {
-			x.Manifest = v.Manifest
-			x.Parameters = v.Parameters
-			clean, err := service.NormalizeManifest(x.Manifest, x.Namespace)
-			if err != nil {
-				return x, invalid(err.Error())
-			}
-			x.Manifest = clean
-			if err := service.ValidateWorkflowTemplate(x.Manifest, x.Namespace, x.Parameters); err != nil {
-				return x, err
-			}
-			x.CreatedBy = user.Username
-			x.Versions = nil
-			x, err = s.store.SaveTemplate(ctx, x)
-			if err == nil {
-				err = s.Audit(ctx, user, "TEMPLATE_RESTORE", key, fmt.Sprint(version))
-			}
-			return x, err
-		}
-	}
-	return x, missing()
+	return s.store.GetTemplate(ctx, key)
 }

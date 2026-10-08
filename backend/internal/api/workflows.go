@@ -22,6 +22,7 @@ func (s *Server) registerWorkflows(mux *http.ServeMux) {
 		"GET /v1/projects/{project}/workflows", "POST /v1/projects/{project}/workflows", "PATCH /v1/projects/{project}/workflows/{id}", "DELETE /v1/projects/{project}/workflows/{id}",
 		"GET /v1/projects/{project}/workflows/{id}/versions", "POST /v1/projects/{project}/workflows/{id}/versions/{version}/restore", "DELETE /v1/projects/{project}/workflows/{id}/versions/{version}",
 		"POST /v1/projects/{project}/workflows/{id}/trigger", "POST /v1/projects/{project}/workflows/{id}/dry-run", "POST /v1/projects/{project}/workflows/{id}/backfill",
+		"GET /v1/projects/{project}/backfills", "POST /v1/projects/{project}/backfills/{id}/cancel",
 		"GET /v1/projects/{project}/schedules", "POST /v1/projects/{project}/schedules", "PATCH /v1/projects/{project}/schedules/{id}", "DELETE /v1/projects/{project}/schedules/{id}",
 		"GET /v1/projects/{project}/runs", "GET /v1/projects/{project}/task-runs", "POST /v1/projects/{project}/runs/{id}/{action}", "POST /v1/workflows/cron-preview", "GET /v1/workflows/scheduler",
 		"POST /v1/templates/{id}/versions/{version}/restore", "DELETE /v1/templates/{id}/versions/{version}"}
@@ -116,15 +117,23 @@ func (s *Server) workflowRequest(w http.ResponseWriter, r *http.Request) {
 		result, err = s.flows.Versions(ctx, user, project, key)
 	case r.PathValue("version") != "":
 		result, err = s.flows.VersionAction(ctx, user, project, key, version, r.Method == http.MethodDelete)
+	case strings.Contains(path, "/backfills"):
+		if r.Method == http.MethodGet {
+			result, err = s.flows.ListBackfills(ctx, user, project)
+		} else {
+			err = s.flows.CancelBackfill(ctx, user, project, key)
+		}
 	case strings.HasSuffix(path, "/trigger") || strings.HasSuffix(path, "/dry-run") || strings.HasSuffix(path, "/backfill"):
 		var body struct {
-			ScheduledAt string                       `json:"scheduledAt"`
-			Values      map[string]map[string]string `json:"values"`
-			Cron        string                       `json:"cron"`
-			TimeZone    string                       `json:"timeZone"`
-			From        string                       `json:"from"`
-			To          string                       `json:"to"`
-			Confirm     bool                         `json:"confirm"`
+			ScheduledAt   string                       `json:"scheduledAt"`
+			Values        map[string]map[string]string `json:"values"`
+			Cron          string                       `json:"cron"`
+			TimeZone      string                       `json:"timeZone"`
+			From          string                       `json:"from"`
+			To            string                       `json:"to"`
+			Confirm       bool                         `json:"confirm"`
+			Direction     string                       `json:"direction"`
+			FailurePolicy string                       `json:"failurePolicy"`
 		}
 		if err = decode(&body); err == nil {
 			at := time.Now()
@@ -144,7 +153,7 @@ func (s *Server) workflowRequest(w http.ResponseWriter, r *http.Request) {
 						to, err = time.Parse(time.RFC3339Nano, body.To)
 					}
 					if err == nil {
-						result, err = s.flows.Backfill(ctx, user, project, key, body.Cron, body.TimeZone, from, to, body.Confirm)
+						result, err = s.flows.Backfill(ctx, user, project, key, body.Cron, body.TimeZone, from, to, body.Confirm, workflow.BackfillOptions{Direction: body.Direction, FailurePolicy: body.FailurePolicy})
 					}
 				}
 			}

@@ -45,10 +45,6 @@ In Alert center → New rule, select **Diagnostic fingerprint**. Codes include `
 
 The original failure, pending, resource-pressure, and retry rules remain supported. A diagnostic rule is stored as `type: diagnostic` with `diagnosticCodes: [VOLUME_MOUNT]` (or an empty list for every code). PostgreSQL adds a non-null `diagnostic_codes` column automatically at startup; immutable rule snapshots include the selected codes. Webhooks retain the existing unique alert fingerprint and include `diagnostic=VOLUME_MOUNT` in the evidence.
 
-## 中文说明
+## Version history
 
-克隆、重试和保存模板会删除 `status`、`managedFields`、旧 Owner、finalizers/ownerReferences 及 `last-applied-configuration`，保留实际作业配置与自定义标签/注解。模板以 YAML 展示、保存，旧 JSON 模板在编辑、复制或渲染时自动规范化；历史版本快照保持不可变。
-
-参数通过表单逐项定义，无需编写 JSON。独立占位符请加引号，例如 `instances: "{{executorCount}}"`；参数设为 integer 后，渲染结果仍为整数。字符串参数按 YAML 数据转义，不能注入额外字段。Secret 使用已有 Kubernetes Secret 引用。
-
-告警新增“诊断指纹”规则，可选择挂载、镜像拉取、调度、OOM、Executor 丢失、RBAC 等诊断代码，也可输入将来的新代码。多个代码为“任一匹配”，留空覆盖所有诊断；每个作业的不同诊断分别生成告警。指纹卡片支持直接创建规则。原有四类规则继续有效，命名空间授权、通知和版本记录保持兼容。
+Restore switches the current version pointer without adding a snapshot. The current version and the version open in the preview cannot be deleted. The preview shows its version number and offers editing as a new version. Saving allocates a number beyond the highest previously allocated number, even when newer historical versions were deleted. Deleting a historical version removes its YAML and parameters from PostgreSQL; existing execution snapshots remain independent.

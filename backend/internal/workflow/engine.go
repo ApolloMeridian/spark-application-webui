@@ -59,7 +59,10 @@ func (s *Service) Tick(ctx context.Context, now time.Time) error {
 	if err = s.fireSchedules(ctx, tx, now); err != nil {
 		return err
 	}
-	rows, err := tx.Query(ctx, `SELECT data FROM workflow_runs WHERE state IN ('queued','running','paused','cancelling') ORDER BY CASE WHEN state='paused' AND COALESCE(data->>'startedAt','')='' THEN 2 WHEN state='queued' THEN 1 ELSE 0 END,created_at,id LIMIT 100 FOR UPDATE`)
+	if err = s.generateBackfills(ctx, tx); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, `SELECT data FROM workflow_runs WHERE state IN ('queued','running','paused','cancelling') ORDER BY CASE WHEN state='paused' AND COALESCE(data->>'startedAt','')='' THEN 3 WHEN state='queued' AND data->>'trigger'='backfill' THEN 2 WHEN state='queued' THEN 1 ELSE 0 END,created_at,id LIMIT 100 FOR UPDATE`)
 	if err != nil {
 		return err
 	}
@@ -249,6 +252,10 @@ func busyWorkflow(run *domain.WorkflowRun, runs []domain.WorkflowRun) bool {
 		if other.ID == run.ID || other.WorkflowID != run.WorkflowID || terminal(other.Status) {
 			continue
 		}
+		// A queued low-priority backfill cannot hold up a normal instance.
+		if run.Trigger != "backfill" && other.Trigger == "backfill" && other.StartedAt == "" {
+			continue
+		}
 		if other.Status == "running" || other.Status == "paused" || other.Status == "cancelling" || other.CreatedAt < run.CreatedAt || (other.CreatedAt == run.CreatedAt && other.ID < run.ID) {
 			return true
 		}
@@ -287,6 +294,20 @@ func (s *Service) advance(ctx context.Context, tx pgx.Tx, run *domain.WorkflowRu
 		}
 	}
 	if run.Status == "queued" {
+		for _, other := range runs {
+			if other.ID == run.ID || other.WorkflowID != run.WorkflowID || terminal(other.Status) {
+				continue
+			}
+			if run.Trigger == "backfill" && (other.Trigger != "backfill" || other.StartedAt != "") {
+				return nil
+			}
+			if run.Trigger != "backfill" && other.Trigger == "backfill" && other.StartedAt != "" {
+				return nil
+			}
+		}
+		if run.Trigger == "backfill" && busyWorkflow(run, runs) {
+			return nil
+		}
 		if run.Snapshot.Strategy != "parallel" && busyWorkflow(run, runs) {
 			if run.Snapshot.Strategy == "serial_discard" {
 				run.Status = "discarded"

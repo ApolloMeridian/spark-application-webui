@@ -135,18 +135,27 @@ export function UsersPage() {
     {
       title: t("username"),
       dataIndex: "username",
-      width: 160,
+      width: 280,
+      fixed: "left",
       render: (value, row) => (
-        <Space>
-          <Typography.Text strong>{value}</Typography.Text>
+        <div className="user-identity-cell">
+          <Typography.Text strong title={value}>
+            {value}
+          </Typography.Text>
           {row.id === session?.id && <Tag color="blue">{t("currentUser")}</Tag>}
-        </Space>
+        </div>
       ),
     },
-    { title: t("displayName"), dataIndex: "displayName", width: 180 },
+    {
+      title: t("displayName"),
+      dataIndex: "displayName",
+      width: 180,
+      ellipsis: true,
+    },
     {
       title: t("email"),
       dataIndex: "email",
+      width: 220,
       ellipsis: true,
       render: (value) => value || "—",
     },
@@ -263,7 +272,8 @@ export function UsersPage() {
           columns={columns}
           dataSource={rows}
           pagination={{ pageSize: 20 }}
-          scroll={{ x: 1100 }}
+          tableLayout="fixed"
+          scroll={{ x: 1680 }}
         />
       </Card>
       <Modal

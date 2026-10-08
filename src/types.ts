@@ -194,7 +194,7 @@ export interface ApplicationFilters {
 export interface ApplicationList { items: SparkApplication[]; page: number; pageSize: number; total: number }
 export interface TemplateParameter { name: string; description?: string; type: 'string' | 'integer' | 'number' | 'boolean'; required: boolean; default?: string; enum?: string[]; pattern?: string }
 export interface TemplateVersion { version: number; manifest: string; parameters?: TemplateParameter[]; createdBy: string; createdAt: string }
-export interface ApplicationTemplate { id: string; name: string; description?: string; namespace: string; manifest: string; parameters: TemplateParameter[]; version: number; disabled: boolean; createdBy: string; createdAt: string; updatedAt: string; versions?: TemplateVersion[] }
+export interface ApplicationTemplate { id: string; name: string; description?: string; namespace: string; manifest: string; parameters: TemplateParameter[]; version: number; maxVersion?: number; disabled: boolean; createdBy: string; createdAt: string; updatedAt: string; versions?: TemplateVersion[] }
 export interface ApplicationFavorite { namespace: string; application: string }
 export interface BatchActionItem { namespace: string; name: string; allowed?: boolean; reason?: string }
 export interface BatchActionResult { operation: string; items: OperationAudit[] }

@@ -849,7 +849,7 @@ func (s *PostgresStore) SaveTemplate(ctx context.Context, item domain.Applicatio
 		_, err = tx.Exec(ctx, `INSERT INTO application_templates (id,name,description,namespace,manifest,parameters,current_version,disabled,created_by,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$9)`, item.ID, item.Name, item.Description, item.Namespace, item.Manifest, params, item.Disabled, item.CreatedBy, now)
 	} else {
 		var created time.Time
-		err = tx.QueryRow(ctx, `UPDATE application_templates SET name=$2,description=$3,namespace=$4,manifest=$5,parameters=$6,current_version=current_version+1,disabled=$7,updated_at=$8 WHERE id=$1 RETURNING current_version,created_at`, item.ID, item.Name, item.Description, item.Namespace, item.Manifest, params, item.Disabled, now).Scan(&item.Version, &created)
+		err = tx.QueryRow(ctx, `UPDATE application_templates SET name=$2,description=$3,namespace=$4,manifest=$5,parameters=$6,current_version=max_version+1,max_version=max_version+1,disabled=$7,updated_at=$8 WHERE id=$1 RETURNING current_version,created_at`, item.ID, item.Name, item.Description, item.Namespace, item.Manifest, params, item.Disabled, now).Scan(&item.Version, &created)
 		item.CreatedAt = created.UTC().Format(time.RFC3339Nano)
 		item.UpdatedAt = now.Format(time.RFC3339Nano)
 	}

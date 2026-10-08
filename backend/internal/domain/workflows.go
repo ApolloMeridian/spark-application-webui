@@ -61,6 +61,7 @@ type WorkflowRun struct {
 	Version     int       `json:"version"`
 	Status      string    `json:"status"`
 	Trigger     string    `json:"trigger"`
+	BackfillID  string    `json:"backfillId,omitempty"`
 	ScheduledAt string    `json:"scheduledAt"`
 	CreatedAt   string    `json:"createdAt"`
 	StartedAt   string    `json:"startedAt,omitempty"`

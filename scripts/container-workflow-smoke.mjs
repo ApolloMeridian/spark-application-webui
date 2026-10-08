@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const version = process.env.QA_VERSION || "1.4.1";
+const version = process.env.QA_VERSION || "1.4.2";
 const prefix = `spark-workflow-qa-${randomBytes(4).toString("hex")}`;
 const password = randomBytes(24).toString("base64url");
 const containers = [];
@@ -187,6 +187,75 @@ try {
   assert(
     (await api("/audit")).some((x) => x.operation === "WORKFLOW_FINISHED"),
   );
+  const changed = await api(
+    `/projects/${project.id}/workflows/${flow.id}`,
+    "PATCH",
+    { ...flow, name: "Edited pipeline" },
+  );
+  assert.equal(changed.version, 2);
+  const pointer = await api(
+    `/projects/${project.id}/workflows/${flow.id}/versions/1/restore`,
+    "POST",
+    {},
+  );
+  assert.equal(pointer.version, 1);
+  assert.equal(
+    (await api(`/projects/${project.id}/workflows/${flow.id}/versions`)).length,
+    2,
+  );
+  const backfillPath = `/projects/${project.id}/workflows/${flow.id}/backfill`;
+  const backfill = {
+    cron: "* * * * * *",
+    timeZone: "UTC",
+    from: "2026-10-01T00:00:00Z",
+    to: "2026-10-01T00:03:24Z",
+    direction: "backward",
+    failurePolicy: "continue",
+    confirm: false,
+  };
+  const occurrences = await api(backfillPath, "POST", backfill);
+  assert.equal(occurrences.length, 50);
+  assert.equal(occurrences[0], backfill.to);
+  await api(backfillPath, "POST", { ...backfill, confirm: true });
+  await wait(async () =>
+    (await api(`/projects/${project.id}/runs`)).some(
+      (r) => r.trigger === "backfill" && r.status === "running",
+    ),
+  );
+  let batch = (await api(`/projects/${project.id}/backfills`))[0];
+  assert.equal(batch.createdCount, 1);
+  assert.equal(batch.direction, "backward");
+  assert.equal(batch.failurePolicy, "continue");
+  docker("rm", "-f", backend);
+  containers.splice(containers.indexOf(backend), 1);
+  backend = run(...backendArgs);
+  await wait(async () => (await fetch("http://127.0.0.1:18081/readyz")).ok);
+  batch = (await api(`/projects/${project.id}/backfills`))[0];
+  assert.equal(batch.createdCount, 1);
+  assert.equal(
+    (await (await fetch("http://127.0.0.1:18082/test/stats")).json())
+      .submissions,
+    2,
+  );
+  await api(`/projects/${project.id}/backfills/${batch.id}/cancel`, "POST", {});
+  assert.equal(
+    (await api(`/projects/${project.id}/backfills`))[0].status,
+    "cancelled",
+  );
+  const pending = (await api(`/projects/${project.id}/runs`)).find(
+    (r) => r.trigger === "backfill",
+  );
+  await api(`/projects/${project.id}/runs/${pending.id}/cancel`, "POST", {});
+  await wait(
+    async () =>
+      (await api(`/projects/${project.id}/runs`)).find(
+        (r) => r.id === pending.id,
+      )?.status === "cancelled",
+  );
+  assert.equal(
+    (await api(`/projects/${project.id}/backfills`))[0].createdCount,
+    1,
+  );
   await mkdir(".qa/container", { recursive: true });
   const nginx = `server { listen 8080; root /usr/share/nginx/html; location /api/ { proxy_pass http://${prefix}-backend:8081/; } location / { try_files $uri $uri/ /index.html; } }`;
   await writeFile(".qa/container/nginx.conf", nginx);
@@ -224,7 +293,7 @@ try {
     200,
   );
   console.log(
-    "PASS: production frontend/backend images, PostgreSQL, real API adapters, workflow recovery after container replacement, no duplicate submissions, audit, timezone and same-origin proxy. Kubernetes is an HTTP fixture, not a real cluster.",
+    "PASS: production images, PostgreSQL, pointer restore, 50-item backfill preview, durable reverse/serial backfill recovery and cancellation, no duplicate submissions, audit, timezone and same-origin proxy. Kubernetes is an HTTP fixture, not a real cluster.",
   );
 } finally {
   for (const container of containers.reverse()) {

@@ -43,15 +43,13 @@ describe("workflow API adapter", () => {
   it("does not treat permission errors as successful saves", async () => {
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValue({
-          ok: false,
-          status: 403,
-          json: async () => ({
-            message: "administrator permission is required",
-          }),
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+        json: async () => ({
+          message: "administrator permission is required",
         }),
+      }),
     );
     await expect(workflowRequest("/projects", "POST", {})).rejects.toThrow(
       "administrator permission",
@@ -59,7 +57,7 @@ describe("workflow API adapter", () => {
   });
 });
 describe("template immutable version operations", () => {
-  it("restores as a new version and deletes historical content", async () => {
+  it("switches the current pointer and never reuses deleted version numbers", async () => {
     const first = await operationsService.saveTemplate({
       name: "Versioned",
       namespace: "spark-prod",
@@ -77,13 +75,20 @@ describe("template immutable version operations", () => {
       1,
       false,
     );
-    expect(restored.version).toBe(3);
+    expect(restored.version).toBe(1);
+    expect(restored.versions).toHaveLength(2);
     expect(restored.manifest).toContain("first");
     await operationsService.templateVersionAction(first.id, 2, true);
     const current = await operationsService.getTemplate(first.id);
-    expect(current.versions?.map((x) => x.version)).toEqual([1, 3]);
+    expect(current.versions?.map((x) => x.version)).toEqual([1]);
     await expect(
-      operationsService.templateVersionAction(first.id, 3, true),
+      operationsService.templateVersionAction(first.id, 1, true),
     ).rejects.toThrow("Current");
+    const edited = await operationsService.saveTemplate({
+      ...current,
+      manifest: second.manifest,
+    });
+    expect(edited.version).toBe(3);
+    expect(edited.versions?.map((x) => x.version)).toEqual([1, 3]);
   });
 });

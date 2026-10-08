@@ -78,6 +78,7 @@ export interface WorkflowRun {
   version: number;
   status: string;
   trigger: string;
+  backfillId?: string;
   scheduledAt: string;
   createdAt: string;
   startedAt?: string;
@@ -122,11 +123,36 @@ export async function workflowRequest<T>(
   }
   return response.json() as Promise<T>;
 }
+export interface BackfillRequest {
+  id: string;
+  workflowId: string;
+  workflowName: string;
+  version: number;
+  cron: string;
+  timeZone: string;
+  startsAt: string;
+  nextAt: string;
+  endsAt: string;
+  direction: "forward" | "backward";
+  failurePolicy: "stop" | "continue";
+  status: string;
+  createdCount: number;
+  error: string;
+  createdAt: string;
+}
 const projectPath = (project: string) =>
   `/projects/${encodeURIComponent(project)}`;
 const flowPath = (project: string, flow: string) =>
   `${projectPath(project)}/workflows/${encodeURIComponent(flow)}`;
 export const workflowService = {
+  backfills: (project: string) =>
+    workflowRequest<BackfillRequest[]>(`${projectPath(project)}/backfills`),
+  cancelBackfill: (project: string, id: string) =>
+    workflowRequest(
+      `${projectPath(project)}/backfills/${encodeURIComponent(id)}/cancel`,
+      "POST",
+      {},
+    ),
   tenants: () => workflowRequest<Tenant[]>("/tenants"),
   saveTenant: (tenant: Partial<Tenant>) =>
     workflowRequest<Tenant>(
@@ -191,6 +217,8 @@ export const workflowService = {
       from: string;
       to: string;
       confirm: boolean;
+      direction?: "forward" | "backward";
+      failurePolicy?: "stop" | "continue";
     },
   ) =>
     workflowRequest<string[]>(

@@ -18,7 +18,6 @@ import {
 import { useState } from "react";
 import { WorkflowGraph } from "./WorkflowGraph";
 export { WorkflowGraph } from "./WorkflowGraph";
-import { stringify, parse } from "yaml";
 import { TemplateParametersEditor } from "./TemplateParametersEditor";
 import type { ApplicationTemplate } from "../types";
 import {
@@ -42,18 +41,14 @@ export function WorkflowEditor({
   templates,
   namespaces,
   en,
-  onValidityChange,
 }: {
   value: Workflow;
   onChange: (value: Workflow) => void;
   templates: ApplicationTemplate[];
   namespaces: string[];
   en: boolean;
-  onValidityChange?: (valid: boolean) => void;
 }) {
   const [selected, setSelected] = useState(value.nodes[0]?.id);
-  const [valuesText, setValuesText] = useState<string>();
-  const [valuesError, setValuesError] = useState("");
   const node = value.nodes.find((n) => n.id === selected);
   const updateNode = (change: Partial<WorkflowNode>) =>
     onChange({
@@ -67,8 +62,6 @@ export function WorkflowEditor({
   const error = validateDAG(value.nodes);
   const chooseNode = (key: string) => {
     setSelected(key);
-    setValuesText(undefined);
-    setValuesError("");
   };
   return (
     <Form layout="vertical">
@@ -319,6 +312,7 @@ export function WorkflowEditor({
                 const t = templates.find((t) => t.id === templateId);
                 updateNode({
                   templateId: templateId || "",
+                  values: {},
                   templateVersion: t?.version,
                   ...(t
                     ? { manifest: t.manifest, parameters: t.parameters }
@@ -354,73 +348,18 @@ export function WorkflowEditor({
               {
                 key: "params",
                 label: en ? "Parameter definitions" : "参数定义",
-                children: node.templateId ? (
-                  <Input.TextArea
-                    readOnly
-                    className="yaml-editor"
-                    value={stringify(node.parameters)}
-                    autoSize={{ minRows: 4, maxRows: 20 }}
-                  />
-                ) : (
+                children: (
                   <TemplateParametersEditor
                     en={en}
-                    parameters={node.parameters}
-                    onChange={(parameters) => updateNode({ parameters })}
+                    defaultsOnly={Boolean(node.templateId)}
+                    parameters={node.parameters.map((p) => ({
+                      ...p,
+                      default: node.values?.[p.name] ?? p.default,
+                    }))}
+                    onChange={(parameters) =>
+                      updateNode({ parameters, values: {} })
+                    }
                   />
-                ),
-              },
-              {
-                key: "values",
-                label: en ? "Runtime values (YAML)" : "运行参数（YAML）",
-                children: (
-                  <>
-                    <Alert
-                      type="info"
-                      showIcon
-                      message={
-                        en
-                          ? "Use key: value. Date expressions use the logical schedule time, e.g. $[yyyy-MM-dd-1] or $[yyyy-MM-dd HH:mm:ss-1/24]."
-                          : "使用 key: value；日期表达式以计划调度时间为基准，例如 $[yyyy-MM-dd-1] 或 $[yyyy-MM-dd HH:mm:ss-1/24]。"
-                      }
-                      style={{ marginBottom: 10 }}
-                    />
-                    <Input.TextArea
-                      className="yaml-editor"
-                      value={valuesText ?? stringify(node.values)}
-                      autoSize={{ minRows: 5, maxRows: 12 }}
-                      onChange={(e) => {
-                        setValuesText(e.target.value);
-                        try {
-                          const parsed: unknown = parse(e.target.value) || {};
-                          if (
-                            !parsed ||
-                            typeof parsed !== "object" ||
-                            Array.isArray(parsed)
-                          )
-                            throw new Error(
-                              en
-                                ? "Values must be a mapping"
-                                : "参数必须为键值映射",
-                            );
-                          const values = Object.fromEntries(
-                            Object.entries(parsed).map(([key, v]) => [
-                              key,
-                              String(v),
-                            ]),
-                          );
-                          updateNode({ values });
-                          setValuesError("");
-                          onValidityChange?.(true);
-                        } catch (e) {
-                          setValuesError(String(e));
-                          onValidityChange?.(false);
-                        }
-                      }}
-                    />
-                    {valuesError && (
-                      <Alert type="error" message={valuesError} />
-                    )}
-                  </>
                 ),
               },
             ]}

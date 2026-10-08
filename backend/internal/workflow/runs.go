@@ -205,7 +205,13 @@ func (s *Service) Trigger(ctx context.Context, user domain.User, project, key st
 	})
 	return run, err
 }
-func (s *Service) Backfill(ctx context.Context, user domain.User, project, key, cron, zone string, from, to time.Time, confirm bool) ([]string, error) {
+
+type BackfillOptions struct {
+	Direction     string
+	FailurePolicy string
+}
+
+func (s *Service) Backfill(ctx context.Context, user domain.User, project, key, cron, zone string, from, to time.Time, confirm bool, options ...BackfillOptions) ([]string, error) {
 	if err := writable(user); err != nil {
 		return nil, err
 	}
@@ -216,12 +222,31 @@ func (s *Service) Backfill(ctx context.Context, user domain.User, project, key, 
 	if err != nil {
 		return nil, invalid(err.Error())
 	}
-	times := []string{}
-	for at := parser.Next(from.Add(-time.Nanosecond)); !at.IsZero() && !at.After(to); at = parser.Next(at) {
-		if len(times) >= 200 {
-			return nil, invalid("backfill exceeds 200 instances; narrow the range")
+	option := BackfillOptions{Direction: "forward", FailurePolicy: "stop"}
+	if len(options) > 0 {
+		if options[0].Direction != "" {
+			option.Direction = options[0].Direction
 		}
+		if options[0].FailurePolicy != "" {
+			option.FailurePolicy = options[0].FailurePolicy
+		}
+	}
+	if option.Direction != "forward" && option.Direction != "backward" {
+		return nil, invalid("invalid backfill direction")
+	}
+	if option.FailurePolicy != "stop" && option.FailurePolicy != "continue" {
+		return nil, invalid("invalid backfill failure policy")
+	}
+	times := []string{}
+	first := parser.Next(from.Add(-time.Nanosecond))
+	if option.Direction == "backward" {
+		first = latestOccurrence(parser, first, to)
+	}
+	for at := first; !at.IsZero() && !at.Before(from) && !at.After(to) && len(times) < 50; at = nextBackfillOccurrence(parser, from, to, at, option.Direction) {
 		times = append(times, stamp(at))
+	}
+	if len(times) == 0 {
+		return nil, invalid("time range / Cron configuration has no backfill occurrence")
 	}
 	err = s.transaction(ctx, func(tx pgx.Tx) error {
 		flow, e := readWorkflow(ctx, tx, user, project, key)
@@ -236,18 +261,33 @@ func (s *Service) Backfill(ctx context.Context, user domain.User, project, key, 
 		if !confirm {
 			return nil
 		}
-		for _, t := range times {
-			at, _ := time.Parse(time.RFC3339Nano, t)
-			if _, e = s.createRun(ctx, tx, user, flow, at, "backfill", ""); e != nil {
-				return e
+		if !flow.Enabled {
+			return conflict("workflow is disabled")
+		}
+		first, _ := time.Parse(time.RFC3339Nano, times[0])
+		// Validate parameter defaults before accepting the durable request.
+		for _, n := range flow.Nodes {
+			if _, _, e = RenderNode(n, first, flow.TimeZone, "preview-12345678", 1); e != nil {
+				return invalid(n.Name + ": " + e.Error())
 			}
 		}
-		return auditTx(ctx, tx, user.Username, "WORKFLOW_BACKFILL", key, fmt.Sprintf("%s .. %s count=%d", stamp(from), stamp(to), len(times)))
+		snapshot, e := json.Marshal(flow)
+		if e != nil {
+			return e
+		}
+		batch := id("backfill")
+		if _, e = tx.Exec(ctx, `INSERT INTO workflow_backfills(id,project_id,workflow_id,owner_id,cron,time_zone,next_at,starts_at,ends_at,snapshot,direction,failure_policy) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, batch, project, key, user.ID, cron, zone, first, from, to, snapshot, option.Direction, option.FailurePolicy); e != nil {
+			return e
+		}
+		return auditTx(ctx, tx, user.Username, "WORKFLOW_BACKFILL", key, fmt.Sprintf("batch=%s %s .. %s cron=%s zone=%s direction=%s onFailure=%s", batch, stamp(from), stamp(to), cron, zone, option.Direction, option.FailurePolicy))
 	})
 	return times, err
 }
-func (s *Service) createRun(ctx context.Context, tx pgx.Tx, user domain.User, flow domain.Workflow, at time.Time, trigger, scheduleID string) (domain.WorkflowRun, error) {
+func (s *Service) createRun(ctx context.Context, tx pgx.Tx, user domain.User, flow domain.Workflow, at time.Time, trigger, scheduleID string, backfillID ...string) (domain.WorkflowRun, error) {
 	run := domain.WorkflowRun{ID: id("run"), OwnerID: user.ID, ProjectID: flow.ProjectID, WorkflowID: flow.ID, Version: flow.Version, Status: "queued", Trigger: trigger, ScheduledAt: stamp(at), CreatedAt: stamp(time.Now()), CreatedBy: user.Username, Snapshot: flow, Tasks: []domain.TaskRun{}}
+	if len(backfillID) > 0 {
+		run.BackfillID = backfillID[0]
+	}
 	if !flow.Enabled {
 		return run, conflict("workflow is disabled")
 	}
@@ -345,6 +385,11 @@ func writeRun(ctx context.Context, tx pgx.Tx, run domain.WorkflowRun) error {
 	}
 	if _, err = tx.Exec(ctx, `UPDATE workflow_runs SET state=$2,data=$3 WHERE id=$1`, run.ID, run.Status, data); err != nil {
 		return err
+	}
+	if run.BackfillID != "" {
+		if _, err = tx.Exec(ctx, `UPDATE workflow_backfills SET last_status=$2 WHERE id=$1 AND last_run_id=$3`, run.BackfillID, run.Status, run.ID); err != nil {
+			return err
+		}
 	}
 	for _, t := range run.Tasks {
 		raw, _ := json.Marshal(t)

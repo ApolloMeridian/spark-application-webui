@@ -15,4 +15,4 @@ This project does not ship production credentials. Operators are responsible for
 - limiting Kubernetes RBAC and watched namespaces;
 - protecting Prometheus, Loki, PostgreSQL, and identity-provider network access;
 - rotating any credential accidentally disclosed in configuration or logs;
-- reviewing container images and release checksums before deployment.
+- reviewing container image provenance and deployment configuration before deployment.

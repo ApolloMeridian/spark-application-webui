@@ -13,41 +13,44 @@ Spark Control Center is a web console for operating Apache Spark applications on
 - Submit SparkApplication YAML, terminate `RUNNING` or stuck `SUBMITTED` jobs while retaining the failed Driver Pod, and delete terminal records.
 - Validate submissions through Kubernetes server-side dry-run and compare the original YAML with the normalized manifest before creating it.
 - Clone or retry an application from a sanitized manifest, with server-owned metadata and runtime status removed.
-- Store cleaned YAML templates in PostgreSQL, define parameters with a form, and render typed manifests without storing Secret values. [Template guide](docs/TEMPLATES-AND-ALERTS.md).
+- Store cleaned YAML templates in PostgreSQL, define parameters with a form, and render typed manifests without storing Secret values. [Template guide](docs/en/TEMPLATES-AND-ALERTS.md).
 - Share URL-backed application searches, use server-side paging/sorting and favorites, and preview permission-aware batch termination or deletion before execution.
 - Configure versioned failure, long-pending, resource-pressure, repeated-retry, and extensible diagnostic-code alerts (including volume-mount failures); acknowledge, silence, recover, and optionally notify a generic webhook.
 - Stream Kubernetes Watch changes to the browser over SSE, while retaining periodic refresh as a recovery path.
 - Authenticate with PostgreSQL local accounts or optional OIDC/Keycloak; enforce `viewer` and `admin` permissions plus per-user namespace access in both UI and API.
 - Persist users, sessions, lifecycle snapshots, failure diagnostics, and operation audit records in PostgreSQL.
 - Deploy with the included Helm chart and namespace-scoped Kubernetes RBAC.
-- Organize tenant-isolated projects, versioned DAG workflows and Spark YAML tasks; connect tasks by dragging ports and configure second-level timezone-aware Cron with dropdowns or preview/confirm backfills. [Workflow guide](docs/WORKFLOWS.md).
+- Organize tenant-isolated projects, versioned DAG workflows and Spark YAML tasks; connect tasks by dragging ports and configure second-level timezone-aware Cron with dropdowns or preview/confirm backfills. [Workflow guide](docs/en/WORKFLOWS.md).
 - Restore or permanently delete historical template/workflow versions, browse project-scoped execution histories, and recover orchestration state from PostgreSQL after backend replacement.
 
-## Screenshots
+## Product views
 
-| Overview | Applications |
+### Application operations
+
+| Overview | Resources and history |
 | --- | --- |
-| ![Operations overview](docs/images/overview-1440.png) | ![Spark application list](docs/images/applications-1440.png) |
+| ![Operations overview](docs/images/overview-1440.png) | ![Application resource history](docs/images/detail-1440.png) |
 
-| Application resources | Executor logs |
+### Workflows and automation
+
+| Workflow and task editor | Scheduling |
 | --- | --- |
-| ![Application detail and historical resource usage](docs/images/detail-1440.png) | ![Persisted Executor logs](docs/images/executor-logs-1440.png) |
+| ![Workflow editor](docs/images/workflow-editor-1440.png) | ![Schedule configuration](docs/images/workflow-schedule-1440.png) |
 
-![SparkApplication YAML submission](docs/images/submit-1440.png)
+### Configuration and governance
 
-| Versioned templates | Alert center |
+| Application templates | Operation audit |
 | --- | --- |
-| ![Versioned SparkApplication templates](docs/images/templates-1440.png) | ![Proactive alert center](docs/images/alerts-1440.png) |
+| ![Application templates](docs/images/templates-1440.png) | ![Operation audit](docs/images/audit-1440.png) |
 
-All screenshots use deterministic mock data. They contain no production cluster details or credentials.
+See the [UI tour](docs/en/UI.md) for application, log, submission, alert and execution-history views.
 
-| Workflow DAG | Cron scheduling |
-| --- | --- |
-| ![Workflow and task editor](docs/images/workflow-editor-1440.png) | ![Cron schedule preview](docs/images/workflow-schedule-1440.png) |
+## Documentation
 
-![Project execution history](docs/images/workflow-history-1440.png)
-
-![Operation audit filters](docs/images/audit-1440.png)
+- [Deployment and configuration](docs/en/DEPLOYMENT.md): containers, Helm, authentication, RBAC and observability.
+- [Templates and alerts](docs/en/TEMPLATES-AND-ALERTS.md): YAML parameters, version management and diagnostic rules.
+- [Workflows and scheduling](docs/en/WORKFLOWS.md): tenants, dependencies, Cron, backfills and persistence.
+- [Security policy](docs/en/SECURITY.md): vulnerability reporting and deployment responsibilities.
 
 ## Architecture
 
@@ -89,15 +92,15 @@ go vet ./...
 Build images without a registry prefix:
 
 ```bash
-docker build -t spark-control-center:1.4.1 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.1 .
+docker build -t spark-control-center:1.4.2 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.2 .
 ```
 
-GitHub Release `v1.4.1` contains Docker-loadable image tar files and the packaged Helm chart.
+GitHub Release `v1.4.2` contains Docker-loadable image tar files and the packaged Helm chart.
 
 ```bash
-docker load -i spark-control-center-1.4.1.tar
-docker load -i spark-control-center-backend-1.4.1.tar
+docker load -i spark-control-center-1.4.2.tar
+docker load -i spark-control-center-backend-1.4.2.tar
 ```
 
 ## Helm deployment
@@ -117,7 +120,7 @@ Keep environment-specific deployment settings in an untracked values file. These
 
 Never commit actual credentials, access tokens, certificates, kubeconfigs, or production values.
 
-See [Deployment and configuration](docs/DEPLOYMENT.md) for the complete interface, security model, RBAC behavior, Keycloak setup, and high-resolution Prometheus configuration.
+See [Deployment and configuration](docs/en/DEPLOYMENT.md) for the complete interface, security model, RBAC behavior, Keycloak setup, and high-resolution Prometheus configuration.
 
 ## Permissions
 

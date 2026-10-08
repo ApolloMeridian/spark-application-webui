@@ -3,7 +3,7 @@
 ## Build and publish the UI image
 
 ```bash
-docker build -t spark-control-center:1.4.1 .
+docker build -t spark-control-center:1.4.2 .
 ```
 
 For an air-gapped build with a locally cached Nginx base image:
@@ -11,7 +11,7 @@ For an air-gapped build with a locally cached Nginx base image:
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:1.4.1 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:1.4.2 .
 ```
 
 The image listens on port `8080`, serves `/healthz`, runs as UID 101, and supports a read-only root filesystem. Helm replaces `/usr/share/nginx/html/config/config.js` at runtime, so one immutable image can be promoted through environments.
@@ -22,7 +22,7 @@ Use the repository root as Docker build context:
 
 ```bash
 docker build -f backend/Dockerfile \
-  -t spark-control-center-backend:1.4.1 .
+  -t spark-control-center-backend:1.4.2 .
 ```
 
 The backend runs as UID 65532 on port `8081`. On startup it connects to PostgreSQL and creates the audit/history tables plus `local_users`, `local_user_sessions`, and `application_settings`. The configured database user therefore needs table/index creation permission in `spark_console_db`.
@@ -104,7 +104,7 @@ The `api.baseUrl` prefix is omitted below. JSON uses the TypeScript models in `s
 | Method | Path | Response/purpose |
 | --- | --- | --- |
 | `GET` | `/v1/dashboard/summary?from={RFC3339}&to={RFC3339}` | Live `DashboardSummary` plus PostgreSQL-backed historical submissions/failures |
-| `GET` | `/v1/applications` | `SparkApplication[]`; accepts keyword/state/owner/namespace |
+| `GET` | `/v1/applications` | Paged `ApplicationList`; accepts keyword/state/owner/namespace, page/pageSize and sorting |
 | `GET` | `/v1/stream` | Server-Sent Events stream backed by Kubernetes Watch; automatically reconnectable |
 | `GET` | `/v1/namespaces/{namespace}/applications/{name}` | Complete `SparkApplication` detail |
 | `POST` | `/v1/namespaces/{namespace}/applications/dry-run` | Admin only; Kubernetes server-side dry-run and normalized YAML preview from body `{ yaml }` |

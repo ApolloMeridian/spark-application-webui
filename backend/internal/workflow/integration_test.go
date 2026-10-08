@@ -200,10 +200,10 @@ func TestPostgresVersionsTenantAndRecovery(t *testing.T) {
 		t.Fatal(flow, err)
 	}
 	restored, err := s.VersionAction(ctx, user, project.ID, flow.ID, 1, false)
-	if err != nil || restored.Version != 3 || restored.Name != "Daily pipeline" {
+	if err != nil || restored.Version != 1 || restored.Name != "Daily pipeline" {
 		t.Fatal(restored, err)
 	}
-	if _, err = s.VersionAction(ctx, user, project.ID, flow.ID, 3, true); err == nil {
+	if _, err = s.VersionAction(ctx, user, project.ID, flow.ID, 1, true); err == nil {
 		t.Fatal("deleted current version")
 	}
 	if _, err = s.VersionAction(ctx, user, project.ID, flow.ID, 2, true); err != nil {
@@ -213,6 +213,13 @@ func TestPostgresVersionsTenantAndRecovery(t *testing.T) {
 	_ = s.pool.QueryRow(ctx, `SELECT count(*) FROM workflow_versions WHERE workflow_id=$1 AND version=2`, flow.ID).Scan(&count)
 	if count != 0 {
 		t.Fatal("version not physically removed")
+	}
+	if err = s.pool.QueryRow(ctx, `SELECT count(*) FROM workflow_versions WHERE workflow_id=$1`, flow.ID).Scan(&count); err != nil || count != 1 {
+		t.Fatal("restore created a version", count, err)
+	}
+	flow, err = s.SaveWorkflow(ctx, user, restored)
+	if err != nil || flow.Version != 3 {
+		t.Fatal("historical edit reused a deleted version number", flow, err)
 	}
 	run, err := s.Trigger(ctx, user, project.ID, flow.ID, time.Now(), nil)
 	if err != nil {
@@ -403,6 +410,10 @@ func TestPostgresCronDedupBackfillAndRoleRevocation(t *testing.T) {
 	if err != nil || schedules[0].Enabled {
 		t.Fatal("revoked owner schedule not blocked", err)
 	}
+	backfills, err := s.ListBackfills(ctx, user, project.ID)
+	if err != nil || len(backfills) != 1 || backfills[0].Status != "blocked" {
+		t.Fatal("revoked owner backfill not blocked", backfills, err)
+	}
 }
 
 func TestPostgresSecondCronFireOnceAndWindow(t *testing.T) {
@@ -453,8 +464,18 @@ func TestPostgresTemplateHistoryAndFrozenWorkflow(t *testing.T) {
 		t.Fatal(template, err)
 	}
 	restored, err := s.TemplateVersionAction(ctx, user, template.ID, 1, false)
-	if err != nil || restored.Version != 3 || restored.Manifest != flow.Nodes[0].Manifest {
+	if err != nil || restored.Version != 1 || restored.Manifest != testManifest || len(restored.Versions) != 2 {
 		t.Fatal(restored, err)
+	}
+	if _, err = s.TemplateVersionAction(ctx, user, template.ID, 1, true); err == nil {
+		t.Fatal("deleted current template version")
+	}
+	if _, err = s.TemplateVersionAction(ctx, user, template.ID, 2, true); err != nil {
+		t.Fatal(err)
+	}
+	template, err = s.store.SaveTemplate(ctx, restored)
+	if err != nil || template.Version != 3 {
+		t.Fatal("template edit reused a deleted version number", template, err)
 	}
 	if _, err = s.TemplateVersionAction(ctx, user, template.ID, 1, true); err != nil {
 		t.Fatal(err)

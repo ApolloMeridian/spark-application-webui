@@ -33,7 +33,7 @@ import { useI18n } from "../i18n";
 import { cleanApplicationManifest } from "../manifests";
 import { runtimeConfig } from "../runtimeConfig";
 import { operationsService } from "../service";
-import type { ApplicationTemplate } from "../types";
+import type { ApplicationTemplate, TemplateVersion } from "../types";
 import { formatTimestamp, permittedNamespaces } from "../utils";
 
 type TemplateForm = Partial<ApplicationTemplate>;
@@ -51,7 +51,7 @@ export function TemplatesPage() {
   );
   const [saving, setSaving] = useState(false);
   const [history, setHistory] = useState<ApplicationTemplate>();
-  const [versionYaml, setVersionYaml] = useState("");
+  const [viewingVersion, setViewingVersion] = useState<TemplateVersion>();
   const [items, setItems] = useState<ApplicationTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -130,6 +130,21 @@ export function TemplatesPage() {
           source: rendering.name,
         },
       });
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+    }
+  };
+  const changeVersion = async (version: number, remove: boolean) => {
+    if (!history) return;
+    try {
+      setHistory(
+        await operationsService.templateVersionAction(
+          history.id,
+          version,
+          remove,
+        ),
+      );
+      await load();
     } catch (e) {
       message.error(e instanceof Error ? e.message : String(e));
     }
@@ -442,8 +457,8 @@ export function TemplatesPage() {
           type="info"
           message={
             en
-              ? "Restore creates a new current version. Historical version deletion physically removes the stored manifest and parameters."
-              : "回溯创建新的当前版本；删除历史版本会从数据库清除对应 YAML 和参数。"
+              ? "Restore switches the current version without creating a version. Editing allocates a new version number. Deletion permanently removes the historical YAML and parameters."
+              : "回溯只切换当前版本，不创建新版本；编辑保存分配新的版本号。删除历史版本会清除对应 YAML 和参数。"
           }
         />
         <Table
@@ -454,7 +469,14 @@ export function TemplatesPage() {
             {
               title: en ? "Version" : "版本",
               dataIndex: "version",
-              render: (v) => `v${v}`,
+              render: (v) => (
+                <Space>
+                  v{v}
+                  {v === history?.version && (
+                    <Tag color="blue">{en ? "Current" : "当前"}</Tag>
+                  )}
+                </Space>
+              ),
             },
             {
               title: en ? "Created" : "创建时间",
@@ -465,29 +487,21 @@ export function TemplatesPage() {
               title: en ? "Actions" : "操作",
               render: (_, v) => (
                 <Space>
-                  <Button
-                    size="small"
-                    onClick={() => setVersionYaml(v.manifest)}
-                  >
+                  <Button size="small" onClick={() => setViewingVersion(v)}>
                     {en ? "View YAML" : "查看 YAML"}
                   </Button>
                   {session?.role === "admin" && history && (
                     <>
                       <Popconfirm
                         title={en ? "Restore this version?" : "回溯此版本？"}
-                        onConfirm={async () => {
-                          await operationsService.templateVersionAction(
-                            history.id,
-                            v.version,
-                            false,
-                          );
-                          setHistory(
-                            await operationsService.getTemplate(history.id),
-                          );
-                          await load();
-                        }}
+                        onConfirm={() => changeVersion(v.version, false)}
                       >
-                        <Button size="small">{en ? "Restore" : "回溯"}</Button>
+                        <Button
+                          size="small"
+                          disabled={v.version === history.version}
+                        >
+                          {en ? "Restore" : "回溯"}
+                        </Button>
                       </Popconfirm>
                       <Popconfirm
                         title={
@@ -495,21 +509,20 @@ export function TemplatesPage() {
                             ? "Permanently delete this version?"
                             : "永久删除此历史版本？"
                         }
-                        onConfirm={async () => {
-                          await operationsService.templateVersionAction(
-                            history.id,
-                            v.version,
-                            true,
-                          );
-                          setHistory(
-                            await operationsService.getTemplate(history.id),
-                          );
-                        }}
+                        onConfirm={() => changeVersion(v.version, true)}
                       >
                         <Button
                           size="small"
                           danger
-                          disabled={v.version === history.version}
+                          disabled={
+                            v.version === history.version ||
+                            v.version === viewingVersion?.version
+                          }
+                          aria-label={
+                            en
+                              ? `Delete version ${v.version}`
+                              : `删除版本 ${v.version}`
+                          }
                           icon={<DeleteOutlined />}
                         />
                       </Popconfirm>
@@ -522,15 +535,39 @@ export function TemplatesPage() {
         />
       </Drawer>
       <Modal
-        open={Boolean(versionYaml)}
-        onCancel={() => setVersionYaml("")}
-        title="SparkApplication YAML"
-        footer={null}
+        open={Boolean(viewingVersion)}
+        onCancel={() => setViewingVersion(undefined)}
+        title={`${history?.name || ""} · ${en ? "Viewing version" : "正在查看版本"} v${viewingVersion?.version}${viewingVersion?.version === history?.version ? (en ? " (current)" : "（当前）") : ""}`}
+        footer={
+          session?.role === "admin" && history && viewingVersion ? (
+            <Space>
+              <Button danger disabled>
+                {en ? "Delete this version" : "删除此版本"}
+              </Button>
+              <Button
+                type="primary"
+                onClick={() => {
+                  setEditing({
+                    ...history,
+                    manifest: viewingVersion.manifest,
+                    parameters: structuredClone(
+                      viewingVersion.parameters || [],
+                    ),
+                  });
+                  setViewingVersion(undefined);
+                  setHistory(undefined);
+                }}
+              >
+                {en ? "Edit as a new version" : "编辑并保存为新版本"}
+              </Button>
+            </Space>
+          ) : null
+        }
         width="min(900px, 94vw)"
       >
         <Input.TextArea
           className="yaml-editor"
-          value={versionYaml}
+          value={viewingVersion?.manifest || ""}
           readOnly
           autoSize={{ minRows: 12, maxRows: 28 }}
         />

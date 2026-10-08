@@ -57,6 +57,7 @@ import {
   type WorkflowVersion,
   type TaskRun,
   type Tenant,
+  type BackfillRequest,
 } from "../workflows";
 
 const colors: Record<string, string> = {
@@ -114,6 +115,9 @@ export function WorkflowsPage() {
   const [schedules, setSchedules] = useState<WorkflowSchedule[]>([]);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [tasks, setTasks] = useState<TaskRun[]>([]);
+  const [backfillRequests, setBackfillRequests] = useState<BackfillRequest[]>(
+    [],
+  );
   const [templates, setTemplates] = useState<ApplicationTemplate[]>([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -140,6 +144,7 @@ export function WorkflowsPage() {
   const [versionFlow, setVersionFlow] = useState<Workflow>();
   const [versions, setVersions] = useState<WorkflowVersion[]>([]);
   const [snapshot, setSnapshot] = useState("");
+  const [viewingVersion, setViewingVersion] = useState<WorkflowVersion>();
   const [runDetail, setRunDetail] = useState<WorkflowRun>();
   const [triggerFlow, setTriggerFlow] = useState<Workflow>();
   const [triggerValues, setTriggerValues] = useState<
@@ -152,15 +157,31 @@ export function WorkflowsPage() {
   );
   const [range, setRange] = useState<[string, string]>();
   const [backfillPreview, setBackfillPreview] = useState<string[]>();
+  const [backfillDirection, setBackfillDirection] = useState<
+    "forward" | "backward"
+  >("forward");
+  const [backfillFailurePolicy, setBackfillFailurePolicy] = useState<
+    "stop" | "continue"
+  >("stop");
+  const [backfillSubmitting, setBackfillSubmitting] = useState(false);
+  const backfillRevision = useRef(0);
+  useEffect(() => {
+    ++backfillRevision.current;
+    setBackfillPreview(undefined);
+  }, [
+    backfill?.id,
+    backfillCron,
+    backfillZone,
+    range?.[0],
+    range?.[1],
+    backfillDirection,
+    backfillFailurePolicy,
+  ]);
   const [filterStatus, setFilterStatus] = useState<string>();
   const [filterFlow, setFilterFlow] = useState<string>();
   const [filterTrigger, setFilterTrigger] = useState<string>();
   const [filterUser, setFilterUser] = useState("");
   const [filterRange, setFilterRange] = useState<[string, string]>();
-  const [editorValid, setEditorValid] = useState(true);
-  useEffect(() => {
-    if (!editing) setEditorValid(true);
-  }, [editing]);
   const activeTab =
     location.pathname === "/schedules"
       ? "schedules"
@@ -194,6 +215,7 @@ export function WorkflowsPage() {
       setFlows([]);
       setRuns([]);
       setTasks([]);
+      setBackfillRequests([]);
       setSchedules([]);
       setRunDetail(undefined);
       setLoading(false);
@@ -203,11 +225,12 @@ export function WorkflowsPage() {
     setLoading(true);
     setError("");
     try {
-      const [f, s, r, t] = await Promise.all([
+      const [f, s, r, t, b] = await Promise.all([
         api.workflows(project),
         api.schedules(project),
         api.runs(project),
         api.taskRuns(project),
+        api.backfills(project),
       ]);
       if (
         revision !== loadRevision.current ||
@@ -218,6 +241,7 @@ export function WorkflowsPage() {
       setSchedules(s);
       setRuns(r);
       setTasks(t);
+      setBackfillRequests(b);
       setRunDetail((old) => (old ? r.find((x) => x.id === old.id) : undefined));
     } catch (e) {
       if (
@@ -430,7 +454,130 @@ export function WorkflowsPage() {
         </Button>
       </Space>
       <Tabs
+        defaultActiveKey="workflow"
         items={[
+          {
+            key: "backfills",
+            label: en ? "Backfill requests" : "补数请求",
+            children: (
+              <>
+                <Alert
+                  type="info"
+                  showIcon
+                  message={
+                    en
+                      ? "The whole range is persisted and generated in batches. Cancel stops future generation only; existing instances remain in execution history."
+                      : "整个范围持久化后分批生成实例。取消只停止后续生成，已生成的实例仍保留在执行历史中。"
+                  }
+                />
+                <Table
+                  rowKey="id"
+                  dataSource={backfillRequests}
+                  loading={loading}
+                  scroll={{ x: 1100 }}
+                  pagination={{ pageSize: 10 }}
+                  columns={[
+                    {
+                      title: en ? "Workflow" : "工作流",
+                      dataIndex: "workflowName",
+                      width: 200,
+                    },
+                    {
+                      title: en ? "Version" : "版本",
+                      dataIndex: "version",
+                      render: (v) => `v${v}`,
+                      width: 80,
+                    },
+                    {
+                      title: en ? "Status" : "状态",
+                      dataIndex: "status",
+                      render: (v) => (
+                        <Tag>
+                          {en
+                            ? v
+                            : (
+                                {
+                                  queued: "排队",
+                                  completed: "生成完成",
+                                  blocked: "已阻断",
+                                  failed: "已失败",
+                                  cancelled: "已取消",
+                                } as Record<string, string>
+                              )[v] || v}
+                        </Tag>
+                      ),
+                      width: 120,
+                    },
+                    {
+                      title: en ? "Created instances" : "已生成实例",
+                      dataIndex: "createdCount",
+                      width: 120,
+                    },
+                    { title: "Cron", dataIndex: "cron", width: 150 },
+                    {
+                      title: en ? "Order" : "顺序",
+                      dataIndex: "direction",
+                      width: 100,
+                      render: (v) =>
+                        en ? v : v === "backward" ? "倒序" : "正序",
+                    },
+                    {
+                      title: en ? "On failure" : "失败策略",
+                      dataIndex: "failurePolicy",
+                      width: 140,
+                      render: (v) =>
+                        en ? v : v === "continue" ? "继续补数" : "停止补数",
+                    },
+                    {
+                      title: en ? "Next logical time" : "下个基准时间",
+                      render: (_, b) =>
+                        b.status === "queued" ? formatTimestamp(b.nextAt) : "—",
+                      width: 180,
+                    },
+                    {
+                      title: en ? "End" : "结束",
+                      dataIndex: "endsAt",
+                      render: (v) => formatTimestamp(v),
+                      width: 180,
+                    },
+                    {
+                      title: en ? "Error" : "错误",
+                      dataIndex: "error",
+                      width: 220,
+                    },
+                    {
+                      title: en ? "Actions" : "操作",
+                      width: 120,
+                      fixed: "right",
+                      render: (_, b) =>
+                        admin && (
+                          <Popconfirm
+                            title={
+                              en
+                                ? "Stop generating remaining instances?"
+                                : "停止生成剩余实例？"
+                            }
+                            onConfirm={() =>
+                              execute(() => api.cancelBackfill(project, b.id))
+                            }
+                          >
+                            <Button
+                              danger
+                              size="small"
+                              disabled={
+                                !["queued", "blocked"].includes(b.status)
+                              }
+                            >
+                              {en ? "Cancel" : "取消"}
+                            </Button>
+                          </Popconfirm>
+                        ),
+                    },
+                  ]}
+                />
+              </>
+            ),
+          },
           {
             key: "workflow",
             label: en ? "Workflow execution history" : "工作流执行历史",
@@ -1120,7 +1267,6 @@ export function WorkflowsPage() {
         styles={{
           body: { maxHeight: "calc(100vh - 240px)", overflowY: "auto" },
         }}
-        okButtonProps={{ disabled: !editorValid }}
         onCancel={() => setEditing(undefined)}
         onOk={saveFlow}
         confirmLoading={saving}
@@ -1131,7 +1277,6 @@ export function WorkflowsPage() {
           <WorkflowEditor
             value={editing}
             onChange={setEditing}
-            onValidityChange={setEditorValid}
             templates={templates}
             namespaces={ns}
             en={en}
@@ -1148,8 +1293,8 @@ export function WorkflowsPage() {
           type="info"
           message={
             en
-              ? "Restore creates a new version. Deleting a historical version removes its database row; run snapshots remain unchanged."
-              : "回溯会生成新版本；删除历史版本会清除数据库记录，执行快照保持不变。"
+              ? "Restore switches the current version without creating a snapshot. New edits use the next highest version number. Run snapshots remain unchanged."
+              : "回溯仅切换当前版本，不创建新快照；再次编辑按最大版本号顺延。执行快照保持不变。"
           }
         />
         <Table
@@ -1160,7 +1305,14 @@ export function WorkflowsPage() {
             {
               title: en ? "Version" : "版本",
               dataIndex: "version",
-              render: (v: number) => `v${v}`,
+              render: (v: number) => (
+                <Space>
+                  v{v}
+                  {v === versionFlow?.version && (
+                    <Tag color="blue">{en ? "Current" : "当前版本"}</Tag>
+                  )}
+                </Space>
+              ),
             },
             { title: en ? "Saved by" : "保存人", dataIndex: "createdBy" },
             {
@@ -1174,7 +1326,10 @@ export function WorkflowsPage() {
                 <Space>
                   <Button
                     size="small"
-                    onClick={() => setSnapshot(stringify(v.snapshot))}
+                    onClick={() => {
+                      setViewingVersion(v);
+                      setSnapshot(stringify(v.snapshot));
+                    }}
                   >
                     {en ? "View" : "查看"}
                   </Button>
@@ -1183,8 +1338,8 @@ export function WorkflowsPage() {
                       <Popconfirm
                         title={
                           en
-                            ? "Restore this snapshot as a new current version?"
-                            : "回溯此快照为新的当前版本？"
+                            ? "Switch the current version to this snapshot?"
+                            : "将当前版本切换到此快照？"
                         }
                         onConfirm={async () => {
                           try {
@@ -1201,7 +1356,12 @@ export function WorkflowsPage() {
                           }
                         }}
                       >
-                        <Button size="small">{en ? "Restore" : "回溯"}</Button>
+                        <Button
+                          size="small"
+                          disabled={v.version === versionFlow.version}
+                        >
+                          {en ? "Restore" : "回溯"}
+                        </Button>
                       </Popconfirm>
                       <Popconfirm
                         title={
@@ -1226,7 +1386,11 @@ export function WorkflowsPage() {
                         <Button
                           size="small"
                           danger
-                          disabled={v.version === versionFlow.version}
+                          disabled={
+                            v.version === versionFlow.version ||
+                            v.version === viewingVersion?.version
+                          }
+                          aria-label={`${en ? "Delete version" : "删除版本"} ${v.version}`}
                           icon={<DeleteOutlined />}
                         />
                       </Popconfirm>
@@ -1240,9 +1404,37 @@ export function WorkflowsPage() {
       </Drawer>
       <Modal
         open={Boolean(snapshot)}
-        title={en ? "Immutable snapshot" : "不可变快照"}
-        onCancel={() => setSnapshot("")}
-        footer={null}
+        title={
+          viewingVersion
+            ? `${versionFlow?.name || ""} · ${en ? "Viewing version" : "查看版本"} v${viewingVersion.version}${viewingVersion.version === versionFlow?.version ? (en ? " (current)" : "（当前版本）") : ""}`
+            : en
+              ? "Immutable snapshot"
+              : "不可变快照"
+        }
+        onCancel={() => {
+          setSnapshot("");
+          setViewingVersion(undefined);
+        }}
+        footer={
+          viewingVersion && admin ? (
+            <Space>
+              <Button danger disabled>
+                {en ? "Delete this version" : "删除此版本"}
+              </Button>
+              <Button
+                type="primary"
+                onClick={() => {
+                  setEditing(structuredClone(viewingVersion.snapshot));
+                  setSnapshot("");
+                  setViewingVersion(undefined);
+                  setVersionFlow(undefined);
+                }}
+              >
+                {en ? "Edit as a new version" : "编辑并保存为新版本"}
+              </Button>
+            </Space>
+          ) : null
+        }
         width="min(1000px, 94vw)"
       >
         <Input.TextArea
@@ -1342,7 +1534,10 @@ export function WorkflowsPage() {
             report(e);
           }
         }}
-        width={720}
+        width="min(720px, 94vw)"
+        styles={{
+          body: { maxHeight: "calc(100vh - 240px)", overflowY: "auto" },
+        }}
       >
         <Form layout="vertical">
           <Space wrap>
@@ -1482,15 +1677,13 @@ export function WorkflowsPage() {
       <Modal
         open={Boolean(backfill)}
         title={en ? "Backfill logical schedule times" : "按逻辑调度时间补数"}
-        onCancel={() => setBackfill(undefined)}
+        onCancel={() => !backfillSubmitting && setBackfill(undefined)}
+        confirmLoading={backfillSubmitting}
         okButtonProps={{ disabled: !backfillPreview?.length }}
-        okText={
-          en
-            ? `Confirm ${backfillPreview?.length || 0} runs`
-            : `确认 ${backfillPreview?.length || 0} 次执行`
-        }
+        okText={en ? "Confirm entire range" : "确认整个范围"}
         onOk={async () => {
-          if (!backfill || !range) return;
+          if (!backfill || !range || backfillSubmitting) return;
+          setBackfillSubmitting(true);
           try {
             await api.backfill(project, backfill.id, {
               cron: backfillCron,
@@ -1498,25 +1691,81 @@ export function WorkflowsPage() {
               from: range[0],
               to: range[1],
               confirm: true,
+              direction: backfillDirection,
+              failurePolicy: backfillFailurePolicy,
             });
             setBackfill(undefined);
+            message.success(
+              en
+                ? "Backfill request saved; instances will be generated in batches."
+                : "补数请求已保存，实例将分批生成。",
+            );
             navigate("/workflow-history");
             await load();
           } catch (e) {
             report(e);
+          } finally {
+            setBackfillSubmitting(false);
           }
         }}
-        width={720}
+        width="min(720px, 94vw)"
+        styles={{
+          body: { maxHeight: "calc(100vh - 240px)", overflowY: "auto" },
+        }}
       >
         <Alert
           type="warning"
           message={
             en
-              ? "Backfill freezes the current workflow version and uses each planned occurrence as the date baseline. Maximum 200 runs per request."
-              : "补数冻结当前工作流版本，以每次计划时间作为日期基准，每次请求最多 200 个实例。"
+              ? "Preview shows only the first 50 occurrences; confirmation saves the entire range without an instance cap. Backfill instances run serially, below normal schedules. A running instance is not interrupted; queued schedules run next. Large or second-level ranges may produce many jobs."
+              : "预览仅显示前 50 次，确认后保存整个范围，不限制总实例数。补数串行执行，优先级低于正常定时任务；正在执行的实例不会被中断，结束后正常调度优先。大范围或秒级 Cron 可能生成大量作业。"
           }
         />
         <Form layout="vertical" style={{ marginTop: 16 }}>
+          <Space wrap>
+            <Form.Item label={en ? "Backfill order" : "补数顺序"}>
+              <Select
+                style={{ width: 220 }}
+                value={backfillDirection}
+                options={[
+                  {
+                    value: "forward",
+                    label: en ? "Forward · oldest first" : "正序 · 从早到晚",
+                  },
+                  {
+                    value: "backward",
+                    label: en ? "Reverse · newest first" : "倒序 · 从晚到早",
+                  },
+                ]}
+                onChange={(v) => {
+                  setBackfillDirection(v);
+                  setBackfillPreview(undefined);
+                }}
+              />
+            </Form.Item>
+            <Form.Item label={en ? "On instance failure" : "实例失败后"}>
+              <Select
+                style={{ width: 220 }}
+                value={backfillFailurePolicy}
+                options={[
+                  {
+                    value: "stop",
+                    label: en ? "Stop remaining backfill" : "停止剩余补数",
+                  },
+                  {
+                    value: "continue",
+                    label: en
+                      ? "Continue other occurrences"
+                      : "继续其他时间补数",
+                  },
+                ]}
+                onChange={(v) => {
+                  setBackfillFailurePolicy(v);
+                  setBackfillPreview(undefined);
+                }}
+              />
+            </Form.Item>
+          </Space>
           <Form.Item label="Cron">
             <CronEditor
               en={en}
@@ -1539,6 +1788,7 @@ export function WorkflowsPage() {
           <Form.Item label={en ? "Range" : "范围"}>
             <DatePicker.RangePicker
               showTime
+              value={range ? [dayjs(range[0]), dayjs(range[1])] : null}
               onChange={(v) => {
                 setRange(
                   v?.[0] && v[1]
@@ -1553,16 +1803,19 @@ export function WorkflowsPage() {
             disabled={!range}
             onClick={async () => {
               if (!backfill || !range) return;
+              const revision = backfillRevision.current;
               try {
-                setBackfillPreview(
-                  await api.backfill(project, backfill.id, {
-                    cron: backfillCron,
-                    timeZone: backfillZone,
-                    from: range[0],
-                    to: range[1],
-                    confirm: false,
-                  }),
-                );
+                const result = await api.backfill(project, backfill.id, {
+                  cron: backfillCron,
+                  timeZone: backfillZone,
+                  from: range[0],
+                  to: range[1],
+                  confirm: false,
+                  direction: backfillDirection,
+                  failurePolicy: backfillFailurePolicy,
+                });
+                if (revision === backfillRevision.current)
+                  setBackfillPreview(result);
               } catch (e) {
                 report(e);
               }

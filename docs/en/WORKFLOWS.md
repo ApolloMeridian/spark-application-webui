@@ -1,6 +1,6 @@
 # Projects, workflows and scheduled Spark jobs
 
-PostgreSQL-backed orchestration was introduced in 1.4.0; 1.4.1 improves the editor, audit filters and second-level scheduling. It does not depend on an external DolphinScheduler installation and runs only SparkApplication nodes, not arbitrary scripts.
+Orchestration persists configuration, scheduling cursors and execution state in PostgreSQL. It does not depend on an external DolphinScheduler installation and runs only SparkApplication nodes, not arbitrary scripts.
 
 ## Tenant and permission boundaries
 
@@ -11,7 +11,7 @@ Viewers can browse authorized projects, workflow versions, task/run details, log
 ## Organizing and running jobs
 
 1. Create a project, then create a workflow inside it.
-2. Add SparkApplication YAML nodes or select a specific template version. Set node values using YAML `key: value`; parameter definitions use the existing typed form.
+2. Add SparkApplication YAML nodes or select a specific template version. Set defaults and date expressions in the typed parameter-definition form; there is no separate runtime-values YAML editor. Existing stored overrides remain compatible until the parameter definitions are edited.
 3. Drag a border port onto another task to connect, or select upstream tasks in the form. Multiple incoming/outgoing dependencies are supported and reflected in both views. Links automatically choose facing ports based on node positions. Select a link to remove it; keyboard users can press Enter on a port, then select a downstream task. Drag nodes to arrange the DAG. Cycles, unknown dependencies and duplicate IDs are rejected by both UI and backend.
 4. Save. Each save creates an immutable version containing the entire DAG, node YAML, selected template version, parameter definitions and values.
 5. Use **Run → Dry run & preview** to inspect generated manifests. Each actual dispatch also performs Kubernetes server-side dry-run before CREATE. Manual execution defaults to the current time as its parameter baseline.
@@ -53,7 +53,7 @@ The next-execution preview returns at most ten future occurrences strictly insid
 
 Second-level occurrences do not guarantee real-time dispatch. The backend polls at `workflows.scheduler.scanInterval` (default `5s`, minimum `1s`); use `1s` for finer scanning and review overlap, misfire and concurrency limits before enabling frequent schedules. The `fire_once` policy locates the latest missed occurrence without iterating through every missed second after prolonged downtime.
 
-Misfire policies: `skip` skips occurrences older than two scan intervals plus one second; `fire_once` creates only the latest missed occurrence; `catch_up` creates up to the configured limit, then skips the remaining backlog and records an audit. Disabled workflows do not accumulate missed runs. The workflow overlap strategy applies to both automatic and manual runs. Backfill preview/confirmation supports up to 200 occurrences across at most 366 days; a repeated explicit confirmation intentionally creates new instances.
+Misfire policies: `skip` skips occurrences older than two scan intervals plus one second; `fire_once` creates only the latest missed occurrence; `catch_up` creates up to the configured limit, then skips the remaining backlog and records an audit. Disabled workflows do not accumulate missed runs. The workflow overlap strategy applies to both automatic and manual runs. Backfill preview shows only the first 50 occurrences across at most 366 days. Confirmation persists the entire range and a frozen workflow snapshot without a total instance cap. Backfills run serially: each request materializes its next instance only after the previous one reaches a terminal state. Choose oldest-first or newest-first order and stop-on-failure (default) or continue-on-failure. Cancelling an individual instance stops its remaining request. Normal scheduled instances have higher priority for the same workflow: an already-running instance is never preempted, but queued schedules run before the next backfill. Existing workflow concurrency policies continue to apply to normal runs. Workers consider at most 20 backfill requests per scan without discarding remaining work. The database cursor and created count survive Pod replacement. Execution history includes backfill requests and their progress; Cancel stops only future generation, leaving existing instances intact. Revoked owner permissions block requests. A repeated explicit confirmation intentionally creates a separate request. Review Cron frequency before confirming: a large second-level range can generate millions of jobs.
 
 ## Persistence, HA and version deletion
 
@@ -61,7 +61,7 @@ Configuration and state live in PostgreSQL: tenants, user assignments, projects,
 
 Workers coordinate through a transaction-scoped PostgreSQL advisory lock. Only one replica makes dispatch decisions at a time; other replicas remain HTTP-ready. A lost transaction cannot commit stale progress. Kubernetes CREATE and PostgreSQL are not atomic: deterministic attempt names and the task-instance annotation reconcile accepted external creates after a Pod crash. Schedule ID + UTC occurrence has a unique constraint. Startup migrations also acquire the dispatch lock to avoid rolling-upgrade DDL/worker deadlocks.
 
-Template/workflow history offers **View**, **Restore**, and **Delete**. Restore creates a new monotonically increasing current version. The current version cannot be deleted. Deleting a historical version physically removes its PostgreSQL row and YAML/parameter/snapshot content. Execution snapshots remain independent so existing runs and their evidence do not change. A workflow/project can be deleted only after its execution history is explicitly removed. History deletion cascades task history but retains Kubernetes jobs and ownership isolation. Schedule ownership is revalidated against the current user role, account status, namespace permissions and tenant before each trigger/dispatch; revoked owners block scheduling and stop active runs.
+Template/workflow history offers **View**, **Restore**, and **Delete**. Restore switches the current pointer to the selected snapshot without creating a version. The preview explicitly shows the viewed version and protects it from deletion while open; the current version is always protected. Editing a historical snapshot allocates a new number beyond the persisted high-water mark, including deleted versions. Deleting a historical version physically removes its PostgreSQL row and YAML/parameter/snapshot content. Execution snapshots remain independent so existing runs and their evidence do not change. A workflow/project can be deleted only after its execution history is explicitly removed. History deletion cascades task history but retains Kubernetes jobs and ownership isolation. Schedule ownership is revalidated against the current user role, account status, namespace permissions and tenant before each trigger/dispatch; revoked owners block scheduling and stop active runs.
 
 Human configuration mutations, restores/deletions, run actions and backfills are audited. Automatic triggers, dispatches, blocked schedules and workflow completion are also audited. Read-only polling is not audited. Passwords and request bodies are never included in configuration-action audit messages.
 
@@ -87,12 +87,10 @@ The frontend feature switch derives from backend availability and `workflows.ena
 Before upgrading, back up PostgreSQL. Migrations are additive and all older users are assigned `default`. To stop reconciliation without losing state, set `workflows.scheduler.enabled=false`; jobs already submitted to Kubernetes continue independently. Re-enable to recover persisted runs. Disabling the scheduler also pauses application of queued cancel actions; leave it enabled until requested cancellations finish. Do not run an older backend concurrently with the new scheduler during rollback.
 
 ```bash
-docker build -t spark-control-center:1.4.1 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.1 .
+docker build -t spark-control-center:1.4.2 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.2 .
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace \
   -f charts/spark-control-center/examples/values-production.yaml \
   -f values.local.yaml
 ```
-
-Validation includes PostgreSQL integration tests (DAG/HA/crash recovery/permissions/version deletion), production-container smoke tests using a Kubernetes HTTP fixture, and English browser screenshots at 1440/1024px. These tests do **not** prove compatibility with your specific Spark operator/admission policies; run a small non-production workflow against your cluster before enabling production schedules.
