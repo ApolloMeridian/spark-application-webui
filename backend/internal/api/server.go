@@ -858,6 +858,18 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	filtered := make([]domain.OperationAudit, 0, len(audits))
 	for _, audit := range audits {
+		// Legacy Kubernetes SUBMIT/KILL audits have no tenant column populated.
+		// Resolve their resource binding as well so they cannot leak workflow jobs.
+		if s.flows != nil && audit.Namespace != "" && audit.ApplicationName != "" {
+			allowed, err := s.flows.ApplicationTenant(r.Context(), principal, audit.Namespace, audit.ApplicationName)
+			if err != nil {
+				s.writeServiceError(w, err)
+				return
+			}
+			if !allowed {
+				continue
+			}
+		}
 		tenantID := principal.TenantID
 		if tenantID == "" {
 			tenantID = "default"
