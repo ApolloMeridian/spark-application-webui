@@ -4,8 +4,10 @@ import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { ensureMinIOFixture } from "./minio-fixture.mjs";
 
 const version = process.env.QA_VERSION || "1.5.0";
+const minioImage = ensureMinIOFixture();
 const prefix = `spark-storage-container-${randomBytes(4).toString("hex")}`;
 const password = randomBytes(24).toString("hex");
 const signing = randomBytes(32).toString("hex");
@@ -118,7 +120,7 @@ try {
     "MINIO_ROOT_USER=storage-test",
     "-e",
     `MINIO_ROOT_PASSWORD=${password}`,
-    "minio/minio:RELEASE.2025-04-22T22-12-26Z",
+    minioImage,
     "server",
     "/data",
   );

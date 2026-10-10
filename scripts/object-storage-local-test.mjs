@@ -2,7 +2,9 @@ import { execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
+import { ensureMinIOFixture } from "./minio-fixture.mjs";
 
+const minioImage = ensureMinIOFixture();
 const prefix = `spark-storage-qa-${randomBytes(4).toString("hex")}`;
 const password = randomBytes(24).toString("hex");
 const ids = [];
@@ -77,7 +79,7 @@ try {
     "MINIO_ROOT_USER=storage-test",
     "-e",
     `MINIO_ROOT_PASSWORD=${password}`,
-    "minio/minio:RELEASE.2025-04-22T22-12-26Z",
+    minioImage,
     "server",
     "/data",
   );
