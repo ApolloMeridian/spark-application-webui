@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 // An explicit override supports offline test runners with an already mirrored fixture.
 export function ensureMinIOFixture() {
   if (process.env.QA_MINIO_IMAGE) return process.env.QA_MINIO_IMAGE;
-  const image = "spark-console-minio-fixture:2025-04-22-53e2a2cb";
+  const image = "spark-console-minio-fixture:2025-04-22-53e2a2cb-mc01f866e9";
   try {
     execFileSync("docker", ["image", "inspect", image], { stdio: "ignore" });
   } catch {
