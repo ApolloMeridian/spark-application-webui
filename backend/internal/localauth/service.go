@@ -244,7 +244,7 @@ func (s *Service) CreateUser(ctx context.Context, actor domain.User, input Creat
 		tenant = domain.DefaultTenant(input.Role)
 	}
 	user := domain.User{ID: newID(), TenantID: tenant, Username: username, DisplayName: cleanDisplayName(input.DisplayName, username), Email: email, Role: input.Role, Namespaces: cleanNamespaces(input.Namespaces), AuthSource: "local", CreatedAt: now, UpdatedAt: now}
-	if err := s.store.CreateUser(ctx, user, normalized, string(hash)); err != nil {
+	if err := s.store.CreateUser(withAuditActor(ctx, actor), user, normalized, string(hash)); err != nil {
 		return domain.User{}, err
 	}
 	return user, nil
@@ -274,7 +274,7 @@ func (s *Service) UpdateUser(ctx context.Context, actor domain.User, id string, 
 	if err != nil {
 		return domain.User{}, err
 	}
-	if err := s.store.UpdateUser(ctx, user, passwordHash); err != nil {
+	if err := s.store.UpdateUser(withAuditActor(ctx, actor), user, passwordHash); err != nil {
 		return domain.User{}, err
 	}
 	if sensitive {
@@ -320,7 +320,7 @@ func (s *Service) UpdateProfile(ctx context.Context, actor domain.User, input Up
 		passwordHash = &value
 	}
 	user.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := s.store.UpdateUser(ctx, user, passwordHash); err != nil {
+	if err := s.store.UpdateUser(withAuditActor(ctx, actor), user, passwordHash); err != nil {
 		return domain.User{}, false, err
 	}
 	if passwordChanged {
@@ -338,7 +338,7 @@ func (s *Service) DeleteUser(ctx context.Context, actor domain.User, id string) 
 	if actor.ID == id {
 		return ErrSelfDelete
 	}
-	return s.store.DeleteUser(ctx, id)
+	return s.store.DeleteUser(withAuditActor(ctx, actor), id)
 }
 
 func (s *Service) applyUpdate(user *domain.User, input UpdateUserInput) (*string, bool, error) {

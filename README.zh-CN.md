@@ -93,17 +93,17 @@ go vet ./...
 使用不含仓库前缀的名称构建：
 
 ```bash
-docker build -t spark-control-center:1.5.0 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.0 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.0 .
+docker build -t spark-control-center:1.5.1 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.1 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.1 .
 ```
 
 [Releases](https://github.com/ApolloMeridian/spark-application-webui/releases) 包含三个镜像 TAR 和一个 Helm TGZ，不附带校验文件。镜像名不包含私有仓库前缀；对象存储镜像始终包含在发布附件中，插件默认关闭。
 
 ```bash
-docker load -i spark-control-center-1.5.0.tar
-docker load -i spark-control-center-backend-1.5.0.tar
-docker load -i spark-control-center-object-storage-1.5.0.tar
+docker load -i spark-control-center-1.5.1.tar
+docker load -i spark-control-center-backend-1.5.1.tar
+docker load -i spark-control-center-object-storage-1.5.1.tar
 ```
 
 ## Helm 部署
@@ -111,9 +111,9 @@ docker load -i spark-control-center-object-storage-1.5.0.tar
 Chart 默认 values 已是完整生产模板，启用真实 API 与 PostgreSQL 登录；对象存储和 OIDC 默认关闭。修改端点和已有 Secret 引用后，仅需一个 values 文件。Mock 模式需显式使用其专用示例：
 
 ```bash
-helm show values ./spark-control-center-1.5.0.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.1.tgz > values-production.local.yaml
 
-helm upgrade --install spark-console ./spark-control-center-1.5.0.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.5.1.tgz \
   --namespace spark-console \
   --create-namespace \
   -f values-production.local.yaml

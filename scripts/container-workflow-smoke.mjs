@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const version = process.env.QA_VERSION || "1.5.0";
+const version = process.env.QA_VERSION || "1.5.1";
 const prefix = `spark-workflow-qa-${randomBytes(4).toString("hex")}`;
 const password = randomBytes(24).toString("base64url");
 const containers = [];

@@ -7,7 +7,7 @@ export function operationColor(operation: string): string {
   if (/RESTORE|RERUN|RETRY|RESUME/.test(operation)) return "purple";
   if (/TRIGGER|DISPATCH|SUBMIT|BACKFILL/.test(operation)) return "blue";
   if (/SAVE|CREATE|POST/.test(operation)) return "cyan";
-  if (/PATCH|UPDATE/.test(operation)) return "geekblue";
+  if (/PATCH|UPDATE|TENANT_CHANGE/.test(operation)) return "geekblue";
   if (/FINISHED|ACKNOWLEDGE|RESOLVE/.test(operation)) return "green";
   return "default";
 }

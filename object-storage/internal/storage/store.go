@@ -99,7 +99,12 @@ func (s *Store) Identity(ctx context.Context, id, tenant string) (Identity, erro
 	return u, e
 }
 func (s *Store) Grants(ctx context.Context, u Identity, all bool) ([]Grant, error) {
-	rows, e := s.Pool.Query(ctx, `SELECT id,user_id,tenant_id,connection_id,bucket,prefix,actions FROM object_storage_grants WHERE tenant_id=$1 AND ($2 OR user_id=$3) ORDER BY connection_id,bucket,prefix,id LIMIT 2000`, u.Tenant, all, u.ID)
+	// Global policy management is distinct from data access. Runtime requests
+	// always use all=false and remain bound to this user's current tenant.
+	if all && u.Role != "admin" {
+		return nil, fail(403, "access_denied")
+	}
+	rows, e := s.Pool.Query(ctx, `SELECT id,user_id,tenant_id,connection_id,bucket,prefix,actions FROM object_storage_grants WHERE $2 OR (tenant_id=$1 AND user_id=$3) ORDER BY connection_id,bucket,prefix,id LIMIT 2000`, u.Tenant, all, u.ID)
 	if e != nil {
 		return nil, e
 	}
@@ -153,31 +158,6 @@ func (s *Store) Lease(ctx context.Context, u Identity, id string) (func(), error
 	}
 	return release, nil
 }
-func (s *Store) ChangeGrant(ctx context.Context, u Identity, g Grant, remove bool) error {
-	tx, e := s.Pool.Begin(ctx)
-	if e != nil {
-		return e
-	}
-	defer tx.Rollback(ctx)
-	raw, _ := json.Marshal(g.Actions)
-	if remove {
-		_, e = tx.Exec(ctx, `DELETE FROM object_storage_grants WHERE id=$1 AND tenant_id=$2`, g.ID, u.Tenant)
-	} else {
-		if g.ID == "" {
-			g.ID = newID()
-		}
-		_, e = tx.Exec(ctx, `INSERT INTO object_storage_grants(id,user_id,tenant_id,connection_id,bucket,prefix,actions) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(user_id,tenant_id,connection_id,bucket,prefix) DO UPDATE SET actions=EXCLUDED.actions,updated_at=now()`, g.ID, g.UserID, u.Tenant, g.Connection, g.Bucket, g.Prefix, g.Actions)
-	}
-	if e != nil {
-		return e
-	}
-	// bounded metadata, not object content; target is the affected account.
-	_, e = tx.Exec(ctx, `INSERT INTO object_storage_operations(id,user_id,tenant_id,username,action,connection_id,bucket,object_key,target_key,result,finished_at) VALUES($1,$2,$3,$4,'POLICY_CHANGE',$5,$6,$7,$8,'succeeded',now())`, newID(), u.ID, u.Tenant, u.Username, g.Connection, g.Bucket, g.Prefix, g.UserID+":"+string(raw))
-	if e != nil {
-		return e
-	}
-	return tx.Commit(ctx)
-}
 func (s *Store) Bootstrap(ctx context.Context, items []Bootstrap) error {
 	for _, x := range items {
 		if !ValidPrefix(x.Prefix) || len(x.Actions) == 0 || x.Tenant == "" {
@@ -203,6 +183,9 @@ func (s *Store) Bootstrap(ctx context.Context, items []Bootstrap) error {
 			if errors.Is(e, pgx.ErrNoRows) {
 				tx.Rollback(ctx)
 				continue
+			}
+			if e == nil {
+				_, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,15001502))`, grantScope(Grant{UserID: u.ID, Tenant: x.Tenant, Connection: x.Connection, Bucket: x.Bucket, Prefix: x.Prefix}))
 			}
 			if e == nil {
 				_, e = tx.Exec(ctx, `INSERT INTO object_storage_grants(id,user_id,tenant_id,connection_id,bucket,prefix,actions) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`, newID(), u.ID, u.Tenant, x.Connection, x.Bucket, x.Prefix, x.Actions)

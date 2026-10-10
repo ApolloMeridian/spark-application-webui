@@ -643,8 +643,8 @@ export default function ObjectStoragePage() {
                           type="info"
                           showIcon
                           message={text(
-                            "管理员可在当前租户内配置用户的存储桶、目录前缀与操作权限。授权范围不得超出管理员自身权限；访问同时受租户权限约束。Helm 初始授权仅在首次匹配用户时应用。",
-                            "Administrators manage bucket, prefix and operation permissions for users in their tenant. Grants cannot exceed the administrator’s own access and remain subject to tenant permissions. Helm bootstrap grants are applied once when the matching account becomes available.",
+                            "管理员可跨租户配置用户的存储桶、目录前缀与操作权限，但授权范围不得超出管理员自身权限。授权归属于目标用户的实际租户；用户访问同时受该租户的对象存储权限约束。Helm 初始授权仅在首次匹配用户时应用。",
+                            "Administrators may manage bucket, prefix and operation permissions across tenants, within their own access scope. Grants belong to the target user’s actual tenant, and access also requires that tenant’s object storage permission. Helm bootstrap grants are applied once when the matching account becomes available.",
                           )}
                           style={{ marginBottom: 16 }}
                         />
@@ -668,14 +668,26 @@ export default function ObjectStoragePage() {
                           rowKey="id"
                           size="small"
                           dataSource={policies.grants}
-                          scroll={{ x: 950 }}
+                          scroll={{ x: 1080 }}
                           columns={[
                             {
                               title: text("用户", "User"),
                               render: (_: unknown, g) =>
                                 policies.users.find((u) => u.id === g.userId)
                                   ?.username || g.userId,
-                              width: 180,
+                              width: 160,
+                            },
+                            {
+                              title: text("租户", "Tenant"),
+                              render: (_: unknown, g) => {
+                                const u = policies.users.find(
+                                  (u) =>
+                                    u.id === g.userId &&
+                                    u.tenantId === g.tenantId,
+                                );
+                                return u?.tenantName || g.tenantId;
+                              },
+                              width: 130,
                             },
                             {
                               title: text(
@@ -684,14 +696,14 @@ export default function ObjectStoragePage() {
                               ),
                               render: (_: unknown, g) =>
                                 `${g.connection} / ${g.bucket}`,
-                              width: 210,
+                              width: 180,
                             },
                             {
                               title: "Prefix",
                               dataIndex: "prefix",
                               render: (v: string) =>
                                 v || text("整个 Bucket", "Entire bucket"),
-                              width: 260,
+                              width: 230,
                             },
                             {
                               title: text("权限", "Permissions"),
@@ -1026,9 +1038,12 @@ export default function ObjectStoragePage() {
             rules={[{ required: true }]}
           >
             <Select
+              showSearch
+              optionFilterProp="label"
               options={policies.users.map((u) => ({
                 value: u.id,
-                label: `${u.username} (${u.role})`,
+                label: `${u.username} (${u.tenantName || u.tenantId || u.role})${u.storageEnabled === false ? text(" · 租户未启用对象存储", " · Storage disabled for tenant") : ""}`,
+                disabled: u.storageEnabled === false,
               }))}
             />
           </Form.Item>

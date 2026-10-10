@@ -109,7 +109,7 @@ func dbFixture(t *testing.T) *Store {
 	if e != nil {
 		t.Fatal(e)
 	}
-	_, e = temp.Exec(ctx, `CREATE TABLE tenants(id text PRIMARY KEY,permissions jsonb); INSERT INTO tenants VALUES('default',NULL),('other',NULL); CREATE TABLE local_users(id text PRIMARY KEY,tenant_id text NOT NULL,role text NOT NULL,username text NOT NULL,disabled boolean NOT NULL DEFAULT false); INSERT INTO local_users(id,tenant_id,role,username) VALUES('admin','default','admin','admin'),('viewer','default','viewer','viewer'),('other','other','admin','other')`)
+	_, e = temp.Exec(ctx, `CREATE TABLE tenants(id text PRIMARY KEY,name text NOT NULL,permissions jsonb); INSERT INTO tenants VALUES('default','Default',NULL),('other','Other',NULL); CREATE TABLE local_users(id text PRIMARY KEY,tenant_id text NOT NULL,role text NOT NULL,username text NOT NULL,disabled boolean NOT NULL DEFAULT false); INSERT INTO local_users(id,tenant_id,role,username) VALUES('admin','default','admin','admin'),('viewer','default','viewer','viewer'),('other','other','admin','other')`)
 	temp.Close()
 	if e != nil {
 		t.Fatal(e)

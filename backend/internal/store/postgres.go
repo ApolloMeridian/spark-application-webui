@@ -497,7 +497,12 @@ func (s *PostgresStore) CreateUser(ctx context.Context, user domain.User, normal
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	_, err = tx.Exec(ctx, `
 INSERT INTO local_users (id, username, username_normalized, display_name, email, role, namespaces, auth_source, password_hash, disabled, created_at, updated_at, tenant_id)
 VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::text[], '{}'::text[]),'local',$8,$9,$10,$10,COALESCE(NULLIF($11,''),'default'))`, user.ID, user.Username, normalized, user.DisplayName, user.Email, user.Role, user.Namespaces, passwordHash, user.Disabled, createdAt, user.TenantID)
 	if isUniqueViolation(err) {
@@ -510,7 +515,13 @@ VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::text[], '{}'::text[]),'local',$8,$9,$10,$
 	if err != nil {
 		return fmt.Errorf("create user: %w", err)
 	}
-	return nil
+	if user.TenantID == "" {
+		user.TenantID = "default"
+	}
+	if err := insertUserAudit(ctx, tx, nil, &user, false); err != nil {
+		return fmt.Errorf("persist user creation audit: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStore) UpdateUser(ctx context.Context, user domain.User, passwordHash *string) error {
@@ -522,15 +533,13 @@ func (s *PostgresStore) UpdateUser(ctx context.Context, user domain.User, passwo
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('spark-control-center-local-auth'))`); err != nil {
 		return err
 	}
-	var currentRole domain.UserRole
-	var currentDisabled bool
-	var currentAuthSource string
-	if err := tx.QueryRow(ctx, `SELECT role, disabled, auth_source FROM local_users WHERE id=$1 FOR UPDATE`, user.ID).Scan(&currentRole, &currentDisabled, &currentAuthSource); errors.Is(err, pgx.ErrNoRows) {
+	before := domain.User{ID: user.ID}
+	if err := tx.QueryRow(ctx, `SELECT username,role,disabled,auth_source,tenant_id,display_name,email,namespaces FROM local_users WHERE id=$1 FOR UPDATE`, user.ID).Scan(&before.Username, &before.Role, &before.Disabled, &before.AuthSource, &before.TenantID, &before.DisplayName, &before.Email, &before.Namespaces); errors.Is(err, pgx.ErrNoRows) {
 		return localauth.ErrUserNotFound
 	} else if err != nil {
 		return err
 	}
-	if currentAuthSource == "local" && currentRole == domain.RoleAdmin && !currentDisabled && (user.Role != domain.RoleAdmin || user.Disabled) {
+	if before.AuthSource == "local" && before.Role == domain.RoleAdmin && !before.Disabled && (user.Role != domain.RoleAdmin || user.Disabled) {
 		var activeAdmins int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM local_users WHERE role='admin' AND auth_source='local' AND disabled=false`).Scan(&activeAdmins); err != nil {
 			return err
@@ -556,6 +565,13 @@ password_hash=COALESCE($8, password_hash), tenant_id=COALESCE(NULLIF($9,''),'def
 	if command.RowsAffected() == 0 {
 		return localauth.ErrUserNotFound
 	}
+	user.Username = before.Username
+	if user.TenantID == "" {
+		user.TenantID = "default"
+	}
+	if err := insertUserAudit(ctx, tx, &before, &user, passwordHash != nil); err != nil {
+		return fmt.Errorf("persist user update audit: %w", err)
+	}
 	return tx.Commit(ctx)
 }
 
@@ -568,15 +584,13 @@ func (s *PostgresStore) DeleteUser(ctx context.Context, id string) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('spark-control-center-local-auth'))`); err != nil {
 		return err
 	}
-	var role domain.UserRole
-	var disabled bool
-	var authSource string
-	if err := tx.QueryRow(ctx, `SELECT role, disabled, auth_source FROM local_users WHERE id=$1 FOR UPDATE`, id).Scan(&role, &disabled, &authSource); errors.Is(err, pgx.ErrNoRows) {
+	before := domain.User{ID: id}
+	if err := tx.QueryRow(ctx, `SELECT username,role,disabled,auth_source,tenant_id FROM local_users WHERE id=$1 FOR UPDATE`, id).Scan(&before.Username, &before.Role, &before.Disabled, &before.AuthSource, &before.TenantID); errors.Is(err, pgx.ErrNoRows) {
 		return localauth.ErrUserNotFound
 	} else if err != nil {
 		return err
 	}
-	if authSource == "local" && role == domain.RoleAdmin && !disabled {
+	if before.AuthSource == "local" && before.Role == domain.RoleAdmin && !before.Disabled {
 		var activeAdmins int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM local_users WHERE role='admin' AND auth_source='local' AND disabled=false`).Scan(&activeAdmins); err != nil {
 			return err
@@ -587,6 +601,9 @@ func (s *PostgresStore) DeleteUser(ctx context.Context, id string) error {
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM local_users WHERE id=$1`, id); err != nil {
 		return fmt.Errorf("delete user: %w", err)
+	}
+	if err := insertUserAudit(ctx, tx, &before, nil, false); err != nil {
+		return fmt.Errorf("persist user deletion audit: %w", err)
 	}
 	return tx.Commit(ctx)
 }

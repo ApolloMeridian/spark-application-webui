@@ -114,7 +114,14 @@ export interface StorageOperation {
 }
 export interface PolicyInfo {
   grants: StorageGrant[];
-  users: { id: string; username: string; role: string }[];
+  users: {
+    id: string;
+    username: string;
+    role: string;
+    tenantId?: string;
+    tenantName?: string;
+    storageEnabled?: boolean;
+  }[];
 }
 export function validStorageKey(key: string) {
   return (
@@ -501,8 +508,22 @@ const mockService: typeof apiService = {
     return {
       grants,
       users: [
-        { id: current.id, username: current.username, role: "admin" },
-        { id: "mock-viewer", username: "viewer", role: "viewer" },
+        {
+          id: current.id,
+          username: current.username,
+          role: "admin",
+          tenantId: current.tenantId || "default",
+          tenantName: current.tenantId || "default",
+          storageEnabled: true,
+        },
+        {
+          id: "mock-viewer",
+          username: "viewer",
+          role: "viewer",
+          tenantId: "viewer",
+          tenantName: "Viewer",
+          storageEnabled: true,
+        },
       ],
     };
   },
@@ -522,7 +543,8 @@ const mockService: typeof apiService = {
       {
         ...g,
         id: crypto.randomUUID(),
-        tenantId: "default",
+        tenantId:
+          g.userId === "mock-viewer" ? "viewer" : current.tenantId || "default",
         key: "",
       } as StorageGrant,
     ];

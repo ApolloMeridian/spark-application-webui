@@ -1,4 +1,4 @@
-# 工作流编排与定时调度（1.5.0）
+# 工作流编排与定时调度（1.5.1）
 
 首版仅支持 SparkApplication 节点，不执行任意 Bash、SQL 或 HTTP 脚本。
 
@@ -51,7 +51,7 @@ Cron 支持六段：秒、分钟、小时、日、月、星期；原五段配置
 
 人工变更、回溯/删除、执行控制和补数，以及自动触发、派发、阻断和完成均写操作审计；只读轮询不重复审计，也不记录密码或请求正文。
 
-操作审计支持操作人、类型、结果与关键词组合筛选；操作标签按含义着色并支持长名称换行，避免覆盖结果列。编排页显示租户名称，删除最后一个项目会清空选择和旧数据，不再发起失效项目的轮询。
+操作审计支持操作人、类型、结果与关键词组合筛选；操作标签按含义着色并支持长名称换行，避免覆盖结果列。用户管理分别记录 `USER_CREATE`、`USER_UPDATE`、`USER_DELETE` 与 `USER_TENANT_CHANGE`，资源列显示目标用户名，租户变更消息包含原、新租户的名称与 ID。用户变更与审计在 PostgreSQL 中原子提交，不记录密码、密码哈希或令牌。编排页显示租户名称，删除最后一个项目会清空选择和旧数据，不再发起失效项目的轮询。
 
 ## Helm 与升级
 
@@ -71,8 +71,8 @@ workflows:
 前端入口从后端和工作流开关派生，纯前端 Mock 演示不模拟工作流。升级前备份 PostgreSQL，启动时增量迁移。关闭 scheduler 会暂停所有协调动作（包括排队中的终止），已提交 Kubernetes 作业仍继续运行；重新启用后恢复数据库状态。执行历史暂不自动清理。多副本必须共享同一数据库和 Kubernetes 上下文，回滚时不要让旧后端与新调度器同时运行。
 
 ```bash
-docker build -t spark-control-center:1.5.0 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.0 .
+docker build -t spark-control-center:1.5.1 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.1 .
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace \
   -f charts/spark-control-center/examples/values-production.yaml \

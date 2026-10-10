@@ -1,20 +1,20 @@
-# 对象存储插件（1.5.0）
+# 对象存储插件（1.5.1）
 
 这是可选的独立无状态服务，不是嵌入 MinIO Console。默认关闭，不创建插件资源，不要求存储凭证，不改变已有 Spark 作业/工作流能力。
 
 ## 构建与安装
 
 ```bash
-docker build -t spark-control-center:1.5.0 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.0 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.0 .
+docker build -t spark-control-center:1.5.1 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.1 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.1 .
 helm package charts/spark-control-center
 
 # 首次部署时创建单文件配置；已配置过的文件不要覆盖。
-helm show values ./spark-control-center-1.5.0.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.1.tgz > values-production.local.yaml
 # 修改此文件中的镜像仓库、Endpoint、bucket、认证、数据库和初始授权。
 # 根据内网实际仓库分别 docker tag / docker push 三个镜像。
-helm upgrade --install spark-console ./spark-control-center-1.5.0.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.5.1.tgz \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
 ```
@@ -74,7 +74,9 @@ kubectl -n spark-console create configmap spark-console-storage-wif \
 
 ## 目录、权限与编辑
 
-管理员在“对象存储 → 目录权限”选择用户、连接、bucket、prefix 和操作。管理员也必须有数据授权；只能把自己已有的范围/动作授予本租户用户，不能跨租户或扩大范围。普通用户的文件操作由具体授权决定，可授权上传、编辑、删除、复制；权限配置仍仅管理员可管理，Spark 作业权限不变。空 prefix 表示整个 bucket，页面必须再次确认；`team/a/` 不匹配 `team/ab/`。
+管理员在“对象存储 → 目录权限”选择用户、连接、bucket、prefix 和操作。用户选择器列出所有租户中的有效账户，并显示租户名称；租户未启用对象存储时，对应账户可见但暂不可授权，须先启用该租户的对象存储权限。管理员自身也必须拥有数据授权，只能委派自己已有的存储桶、目录前缀与操作范围，不能扩大权限。授权归属于目标用户的实际租户，而非管理员的租户。普通用户的文件操作由具体授权决定，可授权上传、编辑、删除、复制；权限配置仍仅管理员可管理。数据访问同时要求目标租户启用对象存储，并匹配用户自身的目录授权。空 prefix 表示整个 bucket，页面必须再次确认；`team/a/` 不匹配 `team/ab/`。
+
+变更用户租户不会把原租户授权自动迁移到新租户，须重新核对并配置授权；用户已停用或变更租户后，管理员仍可撤销旧授权。Helm 初始授权仅在配置租户内首次匹配账户时应用，撤销结果不会因重启而覆盖。初始授权的周期同步与用户选择器相互独立；创建账户或修改租户权限后刷新“目录权限”即可，无需等待初始授权同步。
 
 页面只展示授权入口，目录来自 object key 的 `/` 前缀，不等同于本地目录。每页 100 条，分页游标绑定身份、目录与当前授权。点路径段、反斜杠、控制字符和超过 1024 字节的键不支持；中文、空格与百分号按原始 key 处理。撤权作用于后续请求；已经开始的传输不承诺瞬间中断。
 
@@ -105,7 +107,7 @@ npm install
 npm test
 npm run build
 node scripts/object-storage-local-test.mjs
-QA_VERSION=1.5.0 node scripts/container-object-storage-smoke.mjs
+QA_VERSION=1.5.1 node scripts/container-object-storage-smoke.mjs
 node scripts/object-storage-helm-test.mjs
 ```
 

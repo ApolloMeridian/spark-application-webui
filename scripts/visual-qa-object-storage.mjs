@@ -248,6 +248,18 @@ try {
     await page
       .getByRole("button", { name: "Add or update grant", exact: true })
       .waitFor();
+    await page
+      .getByRole("button", { name: "Add or update grant", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("combobox").first().click();
+    await page.getByText("viewer (Viewer)", { exact: true }).click();
+    await dialog.getByRole("button", { name: "OK", exact: true }).click();
+    await dialog.waitFor({ state: "hidden" });
+    await page.getByRole("cell", { name: "Viewer", exact: true }).waitFor();
+    await page.waitForFunction(
+      () => !document.querySelector(".ant-message-notice"),
+    );
     await page.screenshot({
       path: `.qa/object-storage-permissions-${width}.png`,
       fullPage: true,

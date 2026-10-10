@@ -130,6 +130,30 @@ describe("storage permissions and mock operations", () => {
       "access_denied",
     );
   });
+  it("binds cross-tenant grants to the recipient's tenant", async () => {
+    const service = storageService({ ...admin, tenantId: "admin" });
+    const user = (await service.policies()).users.find(
+      (u) => u.id === "mock-viewer",
+    );
+    expect(user?.tenantId).toBe("viewer");
+    expect(user?.tenantName).toBe("Viewer");
+    expect(user?.storageEnabled).toBe(true);
+    await service.saveGrant(
+      {
+        userId: "mock-viewer",
+        tenantId: "admin",
+        connection: "demo",
+        bucket: "spark-artifacts",
+        prefix: "team/analytics/",
+        actions: ["list", "read"],
+      },
+      false,
+    );
+    expect(
+      (await service.policies()).grants.find((g) => g.userId === "mock-viewer")
+        ?.tenantId,
+    ).toBe("viewer");
+  });
   it("uses adaptive decimal byte units", () => {
     expect([0, 999, 1000, 1000000, 1e9, 1e12].map(formatStorageSize)).toEqual([
       "0 B",

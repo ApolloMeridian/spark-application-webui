@@ -67,7 +67,7 @@ Template/workflow history offers **View**, **Restore**, and **Delete**. Restore 
 
 Human configuration mutations, restores/deletions, run actions and backfills are audited. Automatic triggers, dispatches, blocked schedules and workflow completion are also audited. Read-only polling is not audited. Passwords and request bodies are never included in configuration-action audit messages.
 
-Operation Audit offers combined operator, operation, result and keyword filters. Operation tags use semantic colors (deletion red, termination orange, submission blue, configuration cyan, restore purple) and wrap long names without overlapping the result column. Workflow pages display the current tenant name and safely clear project data/selection when the last project is removed.
+Operation Audit offers combined operator, operation, result and keyword filters. Operation tags use semantic colors (deletion red, termination orange, submission blue, configuration cyan, restore purple) and wrap long names without overlapping the result column. User management records `USER_CREATE`, `USER_UPDATE`, `USER_DELETE` and `USER_TENANT_CHANGE`; the resource is the target username. Tenant changes include the previous and new tenant names/IDs. These audits are committed with the user mutation in PostgreSQL; passwords, password hashes and tokens are not recorded. Workflow pages display the current tenant name and safely clear project data/selection when the last project is removed.
 
 ## Helm and operations
 
@@ -89,8 +89,8 @@ The frontend feature switch derives from backend availability and `workflows.ena
 Before upgrading, back up PostgreSQL. Migrations are additive and all older users are assigned `default`. To stop reconciliation without losing state, set `workflows.scheduler.enabled=false`; jobs already submitted to Kubernetes continue independently. Re-enable to recover persisted runs. Disabling the scheduler also pauses application of queued cancel actions; leave it enabled until requested cancellations finish. Do not run an older backend concurrently with the new scheduler during rollback.
 
 ```bash
-docker build -t spark-control-center:1.5.0 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.0 .
+docker build -t spark-control-center:1.5.1 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.1 .
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace \
   -f charts/spark-control-center/examples/values-production.yaml \

@@ -1,20 +1,20 @@
-# Object storage plugin (1.5.0)
+# Object storage plugin (1.5.1)
 
 An optional, independently deployed stateless service, not an embedded MinIO Console. It is disabled by default, creates no plugin resources when disabled and requires no storage credentials.
 
 ## Build and deploy
 
 ```bash
-docker build -t spark-control-center:1.5.0 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.0 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.0 .
+docker build -t spark-control-center:1.5.1 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.1 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.1 .
 helm package charts/spark-control-center
 
 # First deployment only: export the production template; preserve existing environment values.
-helm show values ./spark-control-center-1.5.0.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.1.tgz > values-production.local.yaml
 # Adapt images, endpoints, bucket, authentication, database and bootstrap grants in that file.
 # Tag and push all three images to your own registry if needed.
-helm upgrade --install spark-console ./spark-control-center-1.5.0.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.5.1.tgz \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
 ```
@@ -68,7 +68,9 @@ Replace project numbers, pool/provider and audiences. For impersonation use the 
 
 ## Browsing and authorization
 
-Administrators manage user grants in Object storage → Prefix permissions. Administrators require explicit data grants too and can delegate only their own prefixes/actions to active users in the same tenant. Viewer file actions are determined by explicit grants, including upload/edit/delete/copy when authorized; only administrators can manage grants. Tenant module access must also be enabled. Grants cannot bypass a disabled tenant storage policy. An empty prefix grants the entire bucket and requires confirmation; `team/a/` never matches `team/ab/`.
+Administrators manage user grants in Object storage → Prefix permissions. The user selector lists active accounts across tenants and shows their tenant names. Accounts whose tenant has disabled object storage remain visible but cannot receive new grants until that permission is enabled. Administrators require explicit data grants too and can delegate only their own bucket/prefix/actions. Grants are bound to the recipient's actual tenant, not the administrator's tenant. Viewer file actions are determined by explicit grants, including upload/edit/delete/copy when authorized; only administrators can manage grants. Data access still requires the recipient's tenant module permission and matching personal grants. An empty prefix grants the entire bucket and requires confirmation; `team/a/` never matches `team/ab/`.
+
+Tenant changes do not carry grants to the new tenant. Review and grant access for the new tenant explicitly; obsolete grants can be revoked even after the recipient is disabled or moved. Bootstrap grants remain one-time grants for their configured tenant, with revoked grants preserved across restarts. The periodic bootstrap reconciliation is separate from the user selector; refresh Prefix permissions after creating an account or changing tenant permissions rather than waiting for reconciliation.
 
 Only authorized roots are shown. Directories are object-key prefixes, not filesystem directories. Pages contain up to 100 entries by default; cursors are bound to identity, directory and current grants. Dot path segments, backslashes, control characters and keys above 1024 bytes are rejected. Unicode, spaces and percent signs retain their raw key semantics. Revocation affects new requests, not necessarily streams already in progress.
 
@@ -99,7 +101,7 @@ npm install
 npm test
 npm run build
 node scripts/object-storage-local-test.mjs
-QA_VERSION=1.5.0 node scripts/container-object-storage-smoke.mjs
+QA_VERSION=1.5.1 node scripts/container-object-storage-smoke.mjs
 node scripts/object-storage-helm-test.mjs
 ```
 

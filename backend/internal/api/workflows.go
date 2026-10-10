@@ -252,7 +252,8 @@ func (w *auditBuffer) Write(data []byte) (int, error) { return w.body.Write(data
 func (s *Server) auditMutations(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
-		tracked := strings.HasPrefix(path, "/v1/users") || path == "/v1/profile" || strings.HasPrefix(path, "/v1/alert-rules") || strings.HasPrefix(path, "/v1/alerts/") || strings.HasPrefix(path, "/v1/templates") || strings.HasSuffix(path, "/favorite")
+		// User/profile changes persist a semantic audit with the user mutation.
+		tracked := strings.HasPrefix(path, "/v1/alert-rules") || strings.HasPrefix(path, "/v1/alerts/") || strings.HasPrefix(path, "/v1/templates") || strings.HasSuffix(path, "/favorite")
 		if s.flows == nil || r.Method == "GET" || !tracked || strings.Contains(path, "/versions/") {
 			next.ServeHTTP(w, r)
 			return

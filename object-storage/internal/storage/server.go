@@ -721,37 +721,15 @@ func (s *Server) policies(w http.ResponseWriter, r *http.Request) {
 			out = append(out, g)
 		}
 	}
-	rows, e := s.Store.Pool.Query(r.Context(), `SELECT id,username,role FROM local_users WHERE tenant_id=$1 AND NOT disabled ORDER BY username LIMIT 2000`, u.User.Tenant)
-	if e != nil {
-		s.respond(w, nil, e)
-		return
-	}
-	defer rows.Close()
-	users := []map[string]string{}
-	for rows.Next() {
-		var id, name, role string
-		if e = rows.Scan(&id, &name, &role); e != nil {
-			s.respond(w, nil, e)
-			return
-		}
-		users = append(users, map[string]string{"id": id, "username": name, "role": role})
-	}
-	s.respond(w, map[string]any{"grants": out, "users": users}, rows.Err())
+	users, e := s.Store.PolicyUsers(r.Context())
+	s.respond(w, map[string]any{"grants": out, "users": users}, e)
 }
 func (s *Server) canManage(r *http.Request, g Grant) bool {
 	u := who(r)
-	if u.User.Role != "admin" || !ValidPrefix(g.Prefix) {
-		return false
-	}
 	if _, _, e := s.connection(g.Connection, g.Bucket); e != nil {
 		return false
 	}
-	for _, a := range g.Actions {
-		if !contains(Actions, a) || !Allows(u.User, u.Grants, g.Connection, g.Bucket, g.Prefix, a) {
-			return false
-		}
-	}
-	return len(g.Actions) > 0
+	return canDelegate(u.User, u.Grants, g)
 }
 func (s *Server) savePolicy(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -763,7 +741,6 @@ func (s *Server) savePolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g := body.Grant
-	g.Tenant = who(r).User.Tenant
 	g.ID = ""
 	if !s.canManage(r, g) {
 		s.respond(w, nil, fail(403, "access_denied"))
@@ -773,23 +750,12 @@ func (s *Server) savePolicy(w http.ResponseWriter, r *http.Request) {
 		s.respond(w, nil, fail(400, "root_confirmation_required"))
 		return
 	}
-	_, e := s.Store.Identity(r.Context(), g.UserID, g.Tenant)
-	if e != nil {
-		s.respond(w, nil, fail(400, "invalid_user"))
-		return
-	}
-	// Updating an existing grant must not remove broader rights outside the actor's scope.
-	all, e := s.Store.Grants(r.Context(), who(r).User, true)
+	target, e := s.Store.PolicyTarget(r.Context(), g.UserID)
 	if e != nil {
 		s.respond(w, nil, e)
 		return
 	}
-	for _, old := range all {
-		if old.UserID == g.UserID && old.Connection == g.Connection && old.Bucket == g.Bucket && old.Prefix == g.Prefix && !s.canManage(r, old) {
-			s.respond(w, nil, fail(403, "access_denied"))
-			return
-		}
-	}
+	g.Tenant = target.Tenant
 	e = s.Store.ChangeGrant(r.Context(), who(r).User, g, false)
 	s.respond(w, map[string]bool{"saved": e == nil}, e)
 }

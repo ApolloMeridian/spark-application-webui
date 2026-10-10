@@ -6,7 +6,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { ensureMinIOFixture } from "./minio-fixture.mjs";
 
-const version = process.env.QA_VERSION || "1.5.0";
+const version = process.env.QA_VERSION || "1.5.1";
 const minioImage = ensureMinIOFixture();
 const prefix = `spark-storage-container-${randomBytes(4).toString("hex")}`;
 const password = randomBytes(24).toString("hex");
@@ -542,15 +542,34 @@ try {
       password,
       role: "viewer",
       displayName: "Viewer",
-      tenantId: "admin",
+      tenantId: "viewer",
     }),
   );
+  const disabledPolicies = await api("/object-storage/policies");
+  assert.equal(
+    disabledPolicies.users.find((u) => u.id === viewer.id).storageEnabled,
+    false,
+  );
+  await api(
+    "/tenants/viewer",
+    "PATCH",
+    JSON.stringify({
+      name: "Viewer storage users",
+      permissions: { allNamespaces: true, objectStorage: true },
+    }),
+  );
+  const availablePolicies = await api("/object-storage/policies");
+  const target = availablePolicies.users.find((u) => u.id === viewer.id);
+  assert.equal(target.tenantId, "viewer");
+  assert.equal(target.tenantName, "Viewer storage users");
+  assert.equal(target.storageEnabled, true);
   await api(
     "/object-storage/policies",
     "POST",
     JSON.stringify({
       grant: {
         userId: viewer.id,
+        tenantId: "admin", // Must resolve the target identity rather than trust this field.
         connection: "minio",
         bucket: "spark-artifacts",
         prefix: "team/a/",
@@ -558,6 +577,29 @@ try {
       },
       confirmRoot: false,
     }),
+  );
+  const savedPolicy = (await api("/object-storage/policies")).grants.find(
+    (g) => g.userId === viewer.id,
+  );
+  assert.equal(savedPolicy.tenantId, "viewer");
+  await api(
+    `/users/${viewer.id}`,
+    "PATCH",
+    JSON.stringify({ tenantId: "default" }),
+  );
+  const tenantAudit = (await api("/audit")).find(
+    (a) =>
+      a.applicationName === "qa-viewer" && a.operation === "USER_TENANT_CHANGE",
+  );
+  assert(tenantAudit);
+  assert.equal(tenantAudit.operator, "qa-admin");
+  assert(tenantAudit.message.includes("Viewer storage users (viewer) ->"));
+  assert(tenantAudit.message.includes("(default)"));
+  assert(!tenantAudit.message.includes(password));
+  await api(
+    `/users/${viewer.id}`,
+    "PATCH",
+    JSON.stringify({ tenantId: "viewer" }),
   );
   const viewerLogin = await fetch(`${origin}/api/v1/auth/login`, {
     method: "POST",
@@ -656,6 +698,15 @@ try {
       { env: { ...process.env, QA_BASE_URL: origin }, timeout: 240000 },
     );
     console.log(tenantVisual.stdout.trim());
+    const auditVisual = await dockerAsync(
+      process.execPath,
+      [resolve("scripts/visual-qa-user-audit.mjs")],
+      {
+        env: { ...process.env, QA_BASE_URL: origin, QA_CORE_COOKIE: cookie },
+        timeout: 120000,
+      },
+    );
+    console.log(auditVisual.stdout.trim());
   }
   await api(
     `/object-storage/objects${obj("team/a/copied.yaml")}&version=${copied.version}`,

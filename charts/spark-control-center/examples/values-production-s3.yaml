@@ -8,7 +8,7 @@ objectStorage:
   enabled: true
   image:
     repository: spark-control-center-object-storage
-    tag: 1.5.0
+    tag: 1.5.1
     pullPolicy: IfNotPresent
   replicaCount: 1
   serviceAccount:
@@ -94,7 +94,7 @@ objectStorage:
 # Set all three image repositories to locations reachable by your cluster, or preload the images on all nodes.
 image:
   repository: spark-control-center
-  tag: 1.5.0
+  tag: 1.5.1
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 nameOverride: ""
@@ -210,7 +210,7 @@ backend:
   replicaCount: 1
   image:
     repository: spark-control-center-backend
-    tag: 1.5.0
+    tag: 1.5.1
     pullPolicy: IfNotPresent
   service:
     port: 8081

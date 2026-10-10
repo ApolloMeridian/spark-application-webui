@@ -69,7 +69,7 @@ export function AuditPage() {
       render: (v) => formatTimestamp(v),
     },
     {
-      title: t("application"),
+      title: en ? "Resource" : "资源",
       dataIndex: "applicationName",
       width: 240,
       ellipsis: true,
@@ -121,7 +121,19 @@ export function AuditPage() {
       ellipsis: true,
       render: (v) => v || "—",
     },
-    { title: t("message"), dataIndex: "message", width: 320, ellipsis: true },
+    {
+      title: t("message"),
+      dataIndex: "message",
+      width: 320,
+      render: (value: string) => (
+        <Typography.Paragraph
+          style={{ margin: 0 }}
+          ellipsis={{ rows: 3, expandable: true, tooltip: value }}
+        >
+          {value}
+        </Typography.Paragraph>
+      ),
+    },
   ];
   return (
     <>
@@ -146,9 +158,7 @@ export function AuditPage() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={
-              en
-                ? "Search application, reason or message"
-                : "搜索作业、原因或消息"
+              en ? "Search resource, reason or message" : "搜索资源、原因或消息"
             }
             aria-label={en ? "Search audit" : "搜索审计"}
           />
