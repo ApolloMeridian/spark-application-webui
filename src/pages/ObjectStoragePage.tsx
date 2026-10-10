@@ -393,7 +393,13 @@ export default function ObjectStoragePage() {
           "Prefix-authorized file access · independent stateless plugin",
         )}
         extra={
-          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={async () => {
+              await load();
+              if (tab === "permissions") await loadPolicies();
+            }}
+          >
             {text("刷新连接", "Refresh connections")}
           </Button>
         }
@@ -651,6 +657,7 @@ export default function ObjectStoragePage() {
                         <Button
                           type="primary"
                           onClick={() => {
+                            void loadPolicies();
                             grantForm.resetFields();
                             grantForm.setFieldsValue({
                               connection: connection?.id,

@@ -82,6 +82,27 @@ try {
       path: `.qa/user-tenant-audit-${width}.png`,
       fullPage: true,
     });
+    await page.goto(`${base}/object-storage`, {
+      waitUntil: "domcontentloaded",
+    });
+    await page
+      .getByRole("tab", { name: "Prefix permissions", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: /Refresh connections/ })
+      .click();
+    await page
+      .getByRole("button", { name: "Add or update grant", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("combobox").first().click();
+    await page
+      .getByText("qa-viewer (Viewer storage users)", { exact: true })
+      .waitFor();
+    await page
+      .getByText("qa-viewer (Viewer storage users)", { exact: true })
+      .click();
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     assert.deepEqual(errors, []);
     await context.close();
   }
