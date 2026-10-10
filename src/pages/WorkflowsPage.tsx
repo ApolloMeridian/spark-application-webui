@@ -1,3 +1,4 @@
+import { hasPermission } from '../permissions';
 import {
   ClockCircleOutlined,
   CopyOutlined,
@@ -92,7 +93,7 @@ export function WorkflowsPage() {
   const { locale } = useI18n();
   const en = locale === "en-US";
   const { session } = useAuth();
-  const admin = session?.role === "admin";
+  const admin = hasPermission(session, "workflowsWrite");
   const { message } = App.useApp();
   const location = useLocation();
   const navigate = useNavigate();

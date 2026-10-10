@@ -1,3 +1,4 @@
+import { hasPermission } from "../permissions";
 import {
   CopyOutlined,
   DeleteOutlined,
@@ -63,21 +64,23 @@ export function TemplatesPage() {
     setError("");
     try {
       setItems(
-        await operationsService.listTemplates(session?.role === "admin"),
+        await operationsService.listTemplates(
+          hasPermission(session, "templatesWrite"),
+        ),
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [session?.role]);
+  }, [session]);
   useEffect(() => {
     void load();
     const state = location.state as {
       manifest?: string;
       namespace?: string;
     } | null;
-    if (state?.manifest && session?.role === "admin") {
+    if (state?.manifest && hasPermission(session, "templatesWrite")) {
       try {
         setEditing({
           name: "",
@@ -90,7 +93,7 @@ export function TemplatesPage() {
         setError(e instanceof Error ? e.message : String(e));
       }
     }
-  }, [load, location.state, session?.role]);
+  }, [load, location.state, session]);
   const save = async () => {
     if (!editing) return;
     setSaving(true);
@@ -159,7 +162,7 @@ export function TemplatesPage() {
             : "支持版本记录和参数表单的 SparkApplication YAML，不保存 Secret 明文。"
         }
         extra={
-          session?.role === "admin" && (
+          hasPermission(session, "templatesWrite") && (
             <Button
               type="primary"
               icon={<FileAddOutlined />}
@@ -239,7 +242,11 @@ export function TemplatesPage() {
                   <Button
                     size="small"
                     icon={<PlayCircleOutlined />}
-                    disabled={row.disabled || session?.role !== "admin"}
+                    disabled={
+                      row.disabled ||
+                      !hasPermission(session, "templatesWrite") ||
+                      !hasPermission(session, "submit")
+                    }
                     onClick={() => {
                       setRendering(row);
                       setValues(
@@ -251,7 +258,7 @@ export function TemplatesPage() {
                   >
                     {en ? "Use" : "使用"}
                   </Button>
-                  {session?.role === "admin" && (
+                  {hasPermission(session, "templatesWrite") && (
                     <>
                       <Button
                         size="small"
@@ -490,7 +497,7 @@ export function TemplatesPage() {
                   <Button size="small" onClick={() => setViewingVersion(v)}>
                     {en ? "View YAML" : "查看 YAML"}
                   </Button>
-                  {session?.role === "admin" && history && (
+                  {hasPermission(session, "templatesWrite") && history && (
                     <>
                       <Popconfirm
                         title={en ? "Restore this version?" : "回溯此版本？"}
@@ -539,7 +546,9 @@ export function TemplatesPage() {
         onCancel={() => setViewingVersion(undefined)}
         title={`${history?.name || ""} · ${en ? "Viewing version" : "正在查看版本"} v${viewingVersion?.version}${viewingVersion?.version === history?.version ? (en ? " (current)" : "（当前）") : ""}`}
         footer={
-          session?.role === "admin" && history && viewingVersion ? (
+          hasPermission(session, "templatesWrite") &&
+          history &&
+          viewingVersion ? (
             <Space>
               <Button danger disabled>
                 {en ? "Delete this version" : "删除此版本"}

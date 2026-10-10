@@ -1,0 +1,326 @@
+# Complete single-file production example: frontend, backend, OIDC, PostgreSQL, workflows and S3/MinIO.
+# Copy this file to values-production.local.yaml, adapt endpoints/identifiers and use only one -f argument.
+# Secrets and referenced ConfigMaps must already exist in the release namespace.
+# No credentials belong in this file. Reference existing Kubernetes Secrets.
+
+# Optional stateless plugin. Set enabled=false to disable it without changing core integrations.
+objectStorage:
+  enabled: true
+  image:
+    repository: spark-control-center-object-storage
+    tag: 1.5.0
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  # Shared signing Secret: at least 32 bytes; same key is used by the backend and plugin.
+  internalAuth:
+    existingSecret: spark-console-storage-signing
+    signingKeyKey: signing-key
+  # Empty existingSecret reuses the core DB credentials. Plugin must access the same local_users identity table.
+  database:
+    existingSecret: ""
+    dsnKey: dsn
+  limits:
+    textMaxBytes: 1048576
+    maxUploadBytes: 1073741824
+    maxDownloadBytes: 1073741824
+    partSizeBytes: 8388608
+    maxConcurrentTransfers: 4
+    requestsPerMinute: 600
+    transferTimeoutSeconds: 600
+  audit:
+    retentionDays: 30
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 256Mi
+  # Default egress is a PORT allowlist, not a destination allowlist. Adapt for your CNI/DB/MinIO.
+  networkPolicy:
+    enabled: false
+    egress:
+      - ports:
+          - protocol: UDP
+            port: 53
+          - protocol: TCP
+            port: 53
+      - ports:
+          - protocol: TCP
+            port: 80
+          - protocol: TCP
+            port: 443
+          - protocol: TCP
+            port: 5432
+          - protocol: TCP
+            port: 9000
+  # Replace the MinIO endpoint/buckets with existing resources. No bucket is created by the chart.
+  connections:
+    - id: minio
+      name: MinIO
+      provider: s3
+      buckets:
+        - spark-artifacts
+      s3:
+        endpoint: http://minio.storage.svc:9000
+        region: us-east-1
+        forcePathStyle: true
+        # Enable writes only after verifying conditional PutObject/CompleteMultipartUpload support.
+        conditionalWrites: true
+        credentialsSecret: spark-console-storage-s3
+        accessKeyKey: access-key
+        secretKeyKey: secret-key
+        caConfigMap: ""
+  # One-time grants. Match an actual OIDC administrator username and persistent tenant ID. Revocations survive restart.
+  bootstrapGrants:
+    - username: admin
+      tenantId: admin
+      connection: minio
+      bucket: spark-artifacts
+      prefix: spark/
+      actions:
+        - list
+        - read
+        - download
+        - upload
+        - edit
+        - delete
+        - copy-source
+        - copy-destination
+# Set all three image repositories to locations reachable by your cluster, or preload the images on all nodes.
+image:
+  repository: spark-control-center
+  tag: 1.5.0
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+replicaCount: 1
+runtimeConfig:
+  appName: Spark Control Center
+  # Empty uses the browser timezone; set an IANA timezone to override.
+  timeZone: ""
+  dataMode: api
+  api:
+    baseUrl: /api
+    requestTimeoutMs: 15000
+  auth:
+    mode: oidc
+  cluster:
+    name: kubernetes
+    namespaces:
+      - spark
+  dashboard:
+    refreshIntervalSeconds: 10
+    defaultHistoryDays: 7
+  historyServer:
+    enabled: true
+    baseUrl: https://spark-history.example.com/history
+  features:
+    kill: true
+    audit: true
+    sparkUi: true
+    submit: true
+    executorLogs: true
+    templates: true
+    batchOperations: true
+    alerts: true
+apiProxy:
+  enabled: true
+  upstream: ""
+  connectTimeoutSeconds: 5
+  readTimeoutSeconds: 60
+serviceAccount:
+  create: true
+  automount: false
+  annotations: {}
+  name: ""
+podAnnotations: {}
+podLabels: {}
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 101
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+ingress:
+  enabled: true
+  className: nginx
+  # These body/streaming settings target ingress-nginx. Adapt for other controllers and timeout values.
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 17m
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+  hosts:
+    - host: spark-console.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  # Configure a TLS Secret unless ingress-nginx already serves a valid default/wildcard certificate.
+  tls: []
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 15
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 10
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+pdb:
+  enabled: false
+  minAvailable: 1
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+backend:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: spark-control-center-backend
+    tag: 1.5.0
+    pullPolicy: IfNotPresent
+  service:
+    port: 8081
+  sparkApplicationAPIVersion: sparkoperator.k8s.io/v1beta2
+  auth:
+    sessionTTL: 8h
+    bcryptCost: 12
+    # Unused with auth.mode=oidc. For local login configure an existing password Secret; never add a plaintext password.
+    initialAdmin:
+      username: admin
+      displayName: Initial Administrator
+      existingSecret: ""
+      passwordKey: password
+      createSecret: false
+      password: ""
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  podAnnotations: {}
+  extraEnv: []
+  extraVolumes: []
+  extraVolumeMounts: []
+prometheus:
+  url: http://prometheus-server.prometheus.svc:80
+  queryTimeout: 15s
+  lookback: 1h
+  queryStep: 15s
+  cpuRateWindow: 1m
+loki:
+  enabled: true
+  url: http://loki-gateway.loki.svc.cluster.local
+  queryTimeout: 15s
+  maxEntries: 5000
+alerts:
+  evaluationInterval: 1m
+  webhook:
+    enabled: false
+    url: ""
+    timeout: 10s
+# Existing PostgreSQL. This chart does not create the database/PVC. Match its TLS configuration.
+database:
+  host: postgresql.database.svc.cluster.local
+  port: 5432
+  name: spark_console_db
+  sslMode: disable
+  maxOpenConnections: 20
+  credentials:
+    username: spark_console
+    existingSecret: spark-postgres-secret
+    usernameKey: POSTGRES_USER
+    passwordKey: POSTGRES_PASSWORD
+    create: false
+    password: ""
+# Single authoritative OIDC provider configuration. Match the callback URI exactly in Keycloak.
+oidc:
+  enabled: true
+  providerName: Keycloak
+  issuerURL: https://idp.example.com/realms/platform
+  clientID: spark-control-center
+  scopes:
+    - openid
+    - profile
+    - email
+    - groups
+  usernameClaim: preferred_username
+  groupsClaim: groups
+  adminGroups:
+    - spark-console-admins
+  autoCreate: true
+  redirectURL: https://spark-console.example.com/api/v1/auth/oidc/callback
+  stateTTL: 10m
+  # ConfigMap must exist in the release namespace; set existingConfigMap empty for a publicly trusted issuer.
+  ca:
+    existingConfigMap: oidc-ca
+    key: ca.crt
+    mountPath: /etc/spark-control-center/oidc-ca/ca.crt
+  caFile: ""
+oidcSecret:
+  existingSecret: spark-console-oidc
+  clientSecretKey: client-secret
+  create: false
+  clientSecret: ""
+rbac:
+  create: true
+  clusterWide: false
+  namespaces:
+    - spark
+networkPolicy:
+  enabled: false
+  ingressNamespaceSelector: {}
+  additionalEgress: []
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+workflows:
+  enabled: true
+  timeZone: UTC
+  maxNodes: 50
+  scheduler:
+    enabled: true
+    scanInterval: 5s
+    maxActiveRuns: 20
+    maxActiveTasks: 50
+    maxCatchupRuns: 20

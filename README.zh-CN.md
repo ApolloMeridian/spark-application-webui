@@ -51,6 +51,7 @@ Spark Control Center 是面向 Kubernetes 上 Apache Spark 作业的运维控制
 - [模板与告警](docs/zh-CN/TEMPLATES-AND-ALERTS.md)：YAML 参数、版本管理和诊断规则。
 - [工作流与调度](docs/zh-CN/WORKFLOWS.md)：租户、任务依赖、Cron、补数和持久化。
 - [安全策略](docs/zh-CN/SECURITY.md)：漏洞报告与部署责任。
+- [对象存储](docs/zh-CN/OBJECT-STORAGE.md)：可选 S3/MinIO、GCS WIF 插件、目录权限与本地验证。
 
 ## 技术架构
 
@@ -70,7 +71,7 @@ npm ci
 npm run dev
 ```
 
-默认配置使用浏览器本地 Mock 数据和 Mock 登录。
+本机 `npm run dev` 使用浏览器本地 Mock 数据和 Mock 登录；Helm 默认配置使用真实 API 与 PostgreSQL 登录。
 
 运行前端验证：
 
@@ -92,28 +93,30 @@ go vet ./...
 使用不含仓库前缀的名称构建：
 
 ```bash
-docker build -t spark-control-center:1.4.2 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.2 .
+docker build -t spark-control-center:1.5.0 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.0 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.0 .
 ```
 
-GitHub `v1.4.2` Release 提供可由 Docker 直接载入的镜像 tar 文件和打包后的 Helm Chart：
+[Releases](https://github.com/ApolloMeridian/spark-application-webui/releases) 包含三个镜像 TAR 和一个 Helm TGZ，不附带校验文件。镜像名不包含私有仓库前缀；对象存储镜像始终包含在发布附件中，插件默认关闭。
 
 ```bash
-docker load -i spark-control-center-1.4.2.tar
-docker load -i spark-control-center-backend-1.4.2.tar
+docker load -i spark-control-center-1.5.0.tar
+docker load -i spark-control-center-backend-1.5.0.tar
+docker load -i spark-control-center-object-storage-1.5.0.tar
 ```
 
 ## Helm 部署
 
-默认 values 运行 Mock 前端。真实部署时请复制并修改仅包含占位信息的生产示例：
+Chart 默认 values 已是完整生产模板，启用真实 API 与 PostgreSQL 登录；对象存储和 OIDC 默认关闭。修改端点和已有 Secret 引用后，仅需一个 values 文件。Mock 模式需显式使用其专用示例：
 
 ```bash
-cp charts/spark-control-center/examples/values-production.yaml values-production.yaml
+helm show values ./spark-control-center-1.5.0.tgz > values-production.local.yaml
 
-helm upgrade --install spark-console ./charts/spark-control-center \
+helm upgrade --install spark-console ./spark-control-center-1.5.0.tgz \
   --namespace spark-console \
   --create-namespace \
-  -f values-production.yaml
+  -f values-production.local.yaml
 ```
 
 请在私有 values 文件中配置镜像仓库、监控命名空间、PostgreSQL Secret 引用、Prometheus/Loki 地址、Ingress 和可选 OIDC。不要向代码库提交密码、Client Secret、访问令牌、证书、kubeconfig 或生产环境专属 values。
@@ -122,8 +125,10 @@ helm upgrade --install spark-console ./charts/spark-control-center \
 
 ## 权限模型
 
-- `viewer`：查看已授权命名空间中的作业、指标、事件、日志、YAML 和 Spark UI，并管理自己的资料。
-- `admin`：拥有 viewer 权限，并可在已授权命名空间中提交、终止、删除作业，以及管理审计和用户。管理员可为用户分配命名空间；留空时为兼容现有部署，表示允许全部已配置命名空间。
+- 新 `viewer` 账户默认进入最小权限 `viewer` 租户，仅开放总览、作业、日志和 Spark UI。
+- 新 `admin` 账户默认进入全权限 `admin` 租户，并可管理用户、租户和审计。
+- 管理员按租户配置模块只读/管理、命名空间与作业操作权限；普通账户可获得明确授予的操作权限。对象存储还需目录级授权。
+- 升级保留现有用户与项目的租户归属；历史租户未明确配置前保留原权限。[权限说明](docs/zh-CN/WORKFLOWS.md)。
 
 所有高权限操作都会由后端独立校验，前端隐藏按钮不作为授权依据。
 

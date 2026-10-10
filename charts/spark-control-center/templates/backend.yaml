@@ -25,7 +25,7 @@ spec:
         {{- include "spark-control-center.backendSelectorLabels" . | nindent 8 }}
       {{- with .Values.backend.podAnnotations }}
       annotations:
-        {{- toYaml . | nindent 8 }}
+        {{- include "spark-control-center.annotations" . | nindent 8 }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "spark-control-center.backendServiceAccountName" . }}
@@ -51,6 +51,17 @@ spec:
             - name: http
               containerPort: {{ .Values.backend.service.port }}
           env:
+            {{- if .Values.objectStorage.enabled }}
+            - name: OBJECT_STORAGE_ENABLED
+              value: "true"
+            - name: OBJECT_STORAGE_URL
+              value: "http://{{ include "spark-control-center.fullname" . }}-object-storage:8082"
+            - name: OBJECT_STORAGE_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.objectStorage.internalAuth.existingSecret | quote }}
+                  key: {{ .Values.objectStorage.internalAuth.signingKeyKey | quote }}
+            {{- end }}
             - name: HTTP_ADDR
               value: ":{{ .Values.backend.service.port }}"
             - name: KUBERNETES_CLUSTER_NAME

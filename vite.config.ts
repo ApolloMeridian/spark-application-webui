@@ -8,5 +8,7 @@ export default defineConfig({
     setupFiles: './src/test/setup.ts',
     css: true,
     globals: true,
+    // Bound jsdom workers so UI tests remain stable alongside local Docker services.
+    maxWorkers: 2,
   },
 });

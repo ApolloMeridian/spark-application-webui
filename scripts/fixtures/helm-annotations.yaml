@@ -1,0 +1,28 @@
+# YAML 1.1 keywords and numbers must stay strings in Kubernetes annotations.
+ingress:
+  annotations:
+    qa.example/off: "off"
+    qa.example/on: "on"
+    qa.example/true: "true"
+    qa.example/false: "false"
+    qa.example/number: "600"
+    qa.example/yes: "yes"
+    qa.example/no: "no"
+service:
+  annotations:
+    qa.example/value: "false"
+serviceAccount:
+  annotations:
+    qa.example/value: "on"
+podAnnotations:
+  qa.example/value: "off"
+backend:
+  podAnnotations:
+    qa.example/value: "true"
+  serviceAccount:
+    annotations:
+      qa.example/value: "600"
+objectStorage:
+  serviceAccount:
+    annotations:
+      qa.example/value: "yes"

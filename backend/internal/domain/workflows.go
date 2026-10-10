@@ -1,9 +1,10 @@
 package domain
 
 type Tenant struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	CreatedAt string `json:"createdAt"`
+	Permissions *TenantPermissions `json:"permissions,omitempty"`
+	ID          string             `json:"id"`
+	Name        string             `json:"name"`
+	CreatedAt   string             `json:"createdAt"`
 }
 type Project struct {
 	ID          string `json:"id"`

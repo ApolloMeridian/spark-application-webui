@@ -3,13 +3,13 @@
 
 image:
   repository: spark-control-center
-  tag: "1.4.2"
+  tag: "1.5.0"
   pullPolicy: IfNotPresent
 
 replicaCount: 1
 
 runtimeConfig:
-  timeZone: Etc/UTC
+  timeZone: ""
   dataMode: api
   api:
     baseUrl: /api
@@ -46,7 +46,7 @@ backend:
   replicaCount: 1
   image:
     repository: spark-control-center-backend
-    tag: "1.4.2"
+    tag: "1.5.0"
     pullPolicy: IfNotPresent
   service:
     port: 8081
@@ -144,7 +144,7 @@ autoscaling:
   enabled: false
 workflows:
   enabled: true
-  timeZone: Asia/Shanghai
+  timeZone: UTC
   maxNodes: 50
   scheduler:
     enabled: true

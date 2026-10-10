@@ -10,17 +10,18 @@ const (
 )
 
 type User struct {
-	ID          string   `json:"id"`
-	Username    string   `json:"username"`
-	DisplayName string   `json:"displayName"`
-	Email       string   `json:"email"`
-	Role        UserRole `json:"role"`
-	Namespaces  []string `json:"namespaces"`
-	TenantID    string   `json:"tenantId"`
-	AuthSource  string   `json:"authSource"`
-	Disabled    bool     `json:"disabled"`
-	CreatedAt   string   `json:"createdAt"`
-	UpdatedAt   string   `json:"updatedAt"`
+	Permissions *TenantPermissions `json:"permissions,omitempty"`
+	ID          string             `json:"id"`
+	Username    string             `json:"username"`
+	DisplayName string             `json:"displayName"`
+	Email       string             `json:"email"`
+	Role        UserRole           `json:"role"`
+	Namespaces  []string           `json:"namespaces"`
+	TenantID    string             `json:"tenantId"`
+	AuthSource  string             `json:"authSource"`
+	Disabled    bool               `json:"disabled"`
+	CreatedAt   string             `json:"createdAt"`
+	UpdatedAt   string             `json:"updatedAt"`
 }
 
 type ApplicationDiagnostic struct {

@@ -6,6 +6,7 @@ import {
 } from "@ant-design/icons";
 import {
   App,
+  Alert,
   Button,
   Card,
   Form,
@@ -29,6 +30,8 @@ import { userService } from "../userService";
 import { formatTimestamp } from "../utils";
 import { runtimeConfig } from "../runtimeConfig";
 import { workflowService, type Tenant } from "../workflows";
+import { minimalPermissions, type TenantPermissions } from "../permissions";
+import { apiUrl } from "../runtimeConfig";
 
 type UserForm = CreateUserInput & { disabled: boolean };
 
@@ -72,7 +75,7 @@ export function UsersPage() {
     form.resetFields();
     form.setFieldsValue({
       role: "viewer",
-      tenantId: "default",
+      tenantId: "viewer",
       namespaces: [],
       disabled: false,
     });
@@ -188,8 +191,12 @@ export function UsersPage() {
       title: t("namespaceAccess"),
       dataIndex: "namespaces",
       width: 240,
-      render: (value: string[]) =>
-        value?.length ? (
+      render: (assigned: string[], row: UserAccount) => {
+        const p = tenants.find((x) => x.id === row.tenantId)?.permissions;
+        const value = p ? (p.allNamespaces ? [] : p.namespaces) : assigned;
+        if (p && !p.allNamespaces && !value?.length)
+          return <Tag>{en ? "No namespace access" : "无命名空间权限"}</Tag>;
+        return value?.length ? (
           <Space size={[4, 4]} wrap>
             {value.map((namespace) => (
               <Tag key={namespace}>{namespace}</Tag>
@@ -197,7 +204,8 @@ export function UsersPage() {
           </Space>
         ) : (
           <Tag color="blue">{t("allNamespaces")}</Tag>
-        ),
+        );
+      },
     },
     {
       title: t("accountStatus"),
@@ -306,6 +314,13 @@ export function UsersPage() {
           </Form.Item>
           <Form.Item name="role" label={t("role")} rules={[{ required: true }]}>
             <Select
+              onChange={(role) => {
+                if (!editing)
+                  form.setFieldValue(
+                    "tenantId",
+                    role === "admin" ? "admin" : "viewer",
+                  );
+              }}
               disabled={
                 editing?.id === session?.id || editing?.authSource === "oidc"
               }
@@ -329,21 +344,16 @@ export function UsersPage() {
               options={tenants.map((x) => ({ value: x.id, label: x.name }))}
             />
           </Form.Item>
-          <Form.Item
-            name="namespaces"
-            label={t("namespaceAccess")}
-            extra={t("namespaceAccessHint")}
-          >
-            <Select
-              mode="multiple"
-              allowClear
-              options={runtimeConfig.cluster.namespaces.map((value) => ({
-                value,
-                label: value,
-              }))}
-              placeholder={t("allNamespaces")}
-            />
-          </Form.Item>
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={
+              en
+                ? "Module and namespace access are configured in tenant management. Existing legacy tenant accounts retain their previous access until the tenant policy is configured."
+                : "模块和命名空间权限在租户管理中统一配置。历史租户未配置策略前，现有账户保留原有权限。"
+            }
+          />
           {editing && (
             <Form.Item
               name="disabled"
@@ -379,7 +389,12 @@ export function UsersPage() {
       >
         <Button
           icon={<PlusOutlined />}
-          onClick={() => setEditingTenant({ name: "" })}
+          onClick={() =>
+            setEditingTenant({
+              name: "",
+              permissions: { ...minimalPermissions, allNamespaces: false },
+            })
+          }
         >
           {en ? "New tenant" : "创建租户"}
         </Button>
@@ -395,8 +410,13 @@ export function UsersPage() {
               render: (_, row: Tenant) => (
                 <Button
                   size="small"
-                  disabled={row.id === "default"}
-                  onClick={() => setEditingTenant(row)}
+                  disabled={row.id === "admin"}
+                  onClick={() =>
+                    setEditingTenant({
+                      ...row,
+                      permissions: row.permissions || { ...minimalPermissions },
+                    })
+                  }
                 >
                   {t("editUser")}
                 </Button>
@@ -407,7 +427,15 @@ export function UsersPage() {
       </Modal>
       <Modal
         open={Boolean(editingTenant)}
+        width={680}
         title={en ? "Save tenant" : "保存租户"}
+        styles={{
+          body: {
+            maxHeight: "calc(100vh - 240px)",
+            overflowY: "auto",
+            paddingRight: 8,
+          },
+        }}
         onCancel={() => setEditingTenant(undefined)}
         onOk={async () => {
           if (!editingTenant) return;
@@ -415,6 +443,13 @@ export function UsersPage() {
             await workflowService.saveTenant(editingTenant);
             setEditingTenant(undefined);
             await loadTenants();
+            if (runtimeConfig.auth.mode !== "mock") {
+              const response = await fetch(
+                apiUrl(runtimeConfig.auth.oidc.sessionPath),
+                { credentials: "include" },
+              );
+              if (response.ok) updateSession(await response.json());
+            }
           } catch (error) {
             message.error(String(error));
           }
@@ -428,7 +463,116 @@ export function UsersPage() {
             setEditingTenant({ ...editingTenant, name: e.target.value })
           }
         />
+        <Typography.Paragraph type="secondary" style={{ marginTop: 16 }}>
+          {en
+            ? "Permissions apply to all accounts in this tenant. Administrators retain account and tenant management access, but data operations follow the tenant policy. Empty namespace selection with All disabled grants no namespace access."
+            : "权限统一适用于此租户内所有账户。管理员保留用户与租户管理权限，数据操作仍受租户策略约束。关闭全部命名空间且未选择任何命名空间时，不授予命名空间访问权限。"}
+        </Typography.Paragraph>
+        <TenantPermissionEditor
+          en={en}
+          value={editingTenant?.permissions || minimalPermissions}
+          onChange={(permissions) =>
+            setEditingTenant({ ...editingTenant, permissions })
+          }
+        />
       </Modal>
     </>
+  );
+}
+
+function TenantPermissionEditor({
+  en,
+  value,
+  onChange,
+}: {
+  en: boolean;
+  value: TenantPermissions;
+  onChange: (value: TenantPermissions) => void;
+}) {
+  const change = (patch: Partial<TenantPermissions>) =>
+    onChange({ ...value, ...patch });
+  const access = (
+    read: "templatesRead" | "workflowsRead" | "alertsRead",
+    write: "templatesWrite" | "workflowsWrite" | "alertsWrite",
+    label: string,
+  ) => (
+    <Form.Item label={label}>
+      <Select
+        value={!value[read] ? "none" : value[write] ? "write" : "read"}
+        options={[
+          { value: "none", label: en ? "No access" : "不可访问" },
+          { value: "read", label: en ? "Read only" : "只读" },
+          { value: "write", label: en ? "Read and manage" : "查看与管理" },
+        ]}
+        onChange={(level) =>
+          change({ [read]: level !== "none", [write]: level === "write" })
+        }
+      />
+    </Form.Item>
+  );
+  return (
+    <Form layout="vertical">
+      <Form.Item
+        label={en ? "All configured namespaces" : "全部已配置命名空间"}
+      >
+        <Switch
+          checked={value.allNamespaces}
+          onChange={(allNamespaces) => change({ allNamespaces })}
+        />
+      </Form.Item>
+      {!value.allNamespaces && (
+        <Form.Item label={en ? "Allowed namespaces" : "允许访问的命名空间"}>
+          <Select
+            mode="multiple"
+            allowClear
+            value={value.namespaces}
+            options={runtimeConfig.cluster.namespaces.map((ns) => ({
+              value: ns,
+              label: ns,
+            }))}
+            onChange={(namespaces) => change({ namespaces })}
+          />
+        </Form.Item>
+      )}
+      {access(
+        "templatesRead",
+        "templatesWrite",
+        en
+          ? "Job templates (including Save as template)"
+          : "作业模板（含保存为模板）",
+      )}
+      {access(
+        "workflowsRead",
+        "workflowsWrite",
+        en
+          ? "Projects, workflows, schedules and execution history"
+          : "项目、工作流、定时调度与执行历史",
+      )}
+      {access(
+        "alertsRead",
+        "alertsWrite",
+        en ? "Alert center and rules" : "告警中心与规则",
+      )}
+      {(["submit", "kill", "delete", "objectStorage"] as const).map((key) => (
+        <Form.Item
+          key={key}
+          label={
+            {
+              submit: en ? "Submit Spark applications" : "提交 Spark 作业",
+              kill: en ? "Terminate Spark applications" : "终止 Spark 作业",
+              delete: en ? "Delete Spark records" : "删除 Spark 作业记录",
+              objectStorage: en
+                ? "Object storage (prefix grants are also required)"
+                : "对象存储（仍需目录授权）",
+            }[key]
+          }
+        >
+          <Switch
+            checked={value[key]}
+            onChange={(enabled) => change({ [key]: enabled })}
+          />
+        </Form.Item>
+      ))}
+    </Form>
   );
 }

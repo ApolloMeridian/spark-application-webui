@@ -1,12 +1,14 @@
-# 工作流编排与定时调度（1.4.2）
+# 工作流编排与定时调度（1.5.0）
 
 首版仅支持 SparkApplication 节点，不执行任意 Bash、SQL 或 HTTP 脚本。
 
 ## 租户与项目
 
-已有用户及 OIDC 自动创建的用户默认进入 `default` 租户。管理员在“用户管理 → 租户管理”创建/编辑租户，在用户编辑窗口绑定租户；OIDC 再次登录不会覆盖租户绑定。项目 → 工作流 → 任务按所属租户强制隔离，管理员也不绕过此边界。跨租户管理需显式切换自身绑定或使用对应租户的管理员。
+新管理员账户默认进入内置 `admin` 租户（全部模块权限），新普通账户默认进入 `viewer` 租户（仅运行总览、Spark 作业）。升级保留已有账户绑定及项目所属租户，包括 `default`，不自动迁移历史项目。尚未设置策略的历史租户保留原有效权限，直到管理员明确配置租户策略。OIDC 再次登录保留自定义租户绑定；仍处于角色默认内置租户的账户在 OIDC 组映射角色变化时，切换至对应默认租户。
 
-普通用户只读其租户与授权命名空间内的配置和执行历史，可以打开作业详情、日志和 Spark UI。跨命名空间 DAG 采用整体权限检查。模板仍为按命名空间授权的共享库，外部 kubectl 作业沿用命名空间权限。
+管理员在“用户管理 → 租户管理”统一配置命名空间、作业提交/终止/删除、作业模板、工作流/调度/执行历史（不可访问/只读/管理）、告警（不可访问/只读/管理）和对象存储入口。策略适用于租户所有账户；内置 `admin` 策略不可修改。管理员角色保留账户/租户管理及审计权限，但数据操作仍遵守租户策略与项目隔离。普通用户也可通过租户获得明确授予的操作权限。关闭全部命名空间且列表为空时，拒绝所有命名空间访问；“全部”仅限后端配置范围，不扩大 Kubernetes RBAC。
+
+工作流管理包含配置、执行、补数与运行控制。跨命名空间 DAG 采用整体权限检查。模板仍为按命名空间授权的共享库，外部 kubectl 作业沿用命名空间权限，工作流创建的作业还校验租户归属。策略修改在后续认证请求与调度检查中生效，不会自动终止已有 Spark 作业或中断正在传输的流。租户主动变更均写入操作审计。
 
 ## 配置和执行
 
@@ -69,8 +71,8 @@ workflows:
 前端入口从后端和工作流开关派生，纯前端 Mock 演示不模拟工作流。升级前备份 PostgreSQL，启动时增量迁移。关闭 scheduler 会暂停所有协调动作（包括排队中的终止），已提交 Kubernetes 作业仍继续运行；重新启用后恢复数据库状态。执行历史暂不自动清理。多副本必须共享同一数据库和 Kubernetes 上下文，回滚时不要让旧后端与新调度器同时运行。
 
 ```bash
-docker build -t spark-control-center:1.4.2 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.2 .
+docker build -t spark-control-center:1.5.0 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.0 .
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace \
   -f charts/spark-control-center/examples/values-production.yaml \

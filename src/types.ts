@@ -13,6 +13,7 @@ export type UserRole = 'viewer' | 'admin';
 export type Locale = 'zh-CN' | 'en-US';
 
 export interface UserAccount {
+  permissions?: import('./permissions').TenantPermissions;
 	 tenantId?: string;
   id: string;
   username: string;

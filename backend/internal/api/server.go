@@ -128,6 +128,7 @@ func New(cfg config.Config, applicationService ApplicationService, authService *
 	mux.HandleFunc("DELETE /v1/alert-rules/{id}", server.deleteAlertRule)
 	mux.HandleFunc("GET /v1/diagnostics/fingerprints", server.listFingerprints)
 	server.registerWorkflows(mux)
+	mux.HandleFunc("/v1/object-storage/{path...}", server.objectStorageProxy)
 	return server.middleware(server.sameOrigin(server.authenticate(server.auditMutations(mux))))
 }
 
@@ -419,7 +420,7 @@ func (s *Server) applicationMetrics(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) submitApplication(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
-	if !s.requireAdmin(w, principal) {
+	if !s.requirePermission(w, principal, "submit") {
 		return
 	}
 	if !s.requireNamespace(w, principal, r.PathValue("namespace")) {
@@ -447,7 +448,7 @@ func (s *Server) submitApplication(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) dryRunApplication(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
-	if !s.requireAdmin(w, principal) || !s.requireNamespace(w, principal, r.PathValue("namespace")) {
+	if !s.requirePermission(w, principal, "submit") || !s.requireNamespace(w, principal, r.PathValue("namespace")) {
 		return
 	}
 	var body struct {
@@ -468,7 +469,7 @@ func (s *Server) dryRunApplication(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) prepareApplication(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
-	if !s.requireAdmin(w, principal) || !s.requireNamespace(w, principal, r.PathValue("namespace")) {
+	if !s.requirePermission(w, principal, "submit") || !s.requireNamespace(w, principal, r.PathValue("namespace")) {
 		return
 	}
 	preview, err := s.service.PrepareApplication(r.Context(), r.PathValue("namespace"), r.PathValue("name"), r.URL.Query().Get("mode"))
@@ -628,7 +629,7 @@ func rewriteSparkUIHTML(data []byte, target *url.URL, externalPrefix string) []b
 
 func (s *Server) killApplication(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
-	if !s.requireAdmin(w, principal) {
+	if !s.requirePermission(w, principal, "kill") {
 		return
 	}
 	if !s.requireNamespace(w, principal, r.PathValue("namespace")) {
@@ -649,7 +650,7 @@ func (s *Server) killApplication(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteApplication(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
-	if !s.requireAdmin(w, principal) {
+	if !s.requirePermission(w, principal, "delete") {
 		return
 	}
 	if !s.requireNamespace(w, principal, r.PathValue("namespace")) {
@@ -895,7 +896,7 @@ func (s *Server) listTemplates(w http.ResponseWriter, r *http.Request) {
 	if value == nil {
 		return
 	}
-	items, err := value.ListTemplates(r.Context(), currentUser(r).Namespaces, currentUser(r).Role == domain.RoleAdmin && r.URL.Query().Get("includeDisabled") == "true")
+	items, err := value.ListTemplates(r.Context(), currentUser(r).Namespaces, currentUser(r).Can("templatesWrite") && r.URL.Query().Get("includeDisabled") == "true")
 	if err != nil {
 		s.writeServiceError(w, err)
 		return
@@ -919,7 +920,7 @@ func (s *Server) getTemplate(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) saveTemplate(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
-	if !s.requireAdmin(w, principal) {
+	if !s.requirePermission(w, principal, "templatesWrite") {
 		return
 	}
 	value := s.management(w)
@@ -959,7 +960,7 @@ func (s *Server) saveTemplate(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) deleteTemplate(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
-	if !s.requireAdmin(w, principal) {
+	if !s.requirePermission(w, principal, "templatesWrite") {
 		return
 	}
 	value := s.management(w)
@@ -982,7 +983,7 @@ func (s *Server) deleteTemplate(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) copyTemplate(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
-	if !s.requireAdmin(w, principal) {
+	if !s.requirePermission(w, principal, "templatesWrite") {
 		return
 	}
 	value := s.management(w)
@@ -1010,7 +1011,7 @@ func (s *Server) copyTemplate(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
-	if !s.requireAdmin(w, principal) {
+	if !s.requirePermission(w, principal, "templatesWrite") || !s.requirePermission(w, principal, "submit") {
 		return
 	}
 	value := s.management(w)
@@ -1092,6 +1093,9 @@ func (s *Server) decodeBatch(w http.ResponseWriter, r *http.Request, principal d
 		s.writeError(w, 400, fmt.Errorf("operation must be kill or delete"))
 		return body, false
 	}
+	if !s.requirePermission(w, principal, body.Operation) {
+		return body, false
+	}
 	if len(body.Items) == 0 || len(body.Items) > 50 {
 		s.writeError(w, 400, fmt.Errorf("batch must contain between 1 and 50 applications"))
 		return body, false
@@ -1116,9 +1120,6 @@ func (s *Server) decodeBatch(w http.ResponseWriter, r *http.Request, principal d
 }
 func (s *Server) batchPreview(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
-	if !s.requireAdmin(w, principal) {
-		return
-	}
 	body, ok := s.decodeBatch(w, r, principal)
 	if !ok {
 		return
@@ -1136,9 +1137,6 @@ func (s *Server) batchPreview(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) batchExecute(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
-	if !s.requireAdmin(w, principal) {
-		return
-	}
 	body, ok := s.decodeBatch(w, r, principal)
 	if !ok {
 		return
@@ -1169,7 +1167,7 @@ func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) updateAlert(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
-	if !s.requireAdmin(w, principal) {
+	if !s.requirePermission(w, principal, "alertsWrite") {
 		return
 	}
 	value := s.management(w)
@@ -1213,7 +1211,7 @@ func (s *Server) listAlertRules(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) saveAlertRule(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
-	if !s.requireAdmin(w, principal) {
+	if !s.requirePermission(w, principal, "alertsWrite") {
 		return
 	}
 	value := s.management(w)
@@ -1261,7 +1259,7 @@ func (s *Server) saveAlertRule(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) deleteAlertRule(w http.ResponseWriter, r *http.Request) {
 	principal := currentUser(r)
-	if !s.requireAdmin(w, principal) {
+	if !s.requirePermission(w, principal, "alertsWrite") {
 		return
 	}
 	value := s.management(w)
@@ -1307,7 +1305,7 @@ type principalContextKey struct{}
 
 func (s *Server) sameOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
 			if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
 				parsed, err := url.Parse(origin)
 				host := r.Host
@@ -1354,6 +1352,9 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 					return
 				}
 			}
+		}
+		if capability := requestCapability(r); capability != "" && !s.requirePermission(w, user, capability) {
+			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, user)))
 	})
@@ -1465,6 +1466,8 @@ type statusWriter struct {
 	status      int
 	wroteHeader bool
 }
+
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *statusWriter) WriteHeader(status int) {
 	w.status = status

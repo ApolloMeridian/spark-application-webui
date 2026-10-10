@@ -422,6 +422,9 @@ func (s *PostgresStore) BootstrapInitialAdmin(ctx context.Context, user domain.U
 	_, err = tx.Exec(ctx, `
 INSERT INTO local_users (id, username, username_normalized, display_name, email, role, namespaces, auth_source, password_hash, disabled, created_at, updated_at)
 VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::text[], '{}'::text[]),'local',$8,false,$9,$9)`, user.ID, user.Username, normalized, user.DisplayName, user.Email, user.Role, user.Namespaces, passwordHash, createdAt)
+	if err == nil {
+		_, err = tx.Exec(ctx, `UPDATE local_users SET tenant_id='admin' WHERE id=$1`, user.ID)
+	}
 	if isUniqueViolation(err) {
 		return localauth.ErrUsernameExists
 	}
@@ -465,7 +468,7 @@ FROM local_users WHERE id=$1`, id).Scan(&user.ID, &user.Username, &user.DisplayN
 		return domain.User{}, fmt.Errorf("query user: %w", err)
 	}
 	setUserTimes(&user, createdAt, updatedAt)
-	return user, nil
+	return s.ApplyTenantPermissions(ctx, user)
 }
 
 func (s *PostgresStore) ListUsers(ctx context.Context) ([]domain.User, error) {
@@ -662,8 +665,8 @@ FROM local_users WHERE oidc_issuer=$1 AND oidc_subject=$2 FOR UPDATE`, issuer, s
 			return domain.User{}, err
 		}
 		_, err = tx.Exec(ctx, `
-INSERT INTO local_users (id, username, username_normalized, display_name, email, role, namespaces, auth_source, oidc_issuer, oidc_subject, password_hash, disabled, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::text[], '{}'::text[]),'oidc',$8,$9,NULL,false,$10,$10)`, candidate.ID, candidate.Username, normalized, candidate.DisplayName, candidate.Email, candidate.Role, candidate.Namespaces, issuer, subject, createdAt)
+INSERT INTO local_users (id, username, username_normalized, display_name, email, role, namespaces, auth_source, oidc_issuer, oidc_subject, password_hash, disabled, created_at, updated_at, tenant_id)
+VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::text[], '{}'::text[]),'oidc',$8,$9,NULL,false,$10,$10,$11)`, candidate.ID, candidate.Username, normalized, candidate.DisplayName, candidate.Email, candidate.Role, candidate.Namespaces, issuer, subject, createdAt, domain.DefaultTenant(candidate.Role))
 		if isUniqueViolation(err) {
 			return domain.User{}, localauth.ErrUsernameExists
 		}
@@ -673,7 +676,7 @@ VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::text[], '{}'::text[]),'oidc',$8,$9,NULL,f
 		if err := tx.Commit(ctx); err != nil {
 			return domain.User{}, err
 		}
-		candidate.TenantID = "default"
+		candidate.TenantID = domain.DefaultTenant(candidate.Role)
 		return candidate, nil
 	}
 	if err != nil {
@@ -683,6 +686,9 @@ VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::text[], '{}'::text[]),'oidc',$8,$9,NULL,f
 	user.Username = candidate.Username
 	user.DisplayName = candidate.DisplayName
 	user.Email = candidate.Email
+	if user.Role != candidate.Role && user.TenantID == domain.DefaultTenant(user.Role) {
+		user.TenantID = domain.DefaultTenant(candidate.Role)
+	}
 	user.Role = candidate.Role
 	user.AuthSource = "oidc"
 	user.UpdatedAt = candidate.UpdatedAt
@@ -692,7 +698,7 @@ VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::text[], '{}'::text[]),'oidc',$8,$9,NULL,f
 	}
 	_, err = tx.Exec(ctx, `
 UPDATE local_users SET username=$2, username_normalized=$3, display_name=$4, email=$5, role=$6,
-auth_source='oidc', updated_at=$7 WHERE id=$1`, user.ID, user.Username, normalized, user.DisplayName, user.Email, user.Role, updatedAt)
+auth_source='oidc', updated_at=$7, tenant_id=$8 WHERE id=$1`, user.ID, user.Username, normalized, user.DisplayName, user.Email, user.Role, updatedAt, user.TenantID)
 	if isUniqueViolation(err) {
 		return domain.User{}, localauth.ErrUsernameExists
 	}

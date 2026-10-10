@@ -162,6 +162,11 @@ func (s *Service) LoginOIDC(ctx context.Context, identity OIDCIdentity) (domain.
 }
 
 func (s *Service) createSession(ctx context.Context, user domain.User) (domain.User, string, time.Time, error) {
+	var permissionErr error
+	user, permissionErr = s.permissions(ctx, user)
+	if permissionErr != nil {
+		return domain.User{}, "", time.Time{}, permissionErr
+	}
 	token, err := randomToken(32)
 	if err != nil {
 		return domain.User{}, "", time.Time{}, err
@@ -184,7 +189,17 @@ func (s *Service) Authenticate(ctx context.Context, token string) (domain.User, 
 		}
 		return domain.User{}, domain.UserSession{}, err
 	}
-	return user, session, nil
+	user, err = s.permissions(ctx, user)
+	return user, session, err
+}
+
+func (s *Service) permissions(ctx context.Context, user domain.User) (domain.User, error) {
+	if value, ok := s.store.(interface {
+		ApplyTenantPermissions(context.Context, domain.User) (domain.User, error)
+	}); ok {
+		return value.ApplyTenantPermissions(ctx, user)
+	}
+	return user, nil
 }
 
 func (s *Service) Logout(ctx context.Context, token string) error {
@@ -226,7 +241,7 @@ func (s *Service) CreateUser(ctx context.Context, actor domain.User, input Creat
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tenant := strings.TrimSpace(input.TenantID)
 	if tenant == "" {
-		tenant = "default"
+		tenant = domain.DefaultTenant(input.Role)
 	}
 	user := domain.User{ID: newID(), TenantID: tenant, Username: username, DisplayName: cleanDisplayName(input.DisplayName, username), Email: email, Role: input.Role, Namespaces: cleanNamespaces(input.Namespaces), AuthSource: "local", CreatedAt: now, UpdatedAt: now}
 	if err := s.store.CreateUser(ctx, user, normalized, string(hash)); err != nil {
@@ -267,7 +282,7 @@ func (s *Service) UpdateUser(ctx context.Context, actor domain.User, id string, 
 			return domain.User{}, err
 		}
 	}
-	return user, nil
+	return s.permissions(ctx, user)
 }
 
 func (s *Service) UpdateProfile(ctx context.Context, actor domain.User, input UpdateProfileInput) (domain.User, bool, error) {

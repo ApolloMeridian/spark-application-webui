@@ -243,6 +243,18 @@ func TestCrossOriginLoginIsRejected(t *testing.T) {
 		t.Fatalf("expected 403, got %d %s", recorder.Code, recorder.Body.String())
 	}
 }
+func TestCrossOriginStorageWritesAreRejected(t *testing.T) {
+	handler, _ := authenticatedHandler(t, domain.RoleAdmin)
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		r := httptest.NewRequest(method, "http://spark-console.local/v1/object-storage/text?connection=s3&bucket=bucket&key=file.txt", bytes.NewBufferString(`{}`))
+		r.Header.Set("Origin", "https://evil.example")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("%s cross-origin write accepted: %d", method, w.Code)
+		}
+	}
+}
 
 func TestExecutorLogsRange(t *testing.T) {
 	handler, cookie := authenticatedHandler(t, domain.RoleViewer)

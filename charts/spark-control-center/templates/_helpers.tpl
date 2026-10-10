@@ -57,3 +57,11 @@ app.kubernetes.io/component: backend
 {{- define "spark-control-center.localAuthSecretName" -}}
 {{- if .Values.backend.auth.initialAdmin.existingSecret }}{{ .Values.backend.auth.initialAdmin.existingSecret }}{{ else }}{{ include "spark-control-center.fullname" . }}-local-auth{{ end }}
 {{- end }}
+
+{{/* Annotations are string maps. Do not silently turn YAML off/false into "false". */}}
+{{- define "spark-control-center.annotations" -}}
+{{- range $key, $value := . }}
+{{- if not (kindIs "string" $value) }}{{ fail (printf "metadata annotation %q must be a string; quote YAML values such as off, on, true, false and numbers" $key) }}{{ end }}
+{{ $key | quote }}: {{ $value | quote }}
+{{- end }}
+{{- end }}

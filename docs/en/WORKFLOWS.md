@@ -4,9 +4,11 @@ Orchestration persists configuration, scheduling cursors and execution state in 
 
 ## Tenant and permission boundaries
 
-All existing and newly auto-created OIDC users start in `default`. Administrators can create/rename tenants in **User management → Manage tenants** and assign local or OIDC users to a tenant. Tenant assignment survives subsequent OIDC logins. Administrators are also restricted to their assigned tenant for projects, workflows, schedules and execution history. To operate another tenant, an administrator must explicitly change their own assignment or use an administrator assigned there; this change is audited.
+New administrator accounts start in the built-in `admin` tenant (all module permissions); new viewer accounts start in `viewer` (overview and applications only). Upgrades preserve existing user assignments and project ownership, including `default`. Existing tenants without an explicit policy retain legacy effective permissions until an administrator configures the tenant. This avoids migrating or hiding historical projects. Custom tenant assignments survive subsequent OIDC logins; accounts still in their role-default built-in tenant switch to the corresponding default when the mapped OIDC role changes.
 
-Viewers can browse authorized projects, workflow versions, task/run details, logs and Spark UI, but cannot mutate configuration or execute jobs. Namespace authorization is checked for every node. A mixed-namespace workflow is hidden as a whole when any node is unauthorized. Templates remain a namespace-authorized shared library; existing external/kubectl SparkApplications retain namespace-based visibility. Workflow-created application detail, list, stream and batch-operation access also check tenant ownership.
+Administrators configure namespace access, Spark submission/termination/deletion, templates, workflows/schedules/history (none/read/manage), alerts (none/read/manage) and storage access in **User management → Manage tenants**. These policies apply equally to all accounts in the tenant. The built-in `admin` policy cannot be changed. Administrator roles retain account/tenant management and audit access, but do not bypass data permissions or project tenant boundaries. Viewer roles may receive explicit operational permissions through their tenant. An empty namespace list with All disabled denies namespace access; All means every namespace already configured on the backend, not cluster-wide RBAC.
+
+Workflow manage permission includes configuration, execution, backfill and run control. Namespace authorization is checked for every node. A mixed-namespace workflow is hidden as a whole when any node is unauthorized. Templates remain a namespace-authorized shared library; external/kubectl SparkApplications retain namespace-based visibility. Workflow-created application detail, list, stream and batch-operation access also check tenant ownership. Changing a tenant policy takes effect on subsequent authenticated requests and scheduler checks; it does not terminate existing Spark applications or interrupt streams already in progress. All explicit tenant changes are audited.
 
 ## Organizing and running jobs
 
@@ -87,8 +89,8 @@ The frontend feature switch derives from backend availability and `workflows.ena
 Before upgrading, back up PostgreSQL. Migrations are additive and all older users are assigned `default`. To stop reconciliation without losing state, set `workflows.scheduler.enabled=false`; jobs already submitted to Kubernetes continue independently. Re-enable to recover persisted runs. Disabling the scheduler also pauses application of queued cancel actions; leave it enabled until requested cancellations finish. Do not run an older backend concurrently with the new scheduler during rollback.
 
 ```bash
-docker build -t spark-control-center:1.4.2 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.2 .
+docker build -t spark-control-center:1.5.0 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.0 .
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace \
   -f charts/spark-control-center/examples/values-production.yaml \

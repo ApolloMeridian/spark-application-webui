@@ -18,9 +18,9 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum | quote }}
         {{- with .Values.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
+        {{- include "spark-control-center.annotations" . | nindent 8 }}
         {{- end }}
       labels:
         {{- include "spark-control-center.selectorLabels" . | nindent 8 }}

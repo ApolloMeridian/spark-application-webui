@@ -1,0 +1,205 @@
+{{- if .Values.objectStorage.enabled }}
+{{- if not (and .Values.backend.enabled .Values.apiProxy.enabled (eq .Values.runtimeConfig.dataMode "api")) }}{{ fail "objectStorage requires backend.enabled, apiProxy.enabled and runtimeConfig.dataMode=api" }}{{ end }}
+{{- $settings := .Values.objectStorage }}
+{{- $name := printf "%s-object-storage" (include "spark-control-center.fullname" .) }}
+{{- $sa := default $name $settings.serviceAccount.name }}
+{{- if not $settings.serviceAccount.create }}{{- $sa = default "default" $settings.serviceAccount.name }}{{- end }}
+{{- $connections := list }}
+{{- $connectionIDs := dict }}
+{{- range $c := $settings.connections }}
+  {{- if hasKey $connectionIDs $c.id }}{{ fail (printf "duplicate objectStorage connection id: %s" $c.id) }}{{ end }}
+  {{- $_ := set $connectionIDs $c.id true }}
+  {{- $item := dict "id" $c.id "name" $c.name "provider" $c.provider "buckets" $c.buckets }}
+  {{- if eq $c.provider "s3" }}
+    {{- $_ := set $item "s3" (dict "endpoint" $c.s3.endpoint "region" $c.s3.region "forcePathStyle" $c.s3.forcePathStyle "conditionalWrites" $c.s3.conditionalWrites "accessKeyFile" (printf "/etc/storage/credentials/%s/access-key" $c.id) "secretKeyFile" (printf "/etc/storage/credentials/%s/secret-key" $c.id) "caFile" (ternary (printf "/etc/storage/ca/%s/ca.crt" $c.id) "" (not (empty $c.s3.caConfigMap)))) }}
+  {{- else }}
+    {{- $_ := set $item "gcs" (dict "projectID" $c.gcs.projectID "authMode" $c.gcs.authMode "credentialFile" (ternary (printf "/etc/storage/wif/%s/config.json" $c.id) "" (eq $c.gcs.authMode "kubernetesWif"))) }}
+  {{- end }}
+  {{- $connections = append $connections $item }}
+{{- end }}
+{{- $config := dict "connections" $connections "bootstrapGrants" $settings.bootstrapGrants "textMaxBytes" $settings.limits.textMaxBytes "maxUploadBytes" $settings.limits.maxUploadBytes "maxDownloadBytes" $settings.limits.maxDownloadBytes "partSizeBytes" $settings.limits.partSizeBytes "maxConcurrentTransfers" $settings.limits.maxConcurrentTransfers "requestsPerMinute" $settings.limits.requestsPerMinute "transferTimeoutSeconds" $settings.limits.transferTimeoutSeconds "retentionDays" $settings.audit.retentionDays }}
+{{- if $settings.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa }}
+  labels:
+    {{- include "spark-control-center.labels" . | nindent 4 }}
+    app.kubernetes.io/component: object-storage
+  {{- with $settings.serviceAccount.annotations }}
+  annotations:
+    {{- include "spark-control-center.annotations" . | nindent 4 }}
+  {{- end }}
+automountServiceAccountToken: false
+---
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "spark-control-center.labels" . | nindent 4 }}
+    app.kubernetes.io/component: object-storage
+data:
+  config.json: {{ $config | toJson | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+spec:
+  type: ClusterIP
+  ports:
+    - { name: http, port: 8082, targetPort: http }
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: object-storage
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "spark-control-center.labels" . | nindent 4 }}
+    app.kubernetes.io/component: object-storage
+spec:
+  replicas: {{ $settings.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: object-storage
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: object-storage
+      annotations:
+        checksum/storage-config: {{ $config | toJson | sha256sum | quote }}
+    spec:
+      serviceAccountName: {{ $sa }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: object-storage
+          image: "{{ $settings.image.repository }}:{{ $settings.image.tag }}"
+          imagePullPolicy: {{ $settings.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+            readOnlyRootFilesystem: true
+            runAsUser: 65532
+          ports:
+            - { name: http, containerPort: 8082 }
+          env:
+            - { name: HTTP_ADDR, value: ":8082" }
+            - { name: STORAGE_CONFIG_FILE, value: /etc/storage/config/config.json }
+            - { name: GOMEMLIMIT, value: "180MiB" }
+            - name: STORAGE_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "objectStorage.internalAuth.existingSecret is required" $settings.internalAuth.existingSecret }}
+                  key: {{ $settings.internalAuth.signingKeyKey }}
+            {{- if $settings.database.existingSecret }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $settings.database.existingSecret }}
+                  key: {{ $settings.database.dsnKey }}
+            {{- else }}
+            - { name: DATABASE_HOST, value: {{ .Values.database.host | quote }} }
+            - { name: DATABASE_PORT, value: {{ .Values.database.port | quote }} }
+            - { name: DATABASE_NAME, value: {{ .Values.database.name | quote }} }
+            - { name: DATABASE_SSLMODE, value: {{ .Values.database.sslMode | quote }} }
+            - name: DATABASE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "spark-control-center.backendSecretName" . }}
+                  key: {{ .Values.database.credentials.usernameKey }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "spark-control-center.backendSecretName" . }}
+                  key: {{ .Values.database.credentials.passwordKey }}
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 15
+          resources:
+            {{- toYaml $settings.resources | nindent 12 }}
+          volumeMounts:
+            - { name: config, mountPath: /etc/storage/config, readOnly: true }
+            {{- range $c := $settings.connections }}
+            {{- if eq $c.provider "s3" }}
+            - { name: "credentials-{{ $c.id }}", mountPath: "/etc/storage/credentials/{{ $c.id }}", readOnly: true }
+            {{- if $c.s3.caConfigMap }}
+            - { name: "ca-{{ $c.id }}", mountPath: "/etc/storage/ca/{{ $c.id }}", readOnly: true }
+            {{- end }}
+            {{- else if eq $c.gcs.authMode "kubernetesWif" }}
+            - { name: "wif-{{ $c.id }}", mountPath: "/etc/storage/wif/{{ $c.id }}", readOnly: true }
+            - { name: "token-{{ $c.id }}", mountPath: "/var/run/secrets/storage-wif/{{ $c.id }}", readOnly: true }
+            {{- end }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap: { name: {{ $name }} }
+        {{- range $c := $settings.connections }}
+        {{- if eq $c.provider "s3" }}
+        - name: credentials-{{ $c.id }}
+          secret:
+            secretName: {{ $c.s3.credentialsSecret }}
+            items:
+              - { key: {{ $c.s3.accessKeyKey }}, path: access-key }
+              - { key: {{ $c.s3.secretKeyKey }}, path: secret-key }
+        {{- if $c.s3.caConfigMap }}
+        - name: ca-{{ $c.id }}
+          configMap:
+            name: {{ $c.s3.caConfigMap }}
+            items:
+              - { key: {{ default "ca.crt" $c.s3.caKey }}, path: ca.crt }
+        {{- end }}
+        {{- else if eq $c.gcs.authMode "kubernetesWif" }}
+        - name: wif-{{ $c.id }}
+          configMap:
+            name: {{ $c.gcs.workloadIdentity.credentialConfigMap }}
+            items:
+              - { key: {{ default "config.json" $c.gcs.workloadIdentity.credentialKey }}, path: config.json }
+        - name: token-{{ $c.id }}
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+                  audience: {{ $c.gcs.workloadIdentity.audience | quote }}
+        {{- end }}
+        {{- end }}
+{{- if $settings.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: object-storage
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "spark-control-center.backendSelectorLabels" . | nindent 14 }}
+      ports: [{ protocol: TCP, port: 8082 }]
+  egress:
+    {{- toYaml $settings.networkPolicy.egress | nindent 4 }}
+{{- end }}
+{{- end }}

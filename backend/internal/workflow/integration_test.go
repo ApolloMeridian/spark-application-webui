@@ -117,7 +117,7 @@ func fixture(t *testing.T) (*Service, domain.User, domain.Project, *fakeApps) {
 	if err = pg.CreateUser(ctx, user, user.Username, "unused-test-hash"); err != nil {
 		t.Fatal(err)
 	}
-	x, err := s.SaveTenant(ctx, user, domain.Tenant{Name: id("test-tenant")})
+	x, err := s.SaveTenant(ctx, user, domain.Tenant{Name: id("test-tenant"), Permissions: &domain.TenantPermissions{AllNamespaces: true, WorkflowsRead: true, WorkflowsWrite: true, TemplatesRead: true, TemplatesWrite: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

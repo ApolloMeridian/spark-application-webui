@@ -12,6 +12,10 @@ func (s *PostgresStore) migrateWorkflows(ctx context.Context, tx pgx.Tx) error {
 	_, err := tx.Exec(ctx, `
 CREATE TABLE IF NOT EXISTS tenants (id text PRIMARY KEY, name text NOT NULL UNIQUE, created_at timestamptz NOT NULL DEFAULT now());
 INSERT INTO tenants (id,name) VALUES ('default','default') ON CONFLICT DO NOTHING;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS permissions jsonb;
+INSERT INTO tenants(id,name,permissions) VALUES
+('admin','admin','{"allNamespaces":true,"namespaces":[],"submit":true,"templatesRead":true,"templatesWrite":true,"workflowsRead":true,"workflowsWrite":true,"kill":true,"delete":true,"alertsRead":true,"alertsWrite":true,"objectStorage":true}'),
+('viewer','viewer','{"allNamespaces":true,"namespaces":[],"submit":false,"templatesRead":false,"templatesWrite":false,"workflowsRead":false,"workflowsWrite":false,"kill":false,"delete":false,"alertsRead":false,"alertsWrite":false,"objectStorage":false}') ON CONFLICT DO NOTHING;
 ALTER TABLE local_users ADD COLUMN IF NOT EXISTS tenant_id text NOT NULL DEFAULT 'default' REFERENCES tenants(id);
 ALTER TABLE operation_audit ADD COLUMN IF NOT EXISTS tenant_id text NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS projects (id text PRIMARY KEY, tenant_id text NOT NULL REFERENCES tenants(id), name text NOT NULL, description text NOT NULL DEFAULT '', created_by text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(tenant_id,name));

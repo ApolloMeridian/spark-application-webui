@@ -7,7 +7,7 @@ metadata:
     {{- include "spark-control-center.labels" . | nindent 4 }}
   {{- with .Values.ingress.annotations }}
   annotations:
-    {{- toYaml . | nindent 4 }}
+    {{- include "spark-control-center.annotations" . | nindent 4 }}
   {{- end }}
 spec:
   {{- with .Values.ingress.className }}

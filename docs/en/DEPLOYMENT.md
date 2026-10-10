@@ -3,7 +3,7 @@
 ## Build and publish the UI image
 
 ```bash
-docker build -t spark-control-center:1.4.2 .
+docker build -t spark-control-center:1.5.0 .
 ```
 
 For an air-gapped build with a locally cached Nginx base image:
@@ -11,7 +11,7 @@ For an air-gapped build with a locally cached Nginx base image:
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:1.4.2 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.0 .
 ```
 
 The image listens on port `8080`, serves `/healthz`, runs as UID 101, and supports a read-only root filesystem. Helm replaces `/usr/share/nginx/html/config/config.js` at runtime, so one immutable image can be promoted through environments.
@@ -22,7 +22,7 @@ Use the repository root as Docker build context:
 
 ```bash
 docker build -f backend/Dockerfile \
-  -t spark-control-center-backend:1.4.2 .
+  -t spark-control-center-backend:1.5.0 .
 ```
 
 The backend runs as UID 65532 on port `8081`. On startup it connects to PostgreSQL and creates the audit/history tables plus `local_users`, `local_user_sessions`, and `application_settings`. The configured database user therefore needs table/index creation permission in `spark_console_db`.
@@ -61,9 +61,9 @@ helm upgrade --install spark-console ./charts/spark-control-center \
 
 ## API/OIDC deployment
 
-The production example uses the existing `spark-postgres-secret` keys `POSTGRES_USER` and `POSTGRES_PASSWORD`, and runs with `runtimeConfig.auth.mode=oidc`. OIDC user records and server-side sessions are stored in PostgreSQL. Secrets and identity-provider tokens are never rendered into browser configuration or stored in the browser.
+Packaged defaults reference an existing PostgreSQL Secret with `username` and `password` keys and use `runtimeConfig.auth.mode=local`. Configure your own database Secret reference and initial administrator password Secret. For OIDC-only deployment, change the mode to `oidc` and enable/configure the provider. OIDC user records and server-side sessions are stored in PostgreSQL. Secrets and identity-provider tokens are never rendered into browser configuration or stored in the browser.
 
-Create only the Keycloak client Secret before installing the production profile:
+For OIDC, prepare the Keycloak client Secret in addition to the database Secret:
 
 ```bash
 kubectl -n spark-console create secret generic spark-console-oidc \
@@ -189,3 +189,9 @@ OIDC uses Authorization Code Flow with PKCE, validates issuer/audience/signature
 - Executor logs use Loki `query_range`, remain available after Executor Pod deletion, and can be ordered oldest-first or newest-first for a selected time range.
 - A Prometheus failure leaves Kubernetes application data available with live metrics omitted. Kubernetes and PostgreSQL are readiness dependencies.
 - `/healthz` checks process liveness; `/readyz` verifies Kubernetes access and PostgreSQL connectivity.
+
+## Tenant permissions in 1.5.0
+
+Production chart defaults use the real backend and PostgreSQL login, not Mock. Prepare the initial administrator password Secret and database Secret referenced in your single values file. To use OIDC-only login, set runtimeConfig.auth.mode=oidc, enable oidc, configure the provider/client Secret and callback; no initial local administrator Secret is then required. Storage remains disabled unless explicitly enabled.
+
+New admin/viewer accounts default to their corresponding built-in tenants. Existing user/project assignments are preserved. Configure tenant access in User management; the API and scheduler read policies from PostgreSQL. See [tenant permissions](WORKFLOWS.md#tenant-and-permission-boundaries) and [optional storage](OBJECT-STORAGE.md). All release assets use unprefixed image names: frontend/backend/storage TAR plus Helm TGZ, without a checksum file.

@@ -1,30 +1,32 @@
-# Spark Control Center frontend image built from this repository.
+# Production deployment defaults. Copy this file, configure existing endpoints and Secrets,
+# then install with ONE values file: helm upgrade --install spark-console CHART -f values.yaml.
+# Frontend uses the real API and PostgreSQL login; object storage and OIDC are optional.
+# This chart does not deploy PostgreSQL, Prometheus, Loki, Keycloak or storage buckets.
+# Image repositories have no registry prefix. Mirror or preload images for your cluster.
+
+# Set all three image repositories to locations reachable by your cluster, or preload the images on all nodes.
 image:
   repository: spark-control-center
-  tag: "1.4.2"
+  tag: 1.5.0
   pullPolicy: IfNotPresent
-
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 replicaCount: 1
-
-# Public browser configuration. Never put passwords or client secrets here.
 runtimeConfig:
   appName: Spark Control Center
-  # Empty uses the browser timezone. Set an IANA timezone such as Asia/Shanghai to force display conversion.
+  # Empty follows the browser timezone. Set any IANA timezone to override display.
   timeZone: ""
-  # mock: browser-local demo data; api: call api.baseUrl.
-  dataMode: mock
+  dataMode: api
   api:
     baseUrl: /api
     requestTimeoutMs: 15000
   auth:
-    # mock, local, or oidc. OIDC provider settings live in the top-level oidc block.
-    mode: mock
+    mode: local
   cluster:
-    name: spark-demo
-    namespaces: [spark-prod, spark-ml, spark-streaming, spark-sandbox]
+    name: kubernetes
+    namespaces:
+      - spark
   dashboard:
     refreshIntervalSeconds: 10
     defaultHistoryDays: 7
@@ -36,25 +38,20 @@ runtimeConfig:
     audit: true
     sparkUi: true
     submit: true
-    executorLogs: false
+    executorLogs: true
     templates: true
     batchOperations: true
     alerts: true
-
-# Same-origin /api reverse proxy. Enable when backend.enabled=true or supply an upstream URL.
 apiProxy:
-  enabled: false
-  # Empty uses the optional backend Service. Example external value: http://spark-console-api.platform.svc:8081
+  enabled: true
   upstream: ""
   connectTimeoutSeconds: 5
   readTimeoutSeconds: 60
-
 serviceAccount:
   create: true
   automount: false
   annotations: {}
   name: ""
-
 podAnnotations: {}
 podLabels: {}
 podSecurityContext:
@@ -64,29 +61,32 @@ podSecurityContext:
 securityContext:
   allowPrivilegeEscalation: false
   capabilities:
-    drop: [ALL]
+    drop:
+      - ALL
   readOnlyRootFilesystem: true
   runAsNonRoot: true
   runAsUser: 101
-
 service:
   type: ClusterIP
   port: 80
   annotations: {}
-
 ingress:
   enabled: false
   className: nginx
-  annotations: {}
+  # These body/streaming settings target ingress-nginx. Adapt for other controllers and timeout values.
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 17m
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
   hosts:
     - host: spark-console.example.com
       paths:
         - path: /
           pathType: Prefix
+  # Configure a TLS Secret unless ingress-nginx already serves a valid default/wildcard certificate.
   tls: []
-  # - secretName: spark-console-tls
-  #   hosts: [spark-console.example.com]
-
 resources:
   requests:
     cpu: 50m
@@ -94,16 +94,18 @@ resources:
   limits:
     cpu: 500m
     memory: 256Mi
-
 livenessProbe:
-  httpGet: { path: /healthz, port: http }
+  httpGet:
+    path: /healthz
+    port: http
   initialDelaySeconds: 5
   periodSeconds: 15
 readinessProbe:
-  httpGet: { path: /healthz, port: http }
+  httpGet:
+    path: /healthz
+    port: http
   initialDelaySeconds: 2
   periodSeconds: 10
-
 autoscaling:
   enabled: false
   minReplicas: 2
@@ -112,19 +114,16 @@ autoscaling:
 pdb:
   enabled: false
   minAvailable: 1
-
 nodeSelector: {}
 tolerations: []
 affinity: {}
 topologySpreadConstraints: []
-
-# Optional Go backend image built from this repository.
 backend:
-  enabled: false
+  enabled: true
   replicaCount: 1
   image:
     repository: spark-control-center-backend
-    tag: "1.4.2"
+    tag: 1.5.0
     pullPolicy: IfNotPresent
   service:
     port: 8081
@@ -132,11 +131,11 @@ backend:
   auth:
     sessionTTL: 8h
     bcryptCost: 12
+    # Unused with auth.mode=oidc. For local login configure an existing password Secret; never add a plaintext password.
     initialAdmin:
       username: admin
       displayName: Initial Administrator
-      # Use an existing Secret in production, or set createSecret/password for a test deployment.
-      existingSecret: ""
+      existingSecret: spark-console-admin-credentials
       passwordKey: password
       createSecret: false
       password: ""
@@ -145,106 +144,192 @@ backend:
     name: ""
     annotations: {}
   resources:
-    requests: { cpu: 100m, memory: 128Mi }
-    limits: { cpu: "1", memory: 512Mi }
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
   podAnnotations: {}
   extraEnv: []
-  # Add config files, projected secrets, or workload identity volumes if required.
   extraVolumes: []
   extraVolumeMounts: []
+# Optional stateless plugin. Set enabled=false to disable it without changing core integrations.
+objectStorage:
+  enabled: false
+  image:
+    repository: spark-control-center-object-storage
+    tag: 1.5.0
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+  # Shared signing Secret: at least 32 bytes; same key is used by the backend and plugin.
+  internalAuth:
+    existingSecret: object-storage-signing
+    signingKeyKey: signing-key
+  # Empty existingSecret reuses the core DB credentials. Plugin must access the same local_users identity table.
+  database:
+    existingSecret: ""
+    dsnKey: dsn
+  limits:
+    textMaxBytes: 1048576
+    maxUploadBytes: 1073741824
+    maxDownloadBytes: 1073741824
+    partSizeBytes: 8388608
+    maxConcurrentTransfers: 4
+    requestsPerMinute: 600
+    transferTimeoutSeconds: 600
+  audit:
+    retentionDays: 30
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 256Mi
+  # Optional CNI-enforced isolation. Intranet deployment does not require this policy.
+  # Existing cluster policies still apply. If enabled, allow DNS, PostgreSQL, storage
+  # endpoints and (for GKE WIF) the metadata server; see docs/en/OBJECT-STORAGE.md.
+  networkPolicy:
+    enabled: false
+    egress:
+      - ports:
+          - protocol: UDP
+            port: 53
+          - protocol: TCP
+            port: 53
+      - ports:
+          - protocol: TCP
+            port: 80
+          - protocol: TCP
+            port: 443
+          - protocol: TCP
+            port: 5432
+          - protocol: TCP
+            port: 9000
+  # Replace the MinIO endpoint/buckets with existing resources. No bucket is created by the chart.
+  # Set connections and bootstrapGrants to [] if you do not use the plugin.
+  # S3 supports MinIO/AWS-compatible endpoints. Credentials are mounted from a Secret.
+  # For GCS, use provider: gcs and gcs: {projectID: YOUR_PROJECT_ID, authMode: gkeWif}.
+  # No KSA override or GSA key is needed for direct GKE WIF. See OBJECT-STORAGE.md
+  # for IAM bindings and generic Kubernetes WIF configuration.
+  connections:
+    - id: minio
+      name: MinIO
+      provider: s3
+      buckets:
+        - spark-artifacts
+      s3:
+        endpoint: http://minio.storage.svc:9000
+        region: us-east-1
+        forcePathStyle: true
+        # Enable writes only after verifying conditional PutObject/CompleteMultipartUpload support.
+        conditionalWrites: true
+        credentialsSecret: object-storage-s3-credentials
+        accessKeyKey: access-key
+        secretKeyKey: secret-key
+        caConfigMap: ""
+  # One-time grants. Match an actual OIDC administrator username and persistent tenant ID. Revocations survive restart.
+  bootstrapGrants:
+    - username: admin
+      tenantId: admin
+      connection: minio
+      allBuckets: true
+      # Grants every bucket explicitly listed on this connection; no bucket discovery.
+      prefix: ""
+      actions:
+        - list
+        - read
+        - download
+        - upload
+        - edit
+        - delete
+        - copy-source
+        - copy-destination
 
-# Backend-only Prometheus endpoint. It is not exposed to the browser.
 prometheus:
-  url: http://prometheus-operated.monitoring.svc:9090
+  # Set the Prometheus query endpoint reachable from backend Pods.
+  url: http://prometheus.monitoring.svc.cluster.local:9090
   queryTimeout: 15s
   lookback: 1h
   queryStep: 15s
   cpuRateWindow: 1m
-
-# Optional Loki query endpoint used for persisted executor logs.
 loki:
   enabled: false
-  url: http://loki-gateway.loki.svc.cluster.local
+  url: ""
   queryTimeout: 15s
   maxEntries: 5000
-
-# Active alert evaluation and optional generic webhook delivery.
 alerts:
   evaluationInterval: 1m
   webhook:
     enabled: false
     url: ""
     timeout: 10s
-
-# Existing PostgreSQL is recommended. This chart does not install a database.
+# Existing PostgreSQL. This chart does not create the database/PVC. Match its TLS configuration.
 database:
-  host: postgresql.database.svc
+  host: postgresql.database.svc.cluster.local
   port: 5432
   name: spark_console
+  # Prefer encrypted PostgreSQL connections; use disable only on trusted non-TLS servers.
   sslMode: require
   maxOpenConnections: 20
   credentials:
     username: spark_console
-    # Prefer existingSecret. Keys default to username and password.
-    existingSecret: ""
+    existingSecret: spark-console-database-credentials
     usernameKey: username
     passwordKey: password
-    # For development only; creates a Secret when existingSecret is empty.
     create: false
     password: ""
-
-# Optional Authorization Code + PKCE login. The issuer must be reachable by the backend.
+# Single authoritative OIDC provider configuration. Match the callback URI exactly in Keycloak.
 oidc:
   enabled: false
   providerName: Keycloak
-  issuerURL: "https://keycloak.example.com/realms/k8s-infra"
+  issuerURL: https://idp.example.com/realms/platform
   clientID: spark-control-center
-  scopes: [openid, profile, email, groups]
+  scopes:
+    - openid
+    - profile
+    - email
+    - groups
   usernameClaim: preferred_username
   groupsClaim: groups
-  adminGroups: [k8s-admins]
+  adminGroups:
+    - spark-console-admins
   autoCreate: true
-  # Empty derives https://<external-host>/api/v1/auth/oidc/callback from proxy headers.
-  redirectURL: ""
+  redirectURL: https://spark-console.example.com/api/v1/auth/oidc/callback
   stateTTL: 10m
-  # Trust an internal Keycloak CA from a ConfigMap in the release namespace.
+  # ConfigMap must exist in the release namespace; set existingConfigMap empty for a publicly trusted issuer.
   ca:
     existingConfigMap: ""
     key: ca.crt
     mountPath: /etc/spark-control-center/oidc-ca/ca.crt
-  # Advanced alternative: an already-mounted PEM path.
   caFile: ""
-
-# Confidential OIDC settings consumed only by the backend Pod.
 oidcSecret:
   existingSecret: ""
   clientSecretKey: client-secret
-  # For development only; creates a Secret when existingSecret is empty.
   create: false
   clientSecret: ""
-
-# Kubernetes permissions used by the optional backend watcher/API.
 rbac:
   create: true
-  # false creates a Role and RoleBinding in each configured namespace.
   clusterWide: false
-  namespaces: [spark-prod, spark-ml, spark-streaming, spark-sandbox]
-
+  namespaces:
+    - spark
 networkPolicy:
   enabled: false
   ingressNamespaceSelector: {}
   additionalEgress: []
-
 serviceMonitor:
   enabled: false
   interval: 30s
   labels: {}
-
-# Durable projects, workflow versions, task instances and Cron schedules use the
-# existing PostgreSQL database. Multiple replicas coordinate with database locks.
 workflows:
   enabled: true
-  timeZone: Asia/Shanghai
+  # Scheduler timezone is independent of browser display timezone.
+  timeZone: UTC
   maxNodes: 50
   scheduler:
     enabled: true

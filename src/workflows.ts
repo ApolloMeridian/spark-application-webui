@@ -3,6 +3,7 @@ import type { ManifestPreview, TemplateParameter } from "./types";
 
 export type ExecutionStrategy = "parallel" | "serial_wait" | "serial_discard";
 export interface Tenant {
+  permissions?: import('./permissions').TenantPermissions;
   id: string;
   name: string;
   createdAt: string;

@@ -18,6 +18,9 @@ import { TemplatesPage } from './pages/TemplatesPage';
 import { AlertsPage } from './pages/AlertsPage';
 import { WorkflowsPage } from './pages/WorkflowsPage';
 import { runtimeConfig } from './runtimeConfig';
+import { hasPermission, type Capability } from './permissions';
+import { lazy, Suspense } from 'react';
+const ObjectStoragePage = lazy(() => import('./pages/ObjectStoragePage'));
 
 function ProtectedRoute() {
   const { session, loading } = useAuth();
@@ -28,6 +31,11 @@ function ProtectedRoute() {
 function AdminRoute() {
   const { session } = useAuth();
   return session?.role === 'admin' ? <Outlet /> : <Navigate to="/overview" replace />;
+}
+
+function PermissionRoute({ capability, children }: { capability: Capability; children: React.ReactNode }) {
+  const { session } = useAuth();
+  return hasPermission(session, capability) ? children : <Navigate to="/overview" replace />;
 }
 
 function LocalAccountRoute() {
@@ -51,19 +59,20 @@ function ThemedApp() {
             <Route element={<ProtectedRoute />}>
               <Route element={<AppShell />}>
                 <Route path="/overview" element={<OverviewPage />} />
+                <Route path="/object-storage" element={runtimeConfig.features.objectStorage ? <PermissionRoute capability="objectStorage"><Suspense fallback={<Spin />}><ObjectStoragePage /></Suspense></PermissionRoute> : <Navigate to="/overview" replace />} />
                 <Route path="/applications" element={<ApplicationsPage />} />
                 <Route path="/applications/:namespace/:name" element={<ApplicationDetailPage />} />
                 <Route path="/applications/:namespace/:name/spark-ui" element={<SparkUIPage />} />
-				<Route path="/templates" element={<TemplatesPage />} />
-				<Route path="/alerts" element={<AlertsPage />} />
-				<Route path="/projects" element={<WorkflowsPage />} />
-				<Route path="/schedules" element={<WorkflowsPage />} />
-				<Route path="/workflow-history" element={<WorkflowsPage />} />
+				<Route path="/templates" element={<PermissionRoute capability="templatesRead"><TemplatesPage /></PermissionRoute>} />
+				<Route path="/alerts" element={<PermissionRoute capability="alertsRead"><AlertsPage /></PermissionRoute>} />
+				<Route path="/projects" element={<PermissionRoute capability="workflowsRead"><WorkflowsPage /></PermissionRoute>} />
+				<Route path="/schedules" element={<PermissionRoute capability="workflowsRead"><WorkflowsPage /></PermissionRoute>} />
+				<Route path="/workflow-history" element={<PermissionRoute capability="workflowsRead"><WorkflowsPage /></PermissionRoute>} />
+                <Route path="/submit" element={<PermissionRoute capability="submit"><SubmitApplicationPage /></PermissionRoute>} />
                 <Route element={<LocalAccountRoute />}>
                   <Route path="/profile" element={<ProfilePage />} />
                 </Route>
                 <Route element={<AdminRoute />}>
-                  <Route path="/submit" element={<SubmitApplicationPage />} />
                   <Route path="/audit" element={<AuditPage />} />
                   <Route path="/users" element={<UsersPage />} />
                 </Route>

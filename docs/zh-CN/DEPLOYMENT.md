@@ -5,8 +5,8 @@
 从代码库根目录执行，镜像名称不包含私有仓库前缀：
 
 ```bash
-docker build -t spark-control-center:1.4.2 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.2 .
+docker build -t spark-control-center:1.5.0 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.0 .
 ```
 
 如已缓存 Nginx 基础镜像，可先生成前端产物再使用预构建 Dockerfile：
@@ -14,7 +14,7 @@ docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.2 .
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:1.4.2 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.0 .
 ```
 
 前端监听 `8080`，以 UID 101 运行，支持只读根文件系统，并提供 `/healthz`。Helm 在运行时挂载 `/usr/share/nginx/html/config/config.js`，无需为不同环境重建镜像。
@@ -34,7 +34,7 @@ helm upgrade --install spark-console ./charts/spark-control-center \
 真实部署先复制生产配置示例，再以私有配置覆盖环境参数：
 
 ```bash
-cp charts/spark-control-center/examples/values-production.yaml values-production.local.yaml
+helm show values ./spark-control-center-1.5.0.tgz > values-production.local.yaml
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
@@ -44,7 +44,7 @@ helm upgrade --install spark-console ./charts/spark-control-center \
 
 ## OIDC 与本地认证
 
-生产示例使用 `spark-postgres-secret` 的 `POSTGRES_USER`、`POSTGRES_PASSWORD`，并设置 `runtimeConfig.auth.mode=oidc`。OIDC 用户和控制台会话保存到 PostgreSQL；OIDC 模式不要求初始本地管理员。
+打包默认配置引用已有 PostgreSQL Secret 的 `username`、`password` 字段，使用 `runtimeConfig.auth.mode=local`。配置自己的数据库 Secret 引用及初始管理员密码 Secret。仅使用 OIDC 时将 mode 改为 `oidc` 并启用、配置提供方；OIDC 用户与会话保存在 PostgreSQL，该模式不要求初始本地管理员。
 
 配置集中在服务端 `oidc` 和 `oidcSecret` 字段，浏览器入口由 Chart 自动派生。Keycloak 中创建启用客户端认证、标准流程的 OpenID Connect 客户端 `spark-control-center`：
 
@@ -166,3 +166,9 @@ CPU 使用 `container_cpu_usage_seconds_total`，内存使用 `container_memory_
 运行中 Spark UI 代理使用 Driver Service 和端口，重写重定向、集群内部绝对地址和根路径资源链接，无需 `pods/exec` 或本地端口转发。终态作业仅在 History Server 已启用且 YAML 包含开启的 EventLog 配置时跳转历史地址。
 
 Executor 日志通过 Loki `query_range` 查询，Pod 删除后仍可按时间范围和正/倒序查看。PostgreSQL 保存已删除作业的生命周期快照与诊断；SSE 之外保留定时刷新以恢复断线。`/healthz` 检查进程存活，`/readyz` 检查 Kubernetes 和 PostgreSQL。
+
+## 1.5.0 租户权限与生产默认配置
+
+Chart 默认使用真实后端与 PostgreSQL 登录，不再默认 Mock。在单个 values 文件中指定初始管理员密码 Secret 和数据库 Secret。仅使用 OIDC 时设置 runtimeConfig.auth.mode=oidc、启用 oidc 并配置客户端 Secret/回调，此模式不要求初始本地管理员 Secret。存储仍需显式开启。
+
+新管理员/普通账户默认进入对应内置租户；升级保留已有账户与项目所属租户。在用户管理中配置租户权限，API 与调度器从 PostgreSQL 读取策略。参见[租户权限](WORKFLOWS.md)与[对象存储](OBJECT-STORAGE.md)。发布包含无私有前缀的前端/后端/存储三个 TAR 和 Helm TGZ，不生成校验文件。

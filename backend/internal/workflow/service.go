@@ -58,7 +58,7 @@ func tenant(user domain.User) string {
 	return user.TenantID
 }
 func writable(user domain.User) error {
-	if user.Disabled || user.Role != domain.RoleAdmin {
+	if !user.Can("workflowsWrite") {
 		return localauth.ErrForbidden
 	}
 	return nil
@@ -119,7 +119,7 @@ func (s *Service) readTransaction(ctx context.Context, operation func(pgx.Tx) er
 }
 func (s *Service) ListTenants(ctx context.Context, user domain.User) ([]domain.Tenant, error) {
 	result := []domain.Tenant{}
-	rows, err := s.pool.Query(ctx, `SELECT id,name,created_at FROM tenants WHERE $1 OR id=$2 ORDER BY name`, user.Role == domain.RoleAdmin, tenant(user))
+	rows, err := s.pool.Query(ctx, `SELECT id,name,created_at,permissions FROM tenants WHERE $1 OR id=$2 ORDER BY name`, user.Role == domain.RoleAdmin, tenant(user))
 	if err != nil {
 		return nil, err
 	}
@@ -127,27 +127,48 @@ func (s *Service) ListTenants(ctx context.Context, user domain.User) ([]domain.T
 	for rows.Next() {
 		var x domain.Tenant
 		var at time.Time
-		if err = rows.Scan(&x.ID, &x.Name, &at); err != nil {
+		var raw []byte
+		if err = rows.Scan(&x.ID, &x.Name, &at, &raw); err != nil {
 			return nil, err
 		}
 		x.CreatedAt = stamp(at)
+		if len(raw) > 0 {
+			if err = json.Unmarshal(raw, &x.Permissions); err != nil {
+				return nil, err
+			}
+		}
 		result = append(result, x)
 	}
 	return result, rows.Err()
 }
 func (s *Service) SaveTenant(ctx context.Context, user domain.User, x domain.Tenant) (domain.Tenant, error) {
-	if err := writable(user); err != nil {
-		return x, err
+	if user.Disabled || user.Role != domain.RoleAdmin {
+		return x, localauth.ErrForbidden
 	}
 	x.Name = strings.TrimSpace(x.Name)
 	if x.Name == "" || len(x.Name) > 100 {
 		return x, invalid("tenant name is required (max 100 characters)")
 	}
-	err := s.transaction(ctx, func(tx pgx.Tx) error {
+	if x.Permissions == nil {
+		x.Permissions = &domain.TenantPermissions{AllNamespaces: true}
+	}
+	if x.Permissions.Namespaces == nil {
+		x.Permissions.Namespaces = []string{}
+	}
+	for _, ns := range x.Permissions.Namespaces {
+		if !s.cfg.NamespaceAllowed(ns) {
+			return x, localauth.ErrNamespaceForbidden
+		}
+	}
+	raw, err := json.Marshal(x.Permissions)
+	if err != nil {
+		return x, err
+	}
+	err = s.transaction(ctx, func(tx pgx.Tx) error {
 		var at time.Time
 		if x.ID == "" {
 			x.ID = id("tenant")
-			err := tx.QueryRow(ctx, `INSERT INTO tenants(id,name) VALUES($1,$2) RETURNING created_at`, x.ID, x.Name).Scan(&at)
+			err := tx.QueryRow(ctx, `INSERT INTO tenants(id,name,permissions) VALUES($1,$2,$3) RETURNING created_at`, x.ID, x.Name, raw).Scan(&at)
 			if err != nil {
 				return err
 			}
@@ -155,12 +176,15 @@ func (s *Service) SaveTenant(ctx context.Context, user domain.User, x domain.Ten
 			if x.ID == "default" && x.Name != "default" {
 				return invalid("default tenant cannot be renamed")
 			}
-			if err := tx.QueryRow(ctx, `UPDATE tenants SET name=$2 WHERE id=$1 RETURNING created_at`, x.ID, x.Name).Scan(&at); err != nil {
+			if x.ID == "admin" {
+				return invalid("the built-in admin tenant cannot be modified")
+			}
+			if err := tx.QueryRow(ctx, `UPDATE tenants SET name=$2,permissions=$3 WHERE id=$1 RETURNING created_at`, x.ID, x.Name, raw).Scan(&at); err != nil {
 				return err
 			}
 		}
 		x.CreatedAt = stamp(at)
-		return auditTx(ctx, tx, user.Username, "TENANT_SAVE", x.ID, x.Name)
+		return auditTx(ctx, tx, user.Username, "TENANT_SAVE", x.ID, x.Name+" permissions="+string(raw))
 	})
 	return x, err
 }
@@ -614,8 +638,8 @@ func (s *Service) TemplateVersionAction(ctx context.Context, user domain.User, k
 	if err = s.namespace(user, x.Namespace); err != nil {
 		return x, err
 	}
-	if err = writable(user); err != nil {
-		return x, err
+	if !user.Can("templatesWrite") {
+		return x, localauth.ErrForbidden
 	}
 	err = s.transaction(ctx, func(tx pgx.Tx) error {
 		var current int

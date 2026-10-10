@@ -57,7 +57,7 @@ export function SubmitApplicationPage() {
   const [validatedManifest, setValidatedManifest] = useState('');
   const [previewOpen, setPreviewOpen] = useState(false);
   const [error, setError] = useState('');
-  const allowed = canSubmit(session?.role ?? 'viewer');
+  const allowed = canSubmit(session ?? 'viewer');
   const namespaceOptions = useMemo(() => namespaces.map((value) => ({ value, label: value })), [namespaces]);
   const validated = Boolean(preview?.dryRunAccepted && validatedManifest === manifest);
 

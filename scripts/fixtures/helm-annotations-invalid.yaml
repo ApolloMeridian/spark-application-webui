@@ -1,0 +1,4 @@
+# Reproduces the former single-file generation bug: Helm reads bare off as false.
+ingress:
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: off

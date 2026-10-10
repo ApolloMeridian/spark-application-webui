@@ -1,0 +1,34 @@
+# Overlay on values-production.yaml. Replace identifiers and create referenced Secrets first.
+# These annotations target ingress-nginx; adapt them for other ingress controllers.
+ingress:
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "17m"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+objectStorage:
+  enabled: true
+  internalAuth:
+    existingSecret: spark-console-storage-signing
+  connections:
+    - id: minio
+      name: MinIO
+      provider: s3
+      buckets: [spark-artifacts]
+      s3:
+        endpoint: http://minio.storage.svc:9000
+        region: us-east-1
+        forcePathStyle: true
+        conditionalWrites: true
+        credentialsSecret: spark-console-storage-s3
+        accessKeyKey: access-key
+        secretKeyKey: secret-key
+        caConfigMap: ""
+  bootstrapGrants:
+    - username: admin
+      tenantId: default
+      connection: minio
+      bucket: spark-artifacts
+      prefix: spark/
+      actions: [list, read, download, upload, edit, delete, copy-source, copy-destination]

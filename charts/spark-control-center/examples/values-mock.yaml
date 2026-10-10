@@ -1,6 +1,15 @@
 image:
   repository: registry.example.com/platform/spark-control-center
-  tag: "1.4.2"
+  tag: "1.5.0"
+
+backend:
+  enabled: false
+apiProxy:
+  enabled: false
+workflows:
+  enabled: false
+oidc:
+  enabled: false
 
 runtimeConfig:
   dataMode: mock

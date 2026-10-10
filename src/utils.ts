@@ -3,7 +3,8 @@ import timezone from 'dayjs/plugin/timezone';
 import utc from 'dayjs/plugin/utc';
 import type { Dayjs } from 'dayjs';
 import { runtimeConfig } from './runtimeConfig';
-import type { ApplicationState, ResourceAmount, SparkApplication, UserRole } from './types';
+import type { ApplicationState, ResourceAmount, SparkApplication, UserRole, UserAccount } from './types';
+import { hasPermission } from './permissions';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -77,20 +78,20 @@ export function sumResources(app: SparkApplication): { requested: ResourceAmount
   );
 }
 
-export function canKill(role: UserRole): boolean {
-	return role === 'admin';
+export function canKill(user: UserRole | UserAccount): boolean {
+	return typeof user === 'string' ? user === 'admin' : hasPermission(user, 'kill');
 }
 
 export function isKillableState(state: ApplicationState): boolean {
   return state === 'RUNNING' || state === 'SUBMITTED';
 }
 
-export function canDelete(role: UserRole): boolean {
-  return role === 'admin';
+export function canDelete(user: UserRole | UserAccount): boolean {
+  return typeof user === 'string' ? user === 'admin' : hasPermission(user, 'delete');
 }
 
-export function canSubmit(role: UserRole): boolean {
-	return role === 'admin';
+export function canSubmit(user: UserRole | UserAccount): boolean {
+	return typeof user === 'string' ? user === 'admin' : hasPermission(user, 'submit');
 }
 
 export function permittedNamespaces(configured: string[], assigned?: string[]): string[] {

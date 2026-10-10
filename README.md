@@ -17,7 +17,7 @@ Spark Control Center is a web console for operating Apache Spark applications on
 - Share URL-backed application searches, use server-side paging/sorting and favorites, and preview permission-aware batch termination or deletion before execution.
 - Configure versioned failure, long-pending, resource-pressure, repeated-retry, and extensible diagnostic-code alerts (including volume-mount failures); acknowledge, silence, recover, and optionally notify a generic webhook.
 - Stream Kubernetes Watch changes to the browser over SSE, while retaining periodic refresh as a recovery path.
-- Authenticate with PostgreSQL local accounts or optional OIDC/Keycloak; enforce `viewer` and `admin` permissions plus per-user namespace access in both UI and API.
+- Authenticate with PostgreSQL local accounts or optional OIDC/Keycloak; enforce tenant-defined module and namespace permissions in both UI and API.
 - Persist users, sessions, lifecycle snapshots, failure diagnostics, and operation audit records in PostgreSQL.
 - Deploy with the included Helm chart and namespace-scoped Kubernetes RBAC.
 - Organize tenant-isolated projects, versioned DAG workflows and Spark YAML tasks; connect tasks by dragging ports and configure second-level timezone-aware Cron with dropdowns or preview/confirm backfills. [Workflow guide](docs/en/WORKFLOWS.md).
@@ -45,12 +45,19 @@ Spark Control Center is a web console for operating Apache Spark applications on
 
 See the [UI tour](docs/en/UI.md) for application, log, submission, alert and execution-history views.
 
+### Object storage
+
+| Authorized directories | Text editing |
+| --- | --- |
+| ![Object storage](docs/images/object-storage-1440.png) | ![Text editor](docs/images/object-storage-editor-1440.png) |
+
 ## Documentation
 
 - [Deployment and configuration](docs/en/DEPLOYMENT.md): containers, Helm, authentication, RBAC and observability.
 - [Templates and alerts](docs/en/TEMPLATES-AND-ALERTS.md): YAML parameters, version management and diagnostic rules.
 - [Workflows and scheduling](docs/en/WORKFLOWS.md): tenants, dependencies, Cron, backfills and persistence.
 - [Security policy](docs/en/SECURITY.md): vulnerability reporting and deployment responsibilities.
+- [Object storage](docs/en/OBJECT-STORAGE.md): optional S3/MinIO and GCS WIF plugin, prefix permissions and local validation.
 
 ## Architecture
 
@@ -70,7 +77,7 @@ npm ci
 npm run dev
 ```
 
-The default configuration uses browser-local mock data and mock authentication.
+Local `npm run dev` uses browser-local mock data and mock authentication. Helm defaults use the real API and PostgreSQL login.
 
 Run validation:
 
@@ -92,28 +99,30 @@ go vet ./...
 Build images without a registry prefix:
 
 ```bash
-docker build -t spark-control-center:1.4.2 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.4.2 .
+docker build -t spark-control-center:1.5.0 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.0 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.0 .
 ```
 
-GitHub Release `v1.4.2` contains Docker-loadable image tar files and the packaged Helm chart.
+[Releases](https://github.com/ApolloMeridian/spark-application-webui/releases) contain three image TAR archives and one Helm TGZ package. Images have no private registry prefix. The optional storage image is included even when the feature is disabled; no checksum file is generated.
 
 ```bash
-docker load -i spark-control-center-1.4.2.tar
-docker load -i spark-control-center-backend-1.4.2.tar
+docker load -i spark-control-center-1.5.0.tar
+docker load -i spark-control-center-backend-1.5.0.tar
+docker load -i spark-control-center-object-storage-1.5.0.tar
 ```
 
 ## Helm deployment
 
-The default values run the mock frontend. For a real deployment, copy and customize the placeholder-only production example:
+Chart defaults are a complete production template using the real API and PostgreSQL login. Configure endpoints and existing Secrets in one file. Object storage and OIDC are disabled by default; Mock is available only through its explicit example:
 
 ```bash
-cp charts/spark-control-center/examples/values-production.yaml values-production.yaml
+helm show values ./spark-control-center-1.5.0.tgz > values-production.local.yaml
 
-helm upgrade --install spark-console ./charts/spark-control-center \
+helm upgrade --install spark-console ./spark-control-center-1.5.0.tgz \
   --namespace spark-console \
   --create-namespace \
-  -f values-production.yaml
+  -f values-production.local.yaml
 ```
 
 Keep environment-specific deployment settings in an untracked values file. These settings include image locations, watched namespaces, database credential references, observability endpoints, Ingress, and identity-provider metadata.
@@ -124,8 +133,10 @@ See [Deployment and configuration](docs/en/DEPLOYMENT.md) for the complete inter
 
 ## Permissions
 
-- `viewer`: read permitted namespaces, applications, metrics, events, logs, YAML, and Spark UI; manage their own profile.
-- `admin`: all viewer permissions plus submit, terminate, delete, audit, and user management within permitted namespaces. Administrators can assign namespace access; an empty assignment retains backward-compatible access to every configured namespace.
+- New `viewer` accounts enter the minimal `viewer` tenant: overview, applications, logs and Spark UI only.
+- New `admin` accounts enter the full-access `admin` tenant and can manage users, tenants and audit records.
+- Administrators configure module read/manage access, namespace access and Spark actions per tenant; viewer accounts can receive explicit operational permissions. Object storage additionally requires bucket/prefix/action grants.
+- Existing user/project tenant assignments are preserved on upgrade. Legacy tenants retain previous access until explicitly configured. [Permission details](docs/en/WORKFLOWS.md).
 
 The backend independently checks every privileged operation; hiding a UI button is not treated as authorization.
 

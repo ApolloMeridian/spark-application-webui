@@ -1,0 +1,34 @@
+# Overlay on values-production.yaml. Configure the external Google WIF provider and bucket IAM first.
+# These annotations target ingress-nginx; adapt them for other ingress controllers.
+ingress:
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "17m"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+objectStorage:
+  enabled: true
+  internalAuth:
+    existingSecret: spark-console-storage-signing
+  serviceAccount:
+    name: spark-console-storage
+  connections:
+    - id: gcs
+      name: GCS
+      provider: gcs
+      buckets: [spark-artifacts-example]
+      gcs:
+        projectID: example-project
+        authMode: kubernetesWif
+        workloadIdentity:
+          audience: https://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/example-pool/providers/kubernetes
+          credentialConfigMap: spark-console-storage-wif
+          credentialKey: config.json
+  bootstrapGrants:
+    - username: admin
+      tenantId: default
+      connection: gcs
+      bucket: spark-artifacts-example
+      prefix: spark/
+      actions: [list, read, download, upload, edit, delete, copy-source, copy-destination]
