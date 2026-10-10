@@ -116,7 +116,7 @@ assert.throws(
       "-f",
       "scripts/fixtures/helm-annotations-invalid.yaml",
     ),
-  /Invalid type|must be a string/,
+  /Invalid type|must be a string|got [^,\n]+, want string/,
 );
 const annotationPaths = [
   "ingress.annotations",
@@ -140,7 +140,7 @@ for (const path of annotationPaths)
           "--set",
           `${path}.qa=${value}`,
         ),
-      /Invalid type|must be a string/,
+      /Invalid type|must be a string|got [^,\n]+, want string/,
     );
 if (run("template", "--help").includes("--skip-schema-validation"))
   assert.throws(
