@@ -10,9 +10,13 @@ Start with the overview to inspect live resources and historical submission/fail
 
 Open application details for Driver/Executor resources and selectable historical ranges. Persisted Executor logs support time filtering and ascending/descending order.
 
+Driver logs support latest/range queries, previous/next line windows and Loki time filtering.
+
 ![Resource details](../images/detail-1440.png)
 
 ![Executor logs](../images/executor-logs-1440.png)
+
+![Driver log ranges](../images/driver-log-range-1440.png)
 
 Administrators submit YAML after server-side validation and inspect the normalized manifest before creating an application.
 
@@ -35,6 +39,14 @@ Configure second-level Cron using dropdowns or a custom expression. Preview exec
 Backfill previews show the first 50 occurrences. Choose forward/reverse order and a failure policy, then confirm the entire range for durable serial execution.
 
 ![Backfill configuration](../images/workflow-backfill-1440.png)
+
+## Object storage
+
+Create empty directories as drafts; they become persistent only when a file is written beneath them. Search file names and relative paths recursively within the current prefix; Next continues bounded scan batches. See [object-storage setup and permissions](OBJECT-STORAGE.md).
+
+![Draft folder](../images/object-storage-draft-folder-1440.png)
+
+![Prefix search](../images/object-storage-search-1440.png)
 
 ## Templates, alerts and governance
 

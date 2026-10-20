@@ -89,8 +89,8 @@ The frontend feature switch derives from backend availability and `workflows.ena
 Before upgrading, back up PostgreSQL. Migrations are additive and all older users are assigned `default`. To stop reconciliation without losing state, set `workflows.scheduler.enabled=false`; jobs already submitted to Kubernetes continue independently. Re-enable to recover persisted runs. Disabling the scheduler also pauses application of queued cancel actions; leave it enabled until requested cancellations finish. Do not run an older backend concurrently with the new scheduler during rollback.
 
 ```bash
-docker build -t spark-control-center:1.5.1 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.1 .
+docker build -t spark-control-center:1.5.2 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.2 .
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace \
   -f charts/spark-control-center/examples/values-production.yaml \

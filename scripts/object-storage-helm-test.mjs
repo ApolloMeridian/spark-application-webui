@@ -250,7 +250,7 @@ for (const flags of [
 }
 mkdirSync(".qa", { recursive: true });
 console.log(run("package", chart, "--destination", ".qa").trim());
-const packagedValues = run('show', 'values', '.qa/spark-control-center-1.5.1.tgz');
+const packagedValues = run('show', 'values', '.qa/spark-control-center-1.5.2.tgz');
 assert.match(packagedValues, /dataMode: api/);
 assert.match(packagedValues, /mode: local/);
 assert(!packagedValues.includes('Asia/Shanghai'));

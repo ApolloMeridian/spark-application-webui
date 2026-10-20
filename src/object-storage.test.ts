@@ -35,6 +35,33 @@ const c: StorageConnection = {
 };
 describe("storage permissions and mock operations", () => {
   beforeEach(() => localStorage.clear());
+  it("searches nested paths case-insensitively inside the selected prefix without auditing", async () => {
+    const service = storageService(admin);
+    const target = {
+      connection: "demo",
+      bucket: "spark-artifacts",
+      key: "team/analytics/",
+    };
+    await service.create(
+      { ...target, key: target.key + "nested/Example.txt" },
+      "hello",
+    );
+    const before = (await service.operations()).length;
+    const result = await service.list(target, "", "NESTED/EXAMPLE");
+    expect(result.objects.map((x) => x.key)).toEqual([
+      target.key + "nested/Example.txt",
+    ]);
+    expect(
+      (
+        await service.list(
+          { ...target, key: target.key + "different/" },
+          "",
+          "example",
+        )
+      ).objects,
+    ).toEqual([]);
+    expect((await service.operations()).length).toBe(before);
+  });
   it("matches exact directory boundaries and rejects ambiguous keys", () => {
     expect(storageAllowed(admin, c, "bucket", "team/a/file.txt", "read")).toBe(
       true,

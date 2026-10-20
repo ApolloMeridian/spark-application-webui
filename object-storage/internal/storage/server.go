@@ -285,6 +285,11 @@ func policyHash(grants []Grant) string {
 }
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	c, b, k := target(r)
+	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
+	if len(search) > 256 || strings.ContainsFunc(search, func(c rune) bool { return c < 32 || c == 127 }) {
+		s.respond(w, nil, fail(400, "invalid_search"))
+		return
+	}
 	if !ValidPrefix(k) {
 		s.respond(w, nil, fail(400, "invalid_prefix"))
 		return
@@ -298,7 +303,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	cursor := ""
 	if value := r.URL.Query().Get("cursor"); value != "" {
 		ticket, e := unseal(s.Key, value, u.User, "page")
-		if e != nil || ticket.Connection != c || ticket.Bucket != b || ticket.Key != k || ticket.Policy != policyHash(u.Grants) {
+		if e != nil || ticket.Connection != c || ticket.Bucket != b || ticket.Key != k || ticket.Search != search || ticket.Policy != policyHash(u.Grants) {
 			s.respond(w, nil, fail(400, "invalid_cursor"))
 			return
 		}
@@ -311,7 +316,12 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	if n > 500 {
 		n = 500
 	}
-	out, e := p.List(r.Context(), b, k, cursor, n)
+	var out Page
+	if search != "" {
+		out, e = p.ListRecursive(r.Context(), b, k, cursor, n)
+	} else {
+		out, e = p.List(r.Context(), b, k, cursor, n)
+	}
 	if e == nil {
 		for _, o := range out.Objects {
 			if !ValidKey(o.Key) || !strings.HasPrefix(o.Key, k) {
@@ -319,8 +329,18 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if search != "" {
+			out.Scanned = len(out.Objects)
+			matches := make([]Object, 0, len(out.Objects))
+			for _, o := range out.Objects {
+				if !o.Directory && !strings.HasSuffix(o.Key, "/") && strings.Contains(strings.ToLower(strings.TrimPrefix(o.Key, k)), search) {
+					matches = append(matches, o)
+				}
+			}
+			out.Objects = matches
+		}
 		if out.Next != "" {
-			out.Next, e = seal(s.Key, Ticket{User: u.User.ID, Tenant: u.User.Tenant, Connection: c, Bucket: b, Key: k, Kind: "page", Cursor: out.Next, Policy: policyHash(u.Grants), Expires: time.Now().Add(15 * time.Minute).Unix()})
+			out.Next, e = seal(s.Key, Ticket{User: u.User.ID, Tenant: u.User.Tenant, Connection: c, Bucket: b, Key: k, Kind: "page", Cursor: out.Next, Search: search, Policy: policyHash(u.Grants), Expires: time.Now().Add(15 * time.Minute).Unix()})
 		}
 	}
 	s.respond(w, out, e)

@@ -99,6 +99,7 @@ type Ticket struct {
 	Operation  string `json:"operation"`
 	Upload     Upload `json:"upload"`
 	Cursor     string `json:"cursor"`
+	Search     string `json:"search,omitempty"`
 	Policy     string `json:"policy"`
 	Expires    int64  `json:"exp"`
 }

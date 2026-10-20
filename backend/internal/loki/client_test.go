@@ -25,3 +25,19 @@ func TestQueryLogsBuildsSelectorAndSorts(t *testing.T) {
 		t.Fatalf("unexpected entries: %#v err=%v", entries, err)
 	}
 }
+
+func TestDriverRoleAndFractionalTimestampOrder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Query().Get("query"), `spark_role="driver"`) {
+			t.Error("driver selector not used")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"success","data":{"resultType":"streams","result":[{"stream":{},"values":[["1100000000","fraction"],["1000000000","whole"]]}]}}`))
+	}))
+	defer server.Close()
+	client := New(server.URL, time.Second, 5000)
+	entries, err := client.QueryRoleLogs(context.Background(), "spark", "driver", "driver", time.Unix(0, 0), time.Unix(3, 0), "forward", 100)
+	if err != nil || len(entries) != 2 || entries[0].Line != "whole" {
+		t.Fatal(entries, err)
+	}
+}

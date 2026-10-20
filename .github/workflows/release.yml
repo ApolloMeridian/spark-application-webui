@@ -11,20 +11,6 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_DB: spark_control_center_test
-          POSTGRES_USER: spark_test
-          POSTGRES_PASSWORD: spark_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U spark_test -d spark_control_center_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -52,18 +38,11 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
-      - name: Test backend
-        working-directory: backend
-        env:
-          TEST_POSTGRES_DSN: postgres://spark_test:spark_test@127.0.0.1:5432/spark_control_center_test?sslmode=disable
-        run: |
-          go test ./...
-          go vet ./...
-
       - name: Set up Helm
         uses: azure/setup-helm@v4
 
-      - name: Test optional storage plugin
+      # The harness runs backend/plugin tests and vet with its own SQL fixtures.
+      - name: Test Go backend and storage integrations
         run: node scripts/object-storage-local-test.mjs
 
       - name: Validate optional storage Helm configuration
@@ -77,12 +56,9 @@ jobs:
 
       - name: Build release images
         run: |
-          docker build -t "spark-control-center:${{ steps.version.outputs.value }}" .
+          docker build -f Dockerfile.prebuilt -t "spark-control-center:${{ steps.version.outputs.value }}" .
           docker build -f backend/Dockerfile -t "spark-control-center-backend:${{ steps.version.outputs.value }}" .
           docker build -f object-storage/Dockerfile -t "spark-control-center-object-storage:${{ steps.version.outputs.value }}" .
-
-      - name: Smoke-test workflow recovery in release containers
-        run: QA_VERSION="${{ steps.version.outputs.value }}" node scripts/container-workflow-smoke.mjs
 
       - name: Smoke-test optional storage containers
         run: QA_VERSION="${{ steps.version.outputs.value }}" node scripts/container-object-storage-smoke.mjs

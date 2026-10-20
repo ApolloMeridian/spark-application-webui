@@ -7,6 +7,7 @@ import {
   FolderOutlined,
   ReloadOutlined,
   FileAddOutlined,
+  FolderAddOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
 import {
@@ -60,6 +61,11 @@ import {
   type StorageTarget,
 } from "../objectStorage";
 const StorageTextEditor = lazy(() => import("../components/StorageTextEditor"));
+import {
+  draftFolderPath,
+  draftFolderRows,
+  materializeDraftFolders,
+} from "../storageFolders";
 
 const errors: Record<string, [string, string]> = {
   text_too_large: [
@@ -77,6 +83,10 @@ const errors: Record<string, [string, string]> = {
   access_denied: [
     "没有访问此目录或执行此操作的权限",
     "No permission for this directory or action",
+  ],
+  invalid_folder_name: [
+    "请输入有效相对目录名，不能包含空路径、..、反斜杠或控制字符。",
+    "Enter a valid relative folder name without empty segments, .., backslashes or control characters.",
   ],
   storage_unavailable: [
     "对象存储服务不可用，请检查插件并重试",
@@ -119,11 +129,18 @@ export default function ObjectStoragePage() {
   const [prefix, setPrefix] = useState("");
   const [objects, setObjects] = useState<StorageObject[]>([]);
   const [next, setNext] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [scanned, setScanned] = useState(0);
   const [cursors, setCursors] = useState<string[]>([""]);
   const [page, setPage] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [tab, setTab] = useState("files");
+  const [draftFolders, setDraftFolders] = useState<string[]>([]);
+  const [folderOpen, setFolderOpen] = useState(false);
+  const [folderName, setFolderName] = useState("");
+  const [folderError, setFolderError] = useState("");
   const [preview, setPreview] = useState<{
     object: StorageObject;
     content: string;
@@ -224,6 +241,12 @@ export default function ObjectStoragePage() {
     };
   }, [load, session?.id, session?.role]);
   useEffect(() => {
+    setDraftFolders([]);
+    setFolderOpen(false);
+  }, [selected, session?.id, session?.tenantId]);
+  useEffect(() => {
+    setSearchInput("");
+    setSearch("");
     if (selected) {
       const r = JSON.parse(selected) as { prefix: string };
       setPrefix(r.prefix);
@@ -252,10 +275,14 @@ export default function ObjectStoragePage() {
       const out = await service.list(
         { connection: r.connection, bucket: r.bucket, key: prefix },
         cursors[page] || "",
+        search,
       );
       if (rev === listRevision.current) {
         setObjects(out.objects);
         setNext(out.next);
+        setScanned(out.scanned ?? out.objects.length);
+        if (out.objects.length)
+          setDraftFolders((items) => materializeDraftFolders(items, prefix));
       }
     } catch (e) {
       if (rev === listRevision.current) {
@@ -265,7 +292,7 @@ export default function ObjectStoragePage() {
     } finally {
       if (rev === listRevision.current) setBusy(false);
     }
-  }, [service, selected, prefix, page, cursors]);
+  }, [service, selected, prefix, page, cursors, search]);
   useEffect(() => {
     void refreshList();
     return () => {
@@ -273,6 +300,11 @@ export default function ObjectStoragePage() {
     };
   }, [refreshList]);
   const navigate = (value: string) => {
+    listRevision.current++;
+    setSearch("");
+    setSearchInput("");
+    setObjects([]);
+    setNext("");
     setPrefix(value);
     setPage(0);
     setCursors([""]);
@@ -323,6 +355,9 @@ export default function ObjectStoragePage() {
         setProgress,
         controller.signal,
         resume,
+      );
+      setDraftFolders((items) =>
+        materializeDraftFolders(items, prefix + file.name),
       );
       setUploadOpen(false);
       setFile(undefined);
@@ -384,6 +419,14 @@ export default function ObjectStoragePage() {
       : []),
   ];
   const connections = info?.connections || [];
+  const pendingRows = draftFolderRows(
+    draftFolders,
+    prefix,
+    objects,
+    (key) => allowed("list", key) && allowed("upload", key),
+  );
+  const visibleObjects = [...(search ? [] : pendingRows), ...objects];
+  const currentDraft = draftFolders.includes(prefix);
   return (
     <div className="object-storage-page">
       <PageHeader
@@ -483,11 +526,72 @@ export default function ObjectStoragePage() {
                     >
                       {text("新建文本文件", "New text file")}
                     </Button>
+                    <Button
+                      icon={<FolderAddOutlined />}
+                      aria-label={text("新建文件夹", "New folder")}
+                      disabled={
+                        !allowed("list") ||
+                        !allowed("upload") ||
+                        !connection?.editable ||
+                        saving
+                      }
+                      onClick={() => {
+                        setFolderName("");
+                        setFolderError("");
+                        setFolderOpen(true);
+                      }}
+                    >
+                      {text("新建文件夹", "New folder")}
+                    </Button>
                   </Space>
                   {root && (
                     <Breadcrumb
                       items={crumbs}
                       style={{ marginBottom: 16, overflowWrap: "anywhere" }}
+                    />
+                  )}
+                  {currentDraft && (
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 16 }}
+                      message={text(
+                        "临时文件夹：上传文件或保存文本后才会在对象存储中形成真实目录；刷新页面后，未保存的临时目录会消失。",
+                        "Draft folder: upload a file or save text here to persist the prefix in object storage. Unsaved folders disappear on page reload.",
+                      )}
+                    />
+                  )}
+                  <Input.Search
+                    aria-label={text("搜索当前目录", "Search current prefix")}
+                    placeholder={text(
+                      "搜索当前目录及子目录的文件名或路径",
+                      "Search file names or paths in this prefix and subfolders",
+                    )}
+                    value={searchInput}
+                    maxLength={256}
+                    allowClear
+                    enterButton={text("搜索", "Search")}
+                    disabled={!root || busy}
+                    onChange={(e) => setSearchInput(e.target.value)}
+                    onSearch={(value) => {
+                      listRevision.current++;
+                      setSearch(value.trim());
+                      setPage(0);
+                      setCursors([""]);
+                      setObjects([]);
+                      setNext("");
+                    }}
+                    style={{ maxWidth: 680, marginBottom: 16 }}
+                  />
+                  {search && (
+                    <Alert
+                      type="info"
+                      showIcon
+                      style={{ marginBottom: 16 }}
+                      message={text(
+                        `按路径匹配（不区分大小写），不搜索内容或临时文件夹。本批扫描 ${scanned} 个对象，匹配 ${objects.length} 个。${next ? "点击下一页继续扫描，即使本批没有匹配项。" : "已到扫描末尾。"}`,
+                        `Case-insensitive path matching; contents and draft folders are excluded. This batch scanned ${scanned} objects, matching ${objects.length}. ${next ? "Next continues scanning, even when this batch has no matches." : "End of scan."}`,
+                      )}
                     />
                   )}
                   {!root && !busy ? (
@@ -502,7 +606,7 @@ export default function ObjectStoragePage() {
                       size="small"
                       rowKey="key"
                       loading={busy}
-                      dataSource={objects}
+                      dataSource={visibleObjects}
                       pagination={false}
                       scroll={{ x: 900 }}
                       columns={[
@@ -543,6 +647,9 @@ export default function ObjectStoragePage() {
                               >
                                 {o.key.slice(prefix.length) || o.key}
                               </Button>
+                              {pendingRows.some(
+                                (draft) => draft.key === o.key,
+                              ) && <Tag>{text("临时", "Draft")}</Tag>}
                             </Space>
                           ),
                         },
@@ -562,7 +669,27 @@ export default function ObjectStoragePage() {
                           title: text("操作", "Actions"),
                           width: 220,
                           render: (_: unknown, o: StorageObject) =>
-                            !o.directory && (
+                            o.directory ? (
+                              pendingRows.some(
+                                (draft) => draft.key === o.key,
+                              ) && (
+                                <Button
+                                  aria-label={text(
+                                    "移除临时文件夹",
+                                    "Remove draft folder",
+                                  )}
+                                  onClick={() =>
+                                    setDraftFolders((items) =>
+                                      items.filter(
+                                        (key) => !key.startsWith(o.key),
+                                      ),
+                                    )
+                                  }
+                                >
+                                  {text("移除", "Remove")}
+                                </Button>
+                              )
+                            ) : (
                               <Space>
                                 <Button
                                   aria-label={text("下载", "Download")}
@@ -856,6 +983,9 @@ export default function ObjectStoragePage() {
                       preview.content,
                       preview.object.version,
                     );
+                setDraftFolders((items) =>
+                  materializeDraftFolders(items, preview.object.key),
+                );
                 setPreview({ ...preview, object: out, creating: false });
               })
             }
@@ -1009,6 +1139,44 @@ export default function ObjectStoragePage() {
           )}
         </Typography.Paragraph>
         {progress !== undefined && <Progress percent={Math.round(progress)} />}
+      </Modal>
+      <Modal
+        title={text("新建文件夹", "New folder")}
+        open={folderOpen}
+        onCancel={() => setFolderOpen(false)}
+        onOk={() => {
+          try {
+            const key = draftFolderPath(prefix, folderName);
+            if (
+              !allowed("list", key) ||
+              !allowed("upload", key) ||
+              !connection?.editable
+            )
+              throw new Error("access_denied");
+            setDraftFolders((items) => [...new Set([...items, key])]);
+            setFolderOpen(false);
+            navigate(key);
+          } catch (e) {
+            setFolderError(report(e));
+          }
+        }}
+      >
+        <Input
+          aria-label={text("文件夹名称", "Folder name")}
+          value={folderName}
+          onChange={(e) => {
+            setFolderName(e.target.value);
+            setFolderError("");
+          }}
+          placeholder="folder/subfolder"
+        />
+        <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>
+          {text(
+            "仅创建当前页面中的临时目录，不写入空对象或占位文件。上传文件或保存文本后目录才会持久化。",
+            "Creates a draft directory in this page only, without empty objects or marker files. The directory persists only after uploading a file or saving text.",
+          )}
+        </Typography.Paragraph>
+        {folderError && <Alert type="error" showIcon message={folderError} />}
       </Modal>
       <Modal
         title={text("目录权限", "Prefix permissions")}

@@ -102,6 +102,15 @@ http
       return;
     }
     if (url.pathname.endsWith("/log")) {
+      if (url.pathname.includes("logs-regression")) {
+        const tail = Number(url.searchParams.get("tailLines") || 12050);
+        for (let line = Math.max(1, 12051 - tail); line <= 12050; line++)
+          response.write(
+            `2026-10-20T00:00:00Z INFO driver-line-${String(line).padStart(5, "0")}\n`,
+          );
+        response.end();
+        return;
+      }
       response.end("INFO test fixture driver log\n");
       return;
     }

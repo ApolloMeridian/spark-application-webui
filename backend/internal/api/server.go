@@ -106,6 +106,7 @@ func New(cfg config.Config, applicationService ApplicationService, authService *
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/spark-ui", server.sparkUIProxy)
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/spark-ui/{path...}", server.sparkUIProxy)
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/executors/{pod}/logs", server.executorLogs)
+	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/driver/logs", server.driverLogs)
 	mux.HandleFunc("POST /v1/namespaces/{namespace}/applications/{name}/kill", server.killApplication)
 	mux.HandleFunc("DELETE /v1/namespaces/{namespace}/applications/{name}", server.deleteApplication)
 	mux.HandleFunc("GET /v1/audit", server.listAudit)

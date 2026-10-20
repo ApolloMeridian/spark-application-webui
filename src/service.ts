@@ -3,6 +3,7 @@ import { seedApplications } from './mockData';
 import { apiUrl, runtimeConfig } from './runtimeConfig';
 import { sumResources } from './utils';
 import { cleanApplicationManifest, renderTemplateManifest } from './manifests';
+import type { DriverLogQuery, DriverLogWindow } from './types';
 
 const APPS_KEY = 'spark-console-mock-applications';
 const AUDIT_KEY = 'spark-console-mock-audit';
@@ -28,6 +29,21 @@ function matches(app: SparkApplication, filters: ApplicationFilters = {}) {
 }
 
 export class MockSparkApplicationService implements SparkApplicationService {
+  async getDriverLogs(namespace: string, name: string, query: DriverLogQuery): Promise<DriverLogWindow> {
+    const app = await this.getApplication(namespace, name);
+    let all = app.logs;
+    if (query.source === 'loki') {
+      const base = new Date(app.startedAt ?? app.createdAt).getTime();
+      all = all.map((line, i) => ({ line, timestamp: new Date(base+i*1000).toISOString() }))
+        .filter((entry) => entry.timestamp >= query.from! && entry.timestamp < query.to!)
+        .map((entry) => `${entry.timestamp} ${entry.line}`);
+      if (query.direction === 'backward') all.reverse();
+    }
+    const start = query.source === 'loki' ? 0 : query.mode === 'range' ? (query.startLine ?? 1)-1 : Math.max(0, all.length-query.limit);
+    const limit = query.mode === 'range' && query.source !== 'loki' ? (query.endLine ?? start+query.limit)-start : query.limit;
+    const lines = all.slice(start, start+limit);
+    return { source: query.source, mode: query.mode, lines, startLine: query.source === 'kubernetes' && query.mode === 'range' && lines.length ? start+1 : 0, endLine: query.source === 'kubernetes' && query.mode === 'range' && lines.length ? start+lines.length : 0, hasMore: start+lines.length<all.length, byteLimit: false, limit };
+  }
   async listApplications(filters: ApplicationFilters = {}) { await wait(); return readApps().filter((app) => matches(app, filters)); }
   async getApplication(namespace: string, name: string) {
     await wait(); const app = readApps().find((item) => item.namespace === namespace && item.name === name);
@@ -161,6 +177,11 @@ export class ApiSparkApplicationService implements SparkApplicationService {
   listApplications(filters: ApplicationFilters = {}) { return this.request<SparkApplication[]>(`/v1/applications${this.query(filters)}`); }
   getSummary(filters: ApplicationFilters = {}) { return this.request<DashboardSummary>(`/v1/dashboard/summary${this.query(filters)}`); }
   getApplication(namespace: string, name: string) { return this.request<SparkApplication>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications/${encodeURIComponent(name)}`); }
+  getDriverLogs(namespace: string, name: string, query: DriverLogQuery) {
+    const params = new URLSearchParams();
+    Object.entries(query).forEach(([key, value]) => { if (value !== undefined) params.set(key, String(value)); });
+    return this.request<DriverLogWindow>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications/${encodeURIComponent(name)}/driver/logs?${params}`);
+  }
   getApplicationMetrics(namespace: string, name: string, from: string, to: string) {
     const params = new URLSearchParams({ from, to });
     return this.request<MetricPoint[]>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications/${encodeURIComponent(name)}/metrics?${params.toString()}`);

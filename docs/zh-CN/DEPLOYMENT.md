@@ -5,8 +5,8 @@
 从代码库根目录执行，镜像名称不包含私有仓库前缀：
 
 ```bash
-docker build -t spark-control-center:1.5.1 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.1 .
+docker build -t spark-control-center:1.5.2 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.2 .
 ```
 
 如已缓存 Nginx 基础镜像，可先生成前端产物再使用预构建 Dockerfile：
@@ -14,7 +14,7 @@ docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.1 .
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.1 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.2 .
 ```
 
 前端监听 `8080`，以 UID 101 运行，支持只读根文件系统，并提供 `/healthz`。Helm 在运行时挂载 `/usr/share/nginx/html/config/config.js`，无需为不同环境重建镜像。
@@ -34,7 +34,7 @@ helm upgrade --install spark-console ./charts/spark-control-center \
 真实部署先复制生产配置示例，再以私有配置覆盖环境参数：
 
 ```bash
-helm show values ./spark-control-center-1.5.1.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.2.tgz > values-production.local.yaml
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
@@ -159,6 +159,12 @@ CPU 使用 `container_cpu_usage_seconds_total`，内存使用 `container_memory_
 
 ## 作业与观测行为
 
+### Driver 日志窗口
+
+Driver 日志页使用独立查询，不受详情快照中最后 5000 行诊断日志的限制。支持“最新日志”和“指定行范围”，可前后翻段，每次最多 10000 行 / 4 MiB。Kubernetes 行偏移通过流式跳过前面内容实现，不将整份日志加载到内存；较晚的行段查询可能更慢，仍受请求超时约束。行号相对于 Kubernetes 当前保留的容器日志，不是永久不变的完整作业行号。搜索、级别筛选只作用于当前窗口，保留原行号。
+
+已轮转或删除的 Driver 日志可选择“Loki 持久化日志”，按时间范围及正倒序查询；Alloy 必须采集 namespace、pod、spark_role="driver" 标签。Loki 每次仍受配置的条目上限限制，提示达到上限时请缩小时间范围。未被 Kubernetes 保留、也未被 Loki 采集的日志无法恢复。日志查询沿用命名空间/租户权限，不产生操作审计。
+
 终止不是删除：先把 Spark 重启策略设为 `Never`，再给 Driver Pod 设置已过期的 `activeDeadlineSeconds`。Kubelet 终止容器并保留失败 Pod，事件和日志仍可诊断；关联 Executor 清除。删除终态记录时使用前台传播，由所有者关系清理 Driver 等资源。具体协调时序取决于 Spark Operator。
 
 提交最大 1 MiB，要求匹配配置的 API 版本、Kind 和授权命名空间。服务端清理运行状态和托管元数据，执行 `dryRun=All` 后展示规范化差异，使用 CREATE 创建而非覆盖；注解 `spark-control-center.io/submitted-by` 保存实际提交者，外部提交显示 `unknown`。
@@ -167,7 +173,7 @@ CPU 使用 `container_cpu_usage_seconds_total`，内存使用 `container_memory_
 
 Executor 日志通过 Loki `query_range` 查询，Pod 删除后仍可按时间范围和正/倒序查看。PostgreSQL 保存已删除作业的生命周期快照与诊断；SSE 之外保留定时刷新以恢复断线。`/healthz` 检查进程存活，`/readyz` 检查 Kubernetes 和 PostgreSQL。
 
-## 1.5.1 租户权限与生产默认配置
+## 1.5.2 租户权限与生产默认配置
 
 Chart 默认使用真实后端与 PostgreSQL 登录，不再默认 Mock。在单个 values 文件中指定初始管理员密码 Secret 和数据库 Secret。仅使用 OIDC 时设置 runtimeConfig.auth.mode=oidc、启用 oidc 并配置客户端 Secret/回调，此模式不要求初始本地管理员 Secret。存储仍需显式开启。
 

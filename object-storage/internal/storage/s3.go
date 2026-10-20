@@ -64,7 +64,13 @@ func NewS3(c Connection, chunk int64) (*S3, error) {
 	return &S3{client, chunk, c.S3.ConditionalWrites}, nil
 }
 func (s *S3) List(ctx context.Context, b, p, token string, n int) (Page, error) {
-	x, e := s.Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(b), Prefix: aws.String(p), Delimiter: aws.String("/"), ContinuationToken: optional(token), MaxKeys: aws.Int32(int32(n))})
+	return s.list(ctx, b, p, token, n, "/")
+}
+func (s *S3) ListRecursive(ctx context.Context, b, p, token string, n int) (Page, error) {
+	return s.list(ctx, b, p, token, n, "")
+}
+func (s *S3) list(ctx context.Context, b, p, token string, n int, delimiter string) (Page, error) {
+	x, e := s.Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(b), Prefix: aws.String(p), Delimiter: optional(delimiter), ContinuationToken: optional(token), MaxKeys: aws.Int32(int32(n))})
 	if e != nil {
 		return Page{}, e
 	}

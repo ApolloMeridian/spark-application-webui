@@ -9,6 +9,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../auth';
 import { ApplicationOperationModal } from '../components/KillModal';
 import { ExecutorLogsDrawer } from '../components/ExecutorLogsDrawer';
+import { DriverLogsPanel } from '../components/DriverLogsPanel';
 import { PageHeader } from '../components/PageHeader';
 import { StatusTag } from '../components/StatusTag';
 import { useI18n } from '../i18n';
@@ -84,10 +85,7 @@ function SchedulingTab({ app }: { app: SparkApplication }) {
 }
 
 function LogsTab({ app }: { app: SparkApplication }) {
-  const { t } = useI18n(); const { message } = App.useApp(); const [query, setQuery] = useState(''); const [level, setLevel] = useState('ALL');
-  const lines = app.logs.filter((line) => (level === 'ALL' || line.includes(` ${level} `)) && line.toLowerCase().includes(query.toLowerCase()));
-  const copy = async () => { await navigator.clipboard.writeText(lines.join('\n')); message.success(t('copied')); };
-  return <Card className="panel-card logs-card" title={<Space><span>{app.driverPod}</span><Tag>stdout</Tag></Space>} extra={<Space><Input prefix={<SearchOutlined />} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter logs" /><Segmented value={level} onChange={(v) => setLevel(String(v))} options={['ALL', 'INFO', 'WARN', 'ERROR']} /><Button icon={<CopyOutlined />} onClick={copy}>{t('copy')}</Button></Space>}><pre className="log-viewer">{lines.length ? lines.map((line, index) => <div className={line.includes('ERROR') ? 'log-error' : line.includes('WARN') ? 'log-warn' : ''} key={index}><span>{String(index + 1).padStart(2, '0')}</span>{line}</div>) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />}</pre></Card>;
+  return <DriverLogsPanel app={app} />;
 }
 
 function EventsTab({ app }: { app: SparkApplication }) {

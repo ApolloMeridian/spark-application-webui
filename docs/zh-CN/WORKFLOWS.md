@@ -1,4 +1,4 @@
-# 工作流编排与定时调度（1.5.1）
+# 工作流编排与定时调度（1.5.2）
 
 首版仅支持 SparkApplication 节点，不执行任意 Bash、SQL 或 HTTP 脚本。
 
@@ -71,8 +71,8 @@ workflows:
 前端入口从后端和工作流开关派生，纯前端 Mock 演示不模拟工作流。升级前备份 PostgreSQL，启动时增量迁移。关闭 scheduler 会暂停所有协调动作（包括排队中的终止），已提交 Kubernetes 作业仍继续运行；重新启用后恢复数据库状态。执行历史暂不自动清理。多副本必须共享同一数据库和 Kubernetes 上下文，回滚时不要让旧后端与新调度器同时运行。
 
 ```bash
-docker build -t spark-control-center:1.5.1 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.1 .
+docker build -t spark-control-center:1.5.2 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.2 .
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace \
   -f charts/spark-control-center/examples/values-production.yaml \

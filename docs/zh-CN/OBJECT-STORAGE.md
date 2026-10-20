@@ -1,20 +1,20 @@
-# 对象存储插件（1.5.1）
+# 对象存储插件（1.5.2）
 
 这是可选的独立无状态服务，不是嵌入 MinIO Console。默认关闭，不创建插件资源，不要求存储凭证，不改变已有 Spark 作业/工作流能力。
 
 ## 构建与安装
 
 ```bash
-docker build -t spark-control-center:1.5.1 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.1 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.1 .
+docker build -t spark-control-center:1.5.2 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.2 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.2 .
 helm package charts/spark-control-center
 
 # 首次部署时创建单文件配置；已配置过的文件不要覆盖。
-helm show values ./spark-control-center-1.5.1.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.2.tgz > values-production.local.yaml
 # 修改此文件中的镜像仓库、Endpoint、bucket、认证、数据库和初始授权。
 # 根据内网实际仓库分别 docker tag / docker push 三个镜像。
-helm upgrade --install spark-console ./spark-control-center-1.5.1.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.5.2.tgz \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
 ```
@@ -74,6 +74,14 @@ kubectl -n spark-console create configmap spark-console-storage-wif \
 
 ## 目录、权限与编辑
 
+### 当前目录搜索
+
+按文件名或相对路径搜索当前 Prefix 及其子目录，不区分大小写，不搜索文件内容或未保存的临时文件夹。S3/MinIO 与 GCS 均按有限批次扫描元数据（默认每批 100 个对象，每次最多 500 个），提示栏显示本批扫描量和匹配量。即使本批没有匹配项，只要仍有“下一页”就可继续扫描，直到扫描末尾。清空搜索可恢复目录浏览，切换目录会重置搜索。每批请求均校验目录权限和分页游标，搜索不产生审计记录。
+
+### 临时文件夹
+
+点击“新建文件夹”，输入相对目录名或多级路径即可进入临时目录。此操作只保存在当前页面，不向 S3/MinIO/GCS 写入空对象或占位文件。返回上级可看到“临时”标签，也可直接移除临时目录。只有上传实际文件或保存新文本文件，目录前缀才持久化。刷新页面或切换存储根目录/账户时，未保存的临时目录消失。创建临时目录需要 list/upload 权限及可写连接；实际文件写入仍由插件校验并正常审计，创建/移除临时目录不产生审计记录。
+
 管理员在“对象存储 → 目录权限”选择用户、连接、bucket、prefix 和操作。用户选择器列出所有租户中的有效账户，并显示租户名称；租户未启用对象存储时，对应账户可见但暂不可授权，须先启用该租户的对象存储权限。管理员自身也必须拥有数据授权，只能委派自己已有的存储桶、目录前缀与操作范围，不能扩大权限。授权归属于目标用户的实际租户，而非管理员的租户。普通用户的文件操作由具体授权决定，可授权上传、编辑、删除、复制；权限配置仍仅管理员可管理。数据访问同时要求目标租户启用对象存储，并匹配用户自身的目录授权。空 prefix 表示整个 bucket，页面必须再次确认；`team/a/` 不匹配 `team/ab/`。
 
 变更用户租户不会把原租户授权自动迁移到新租户，须重新核对并配置授权；用户已停用或变更租户后，管理员仍可撤销旧授权。Helm 初始授权仅在配置租户内首次匹配账户时应用，撤销结果不会因重启而覆盖。初始授权的周期同步与用户选择器相互独立；创建账户或修改租户权限后刷新“目录权限”即可，无需等待初始授权同步。
@@ -107,7 +115,7 @@ npm install
 npm test
 npm run build
 node scripts/object-storage-local-test.mjs
-QA_VERSION=1.5.1 node scripts/container-object-storage-smoke.mjs
+QA_VERSION=1.5.2 node scripts/container-object-storage-smoke.mjs
 node scripts/object-storage-helm-test.mjs
 ```
 

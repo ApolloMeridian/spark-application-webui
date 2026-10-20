@@ -3,7 +3,7 @@
 ## Build and publish the UI image
 
 ```bash
-docker build -t spark-control-center:1.5.1 .
+docker build -t spark-control-center:1.5.2 .
 ```
 
 For an air-gapped build with a locally cached Nginx base image:
@@ -11,7 +11,7 @@ For an air-gapped build with a locally cached Nginx base image:
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.1 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.2 .
 ```
 
 The image listens on port `8080`, serves `/healthz`, runs as UID 101, and supports a read-only root filesystem. Helm replaces `/usr/share/nginx/html/config/config.js` at runtime, so one immutable image can be promoted through environments.
@@ -22,7 +22,7 @@ Use the repository root as Docker build context:
 
 ```bash
 docker build -f backend/Dockerfile \
-  -t spark-control-center-backend:1.5.1 .
+  -t spark-control-center-backend:1.5.2 .
 ```
 
 The backend runs as UID 65532 on port `8081`. On startup it connects to PostgreSQL and creates the audit/history tables plus `local_users`, `local_user_sessions`, and `application_settings`. The configured database user therefore needs table/index creation permission in `spark_console_db`.
@@ -182,6 +182,12 @@ OIDC uses Authorization Code Flow with PKCE, validates issuer/audience/signature
 
 ## Real data behavior
 
+### Driver log windows
+
+The Driver logs tab queries independently of the detail snapshot's 5000-line diagnostic tail. Select **Latest logs** or a **Line range**, with next/previous windows and up to 10000 lines / 4 MiB per request. Kubernetes offsets are implemented by streaming past earlier lines, not loading the full log into memory; very late ranges can take longer and remain subject to request timeouts. Numbers refer to the container log currently retained by Kubernetes, not an immutable lifetime log. Search/level filters apply to the loaded window and preserve its line numbers.
+
+For rotated/deleted Driver logs, choose **Loki retained logs**, a time range and sort direction. Alloy must ingest `namespace`, `pod` and `spark_role="driver"` labels. Loki's configured entry limit still applies per query; narrow the time range if the limit warning appears. Logs neither retained by Kubernetes nor ingested by Loki cannot be recovered. Read-only log queries keep namespace/tenant authorization and do not generate operation audits.
+
 - SparkApplications are read directly from Kubernetes in `rbac.namespaces`; Pods, Driver logs, and core/v1 Events are correlated to each application.
 - A Kubernetes Watch per configured namespace feeds a same-origin SSE stream. The UI refreshes affected views immediately and retains periodic polling for watch reconnection or proxy timeout recovery.
 - PostgreSQL snapshots preserve deleted application details, generated lifecycle events, and rule-based diagnosis for common image-pull, scheduling, mount, OOM, lost-executor, and RBAC failures.
@@ -190,7 +196,7 @@ OIDC uses Authorization Code Flow with PKCE, validates issuer/audience/signature
 - A Prometheus failure leaves Kubernetes application data available with live metrics omitted. Kubernetes and PostgreSQL are readiness dependencies.
 - `/healthz` checks process liveness; `/readyz` verifies Kubernetes access and PostgreSQL connectivity.
 
-## Tenant permissions in 1.5.1
+## Tenant permissions in 1.5.2
 
 Production chart defaults use the real backend and PostgreSQL login, not Mock. Prepare the initial administrator password Secret and database Secret referenced in your single values file. To use OIDC-only login, set runtimeConfig.auth.mode=oidc, enable oidc, configure the provider/client Secret and callback; no initial local administrator Secret is then required. Storage remains disabled unless explicitly enabled.
 

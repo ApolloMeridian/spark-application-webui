@@ -36,6 +36,7 @@ type Object struct {
 type Page struct {
 	Objects []Object `json:"objects"`
 	Next    string   `json:"next"`
+	Scanned int      `json:"scanned,omitempty"`
 }
 
 // Common prefixes are virtual directories and have no modification timestamp.
@@ -70,6 +71,7 @@ type Upload struct {
 // Providers receive already-authorized raw object keys, never HTTP paths.
 type Provider interface {
 	List(context.Context, string, string, string, int) (Page, error)
+	ListRecursive(context.Context, string, string, string, int) (Page, error)
 	Head(context.Context, string, string) (Object, error)
 	Open(context.Context, string, string, string) (io.ReadCloser, error)
 	Put(context.Context, string, string, io.Reader, int64, string) (Object, error)

@@ -26,6 +26,10 @@ type fakeProvider struct {
 	HeadSize *int64
 }
 
+func (f *fakeProvider) ListRecursive(ctx context.Context, b, p, c string, n int) (Page, error) {
+	return f.List(ctx, b, p, c, n)
+}
+
 func (f *fakeProvider) List(_ context.Context, b, p, c string, n int) (Page, error) {
 	out := Page{Objects: []Object{}}
 	for k, v := range f.Data {

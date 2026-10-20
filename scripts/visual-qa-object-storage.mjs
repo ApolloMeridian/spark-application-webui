@@ -245,6 +245,82 @@ try {
     await page
       .getByRole("tab", { name: "Prefix permissions", exact: true })
       .click();
+    await page.getByRole("tab", { name: "Files", exact: true }).click();
+    const beforeDraft = await page.evaluate(() =>
+      localStorage.getItem("spark-storage-fixture"),
+    );
+    await page.getByRole("button", { name: "New folder", exact: true }).click();
+    await page
+      .getByRole("textbox", { name: "Folder name", exact: true })
+      .fill("draft-only");
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "OK", exact: true })
+      .click();
+    await page.getByText(/Draft folder: upload a file/).waitFor();
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem("spark-storage-fixture")),
+      beforeDraft,
+      "folder creation must not write an object",
+    );
+    await page.getByText("spark-artifacts", { exact: true }).click();
+    await page
+      .getByRole("button", { name: "draft-only/", exact: true })
+      .waitFor();
+    await page.waitForFunction(
+      () => !document.querySelector(".ant-message-notice"),
+    );
+    await page.screenshot({
+      path: `.qa/object-storage-draft-folder-${width}.png`,
+      fullPage: true,
+    });
+    await page
+      .getByRole("button", { name: "draft-only/", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "New text file", exact: true })
+      .click();
+    assert.equal(
+      await page
+        .getByRole("textbox", { name: "File path", exact: true })
+        .inputValue(),
+      "team/analytics/draft-only/untitled.txt",
+    );
+    const folderEditor = page.getByRole("textbox", {
+      name: "File content",
+      exact: true,
+    });
+    await folderEditor.focus();
+    await page.keyboard.type("folder contents");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await page
+      .getByText("Operation completed", { exact: true })
+      .first()
+      .waitFor();
+    await page
+      .locator(".ant-drawer-open")
+      .getByRole("button", { name: "Close", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "untitled.txt", exact: true })
+      .waitFor();
+    assert.equal(
+      await page.getByText(/Draft folder: upload a file/).count(),
+      0,
+    );
+    await page.getByText("spark-artifacts", { exact: true }).click();
+    await page.getByRole("button", { name: "New folder", exact: true }).click();
+    await page
+      .getByRole("textbox", { name: "Folder name", exact: true })
+      .fill("empty-after-reload");
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "OK", exact: true })
+      .click();
+    await page.getByText(/Draft folder: upload a file/).waitFor();
+    await page
+      .getByRole("tab", { name: "Prefix permissions", exact: true })
+      .click();
     await page
       .getByRole("button", { name: "Add or update grant", exact: true })
       .waitFor();
@@ -272,6 +348,46 @@ try {
       await page.getByRole("cell", { name: "DOWNLOAD", exact: true }).count(),
       1,
     );
+    await page.reload();
+    await page
+      .getByRole("button", { name: "draft-only/", exact: true })
+      .waitFor();
+    await page
+      .getByLabel("Search current prefix", { exact: true })
+      .fill("UNTITLED");
+    await page
+      .getByLabel("Search current prefix", { exact: true })
+      .press("Enter");
+    await page
+      .getByRole("button", { name: "draft-only/untitled.txt", exact: true })
+      .waitFor();
+    assert.equal(
+      await page
+        .getByRole("button", { name: "config.yaml", exact: true })
+        .count(),
+      0,
+    );
+    await page.waitForFunction(
+      () => !document.querySelector(".ant-spin-spinning,.ant-spin-blur"),
+    );
+    await page.screenshot({
+      path: `.qa/object-storage-search-${width}.png`,
+      animations: "disabled",
+      fullPage: true,
+    });
+    await page.getByLabel("Search current prefix", { exact: true }).fill("");
+    await page
+      .getByLabel("Search current prefix", { exact: true })
+      .press("Enter");
+    await page
+      .getByRole("button", { name: "draft-only/", exact: true })
+      .waitFor();
+    assert.equal(
+      await page
+        .getByRole("button", { name: "empty-after-reload/", exact: true })
+        .count(),
+      0,
+    );
     await page.evaluate(() =>
       localStorage.setItem(
         "spark-console-session",
@@ -285,6 +401,11 @@ try {
     assert(
       await page
         .getByRole("button", { name: "Upload file", exact: true })
+        .isDisabled(),
+    );
+    assert(
+      await page
+        .getByRole("button", { name: "New folder", exact: true })
         .isDisabled(),
     );
     assert.equal(

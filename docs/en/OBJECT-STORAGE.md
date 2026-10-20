@@ -1,20 +1,20 @@
-# Object storage plugin (1.5.1)
+# Object storage plugin (1.5.2)
 
 An optional, independently deployed stateless service, not an embedded MinIO Console. It is disabled by default, creates no plugin resources when disabled and requires no storage credentials.
 
 ## Build and deploy
 
 ```bash
-docker build -t spark-control-center:1.5.1 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.1 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.1 .
+docker build -t spark-control-center:1.5.2 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.2 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.2 .
 helm package charts/spark-control-center
 
 # First deployment only: export the production template; preserve existing environment values.
-helm show values ./spark-control-center-1.5.1.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.2.tgz > values-production.local.yaml
 # Adapt images, endpoints, bucket, authentication, database and bootstrap grants in that file.
 # Tag and push all three images to your own registry if needed.
-helm upgrade --install spark-console ./spark-control-center-1.5.1.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.5.2.tgz \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
 ```
@@ -68,6 +68,14 @@ Replace project numbers, pool/provider and audiences. For impersonation use the 
 
 ## Browsing and authorization
 
+### Search within a prefix
+
+Search file names or relative paths under the current prefix, including subfolders. Matching is case-insensitive and excludes file contents and unsaved draft folders. S3/MinIO and GCS scan metadata in bounded batches (100 objects by default, at most 500 per request). The result banner shows this batch's scanned/matched counts. Use **Next** to continue, even if a batch has no matches; only the last batch completes the scan. Clear the search to return to folder browsing. Navigating to another prefix resets the search. Authorization and cursor validation apply to every batch; search creates no audit rows.
+
+### Draft folders
+
+Use **New folder** to enter a relative directory name or nested path. The directory is a draft held only in the current page, with no empty objects or marker files written to S3/MinIO/GCS. Navigate back to see its Draft tag, or remove a draft without a storage operation. Upload a file or save a new text file inside it to make the prefix persistent. Empty drafts disappear on page reload or storage-root/account changes. Creating a draft requires list/upload permissions and a writable connection; actual file writes remain authorized by the plugin and audited normally. Draft creation/removal does not create audit records.
+
 Administrators manage user grants in Object storage → Prefix permissions. The user selector lists active accounts across tenants and shows their tenant names. Accounts whose tenant has disabled object storage remain visible but cannot receive new grants until that permission is enabled. Administrators require explicit data grants too and can delegate only their own bucket/prefix/actions. Grants are bound to the recipient's actual tenant, not the administrator's tenant. Viewer file actions are determined by explicit grants, including upload/edit/delete/copy when authorized; only administrators can manage grants. Data access still requires the recipient's tenant module permission and matching personal grants. An empty prefix grants the entire bucket and requires confirmation; `team/a/` never matches `team/ab/`.
 
 Tenant changes do not carry grants to the new tenant. Review and grant access for the new tenant explicitly; obsolete grants can be revoked even after the recipient is disabled or moved. Bootstrap grants remain one-time grants for their configured tenant, with revoked grants preserved across restarts. The periodic bootstrap reconciliation is separate from the user selector; refresh Prefix permissions after creating an account or changing tenant permissions rather than waiting for reconciliation.
@@ -101,7 +109,7 @@ npm install
 npm test
 npm run build
 node scripts/object-storage-local-test.mjs
-QA_VERSION=1.5.1 node scripts/container-object-storage-smoke.mjs
+QA_VERSION=1.5.2 node scripts/container-object-storage-smoke.mjs
 node scripts/object-storage-helm-test.mjs
 ```
 

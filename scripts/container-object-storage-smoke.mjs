@@ -6,7 +6,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { ensureMinIOFixture } from "./minio-fixture.mjs";
 
-const version = process.env.QA_VERSION || "1.5.1";
+const version = process.env.QA_VERSION || "1.5.2";
 const minioImage = ensureMinIOFixture();
 const prefix = `spark-storage-container-${randomBytes(4).toString("hex")}`;
 const password = randomBytes(24).toString("hex");
@@ -285,6 +285,27 @@ try {
   assert.equal(login.status, 200);
   cookie = login.headers.get("set-cookie").split(";")[0];
   const admin = await login.json();
+  await api(
+    "/namespaces/spark/applications",
+    "POST",
+    JSON.stringify({
+      yaml: "apiVersion: sparkoperator.k8s.io/v1beta2\nkind: SparkApplication\nmetadata:\n  name: logs-regression\n  namespace: spark\nspec:\n  type: Scala\n  mode: cluster\n  image: spark:3.5.3\n  mainClass: org.apache.spark.examples.SparkPi\n  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples.jar\n  sparkVersion: 3.5.3\n  driver:\n    cores: 1\n    memory: 1g\n    serviceAccount: spark\n  executor:\n    cores: 1\n    instances: 1\n    memory: 1g\n",
+    }),
+  );
+  const driverLogPath =
+    "/namespaces/spark/applications/logs-regression/driver/logs";
+  const earlyLogs = await api(
+    `${driverLogPath}?mode=range&startLine=1&endLine=2000`,
+  );
+  assert.equal(earlyLogs.startLine, 1);
+  assert(earlyLogs.lines[0].endsWith("driver-line-00001"));
+  assert.equal(earlyLogs.hasMore, true);
+  const middleLogs = await api(
+    `${driverLogPath}?mode=range&startLine=6001&endLine=8000`,
+  );
+  assert(middleLogs.lines[0].endsWith("driver-line-06001"));
+  const tailLogs = await api(`${driverLogPath}?mode=tail&limit=2000`);
+  assert(tailLogs.lines[0].endsWith("driver-line-10051"));
   let info = await api("/object-storage/connections");
   assert.deepEqual(info.connections[0].roots.map((x) => x.bucket).sort(), [
     "secondary-artifacts",
@@ -380,6 +401,24 @@ try {
   );
   assert.equal(await download.text(), "updated");
   assert(download.headers.get("content-disposition").startsWith("attachment"));
+  await api(
+    `/object-storage/text${obj("team/a/nested/search-target.txt")}`,
+    "POST",
+    JSON.stringify({ content: "nested search", version: "" }),
+  );
+  const storageSearch = await api(
+    `/object-storage/objects${obj("team/a/")}&search=SEARCH-TARGET&limit=1`,
+  );
+  let searchPage = storageSearch;
+  const matchedKeys = searchPage.objects.map((x) => x.key);
+  for (let batches = 0; searchPage.next; batches++) {
+    assert(batches < 20, "search cursor failed to progress");
+    searchPage = await api(
+      `/object-storage/objects${obj("team/a/")}&search=SEARCH-TARGET&limit=1&cursor=${encodeURIComponent(searchPage.next)}`,
+    );
+    matchedKeys.push(...searchPage.objects.map((x) => x.key));
+  }
+  assert.deepEqual(matchedKeys, ["team/a/nested/search-target.txt"]);
   const hugeSize = 40 << 20;
   const huge = await api(
     `/object-storage/uploads${obj("team/a/large.txt")}`,
@@ -707,6 +746,15 @@ try {
       },
     );
     console.log(auditVisual.stdout.trim());
+    const logVisual = await dockerAsync(
+      process.execPath,
+      [resolve("scripts/visual-qa-driver-logs.mjs")],
+      {
+        env: { ...process.env, QA_BASE_URL: origin, QA_CORE_COOKIE: cookie },
+        timeout: 120000,
+      },
+    );
+    console.log(logVisual.stdout.trim());
   }
   await api(
     `/object-storage/objects${obj("team/a/copied.yaml")}&version=${copied.version}`,

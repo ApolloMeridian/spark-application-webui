@@ -73,7 +73,13 @@ func gcsObject(x *gcs.ObjectAttrs) Object {
 	return Object{Key: x.Name, Size: x.Size, Version: strconv.FormatInt(x.Generation, 10), Modified: x.Updated}
 }
 func (s *GCS) List(ctx context.Context, b, p, token string, n int) (Page, error) {
-	iter := s.Client.Bucket(b).Objects(ctx, &gcs.Query{Prefix: p, Delimiter: "/"})
+	return s.list(ctx, b, p, token, n, "/")
+}
+func (s *GCS) ListRecursive(ctx context.Context, b, p, token string, n int) (Page, error) {
+	return s.list(ctx, b, p, token, n, "")
+}
+func (s *GCS) list(ctx context.Context, b, p, token string, n int, delimiter string) (Page, error) {
+	iter := s.Client.Bucket(b).Objects(ctx, &gcs.Query{Prefix: p, Delimiter: delimiter})
 	pager := iterator.NewPager(iter, n, token)
 	var values []*gcs.ObjectAttrs
 	next, e := pager.NextPage(&values)

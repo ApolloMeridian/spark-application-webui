@@ -185,9 +185,9 @@ async function request<T>(
 }
 const apiService = {
   info: () => request<StorageInfo>("/connections"),
-  list: (t: StorageTarget, cursor = "") =>
-    request<{ objects: StorageObject[]; next: string }>(
-      `/objects?${query(t)}&cursor=${encodeURIComponent(cursor)}`,
+  list: (t: StorageTarget, cursor = "", search = "") =>
+    request<{ objects: StorageObject[]; next: string; scanned?: number }>(
+      `/objects?${query(t)}&cursor=${encodeURIComponent(cursor)}&search=${encodeURIComponent(search)}`,
     ),
   text: (t: StorageTarget) => request<StorageText>(`/text?${query(t)}`),
   create: (t: StorageTarget, content: string) =>
@@ -419,13 +419,18 @@ const mockService: typeof apiService = {
     maxDownloadBytes: 1073741824,
     partSizeBytes: 8388608,
   }),
-  list: async (t) => {
+  list: async (t, _cursor = "", search = "") => {
     check(t, "list");
     const dirs = new Set<string>();
     const objects: StorageObject[] = [];
     for (const [k, v] of Object.entries(fixture)) {
       if (!k.startsWith(keyOf(t))) continue;
       const rest = k.slice(keyOf(t).length);
+      if (search) {
+        if (rest.toLowerCase().includes(search.trim().toLowerCase()))
+          objects.push(object(t.key + rest, v));
+        continue;
+      }
       if (rest.includes("/")) {
         dirs.add(t.key + rest.split("/")[0] + "/");
       } else {

@@ -26,6 +26,10 @@ func New(baseURL string, timeout time.Duration, maxEntries int) *Client {
 }
 
 func (c *Client) QueryLogs(ctx context.Context, namespace, pod string, from, to time.Time, direction string, limit int) ([]domain.LogEntry, error) {
+	return c.QueryRoleLogs(ctx, namespace, pod, "executor", from, to, direction, limit)
+}
+
+func (c *Client) QueryRoleLogs(ctx context.Context, namespace, pod, role string, from, to time.Time, direction string, limit int) ([]domain.LogEntry, error) {
 	if c.baseURL == "" {
 		return nil, fmt.Errorf("Loki is not configured")
 	}
@@ -36,7 +40,10 @@ func (c *Client) QueryLogs(ctx context.Context, namespace, pod string, from, to 
 		limit = c.maxEntries
 	}
 	params := url.Values{}
-	params.Set("query", fmt.Sprintf(`{namespace=%q,pod=%q,spark_role="executor"}`, namespace, pod))
+	if role != "driver" && role != "executor" {
+		return nil, fmt.Errorf("invalid Spark log role")
+	}
+	params.Set("query", fmt.Sprintf(`{namespace=%q,pod=%q,spark_role=%q}`, namespace, pod, role))
 	params.Set("start", strconv.FormatInt(from.UnixNano(), 10))
 	params.Set("end", strconv.FormatInt(to.UnixNano(), 10))
 	params.Set("direction", direction)
@@ -95,10 +102,12 @@ func (c *Client) QueryLogs(ctx context.Context, namespace, pod string, from, to 
 		}
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
+		left, _ := time.Parse(time.RFC3339Nano, entries[i].Timestamp)
+		right, _ := time.Parse(time.RFC3339Nano, entries[j].Timestamp)
 		if direction == "backward" {
-			return entries[i].Timestamp > entries[j].Timestamp
+			return left.After(right)
 		}
-		return entries[i].Timestamp < entries[j].Timestamp
+		return left.Before(right)
 	})
 	if len(entries) > limit {
 		entries = entries[:limit]

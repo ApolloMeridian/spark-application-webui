@@ -10,9 +10,13 @@
 
 作业详情展示 Driver/Executor 的资源信息和可选时间范围的历史曲线。持久化 Executor 日志可按时间筛选，并选择正序或倒序。
 
+Driver 日志支持最新/指定行范围、前后翻段及 Loki 时间筛选。
+
 ![资源详情](../images/detail-1440.png)
 
 ![Executor 日志](../images/executor-logs-1440.png)
+
+![Driver 日志范围](../images/driver-log-range-1440.png)
 
 管理员可提交 YAML，经过服务端预检并确认规范化清单后创建作业。
 
@@ -35,6 +39,14 @@
 补数预览显示前 50 次，可选择正倒序和失败策略，确认整个范围后持久化并串行执行。
 
 ![补数配置](../images/workflow-backfill-1440.png)
+
+## 对象存储
+
+新建文件夹先保留为临时目录，仅在目录下写入实际文件后形成持久化前缀。可递归搜索当前 Prefix 下的文件名和相对路径，通过下一页继续分批扫描。配置与权限说明见[对象存储文档](OBJECT-STORAGE.md)。
+
+![临时文件夹](../images/object-storage-draft-folder-1440.png)
+
+![目录搜索](../images/object-storage-search-1440.png)
 
 ## 模板、告警与治理
 

@@ -12,20 +12,6 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_DB: spark_control_center_test
-          POSTGRES_USER: spark_test
-          POSTGRES_PASSWORD: spark_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U spark_test -d spark_control_center_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -51,26 +37,17 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
-      - name: Test backend
-        working-directory: backend
-        env:
-          TEST_POSTGRES_DSN: postgres://spark_test:spark_test@127.0.0.1:5432/spark_control_center_test?sslmode=disable
-        run: go test ./...
-
-      - name: Vet backend
-        working-directory: backend
-        run: go vet ./...
-
-      - name: Test optional storage plugin against PostgreSQL and MinIO
+      # This harness owns isolated PostgreSQL/MinIO fixtures and runs both Go
+      # modules' tests/vet, including workflow SQL regression, once.
+      - name: Test Go backend and storage integrations
         run: node scripts/object-storage-local-test.mjs
 
       - name: Build and smoke-test production containers
         run: |
           version="$(node -p "require('./package.json').version")"
-          docker build -t "spark-control-center:${version}" .
+          docker build -f Dockerfile.prebuilt -t "spark-control-center:${version}" .
           docker build -f backend/Dockerfile -t "spark-control-center-backend:${version}" .
           docker build -f object-storage/Dockerfile -t "spark-control-center-object-storage:${version}" .
-          QA_VERSION="${version}" node scripts/container-workflow-smoke.mjs
           QA_VERSION="${version}" node scripts/container-object-storage-smoke.mjs
 
       - name: Set up Helm
