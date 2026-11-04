@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseAllDocuments } from "yaml";
 
@@ -10,6 +10,7 @@ const helm =
     ? resolve(".tools/windows-amd64/helm.exe")
     : "helm");
 const chart = "charts/spark-control-center";
+const version = JSON.parse(readFileSync("package.json", "utf8")).version;
 const production = `${chart}/examples/values-production.yaml`;
 const run = (...args) =>
   execFileSync(helm, args, {
@@ -297,10 +298,14 @@ assert.throws(() =>
   ),
 );
 console.log(run("package", chart, "--destination", ".qa").trim());
+assert.equal(
+  parseAllDocuments(run("show", "chart", chart))[0].toJS().version,
+  version,
+);
 const packagedValues = run(
   "show",
   "values",
-  ".qa/spark-control-center-1.5.2.tgz",
+  `.qa/spark-control-center-${version}.tgz`,
 );
 assert.match(packagedValues, /dataMode: api/);
 assert.match(packagedValues, /mode: local/);

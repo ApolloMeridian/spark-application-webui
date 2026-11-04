@@ -3,8 +3,12 @@ import { randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 
-const version = process.env.QA_VERSION || "1.5.2";
+const version =
+  process.env.QA_VERSION ||
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
+    .version;
 const prefix = `spark-workflow-qa-${randomBytes(4).toString("hex")}`;
 const password = randomBytes(24).toString("base64url");
 const containers = [];

@@ -4,9 +4,13 @@ import { promisify } from "node:util";
 import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { ensureMinIOFixture } from "./minio-fixture.mjs";
 
-const version = process.env.QA_VERSION || "1.5.2";
+const version =
+  process.env.QA_VERSION ||
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
+    .version;
 const minioImage = ensureMinIOFixture();
 const prefix = `spark-storage-container-${randomBytes(4).toString("hex")}`;
 const password = randomBytes(24).toString("hex");
