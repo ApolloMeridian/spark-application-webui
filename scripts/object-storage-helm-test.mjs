@@ -249,14 +249,67 @@ for (const flags of [
   );
 }
 mkdirSync(".qa", { recursive: true });
+const isolated = manifests(
+  "-f",
+  standalone,
+  "--set",
+  "networkPolicy.enabled=true",
+  "--set",
+  "backend.publicURL=https://console.example.test",
+);
+const backendPolicy = isolated.find(
+  (x) => x.kind === "NetworkPolicy" && x.metadata.name.endsWith("-backend"),
+);
+assert(backendPolicy);
+assert.equal(
+  backendPolicy.spec.ingress[0].from[0].podSelector.matchLabels[
+    "app.kubernetes.io/component"
+  ],
+  "frontend",
+);
+const isolatedBackend = isolated.find(
+  (x) => x.kind === "Deployment" && x.metadata.name.endsWith("-backend"),
+);
+assert.equal(
+  isolatedBackend.spec.template.spec.containers[0].env.find(
+    (x) => x.name === "PUBLIC_URL",
+  ).value,
+  "https://console.example.test",
+);
+const isolatedStorage = isolated.find(
+  (x) => x.kind === "Deployment" && isPlugin(x),
+);
+assert.equal(isolatedStorage.spec.template.spec.securityContext.fsGroup, 65532);
+assert(
+  isolatedStorage.spec.template.spec.volumes.some(
+    (x) => x.name === "transfer-tmp" && x.emptyDir.sizeLimit === "256Mi",
+  ),
+);
+assert.throws(() =>
+  run(
+    "template",
+    "spark-console",
+    chart,
+    "-f",
+    standalone,
+    "--set",
+    "oidc.redirectURL=",
+  ),
+);
 console.log(run("package", chart, "--destination", ".qa").trim());
-const packagedValues = run('show', 'values', '.qa/spark-control-center-1.5.2.tgz');
+const packagedValues = run(
+  "show",
+  "values",
+  ".qa/spark-control-center-1.5.2.tgz",
+);
 assert.match(packagedValues, /dataMode: api/);
 assert.match(packagedValues, /mode: local/);
-assert(!packagedValues.includes('Asia/Shanghai'));
-assert(!packagedValues.includes('automatic.local'));
+assert(!packagedValues.includes("Asia/Shanghai"));
+assert(!packagedValues.includes("automatic.local"));
 assert(!/10\.0\.32\./.test(packagedValues));
-assert(packagedValues.indexOf('objectStorage:') > packagedValues.indexOf('backend:'));
+assert(
+  packagedValues.indexOf("objectStorage:") > packagedValues.indexOf("backend:"),
+);
 console.log(
   "PASS: disabled/default and S3/GKE/generic WIF Helm resources, quoted annotation types and YAML 1.1 keywords, invalid annotation rejection, independent KSA, secret references and chart package.",
 );

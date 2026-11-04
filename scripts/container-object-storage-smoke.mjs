@@ -56,6 +56,7 @@ async function api(path, method = "GET", body, headers = {}) {
     method,
     headers: {
       Cookie: cookie,
+      "X-Requested-With": "SparkControlCenter",
       ...(typeof body === "string"
         ? { "Content-Type": "application/json" }
         : {}),
@@ -285,7 +286,7 @@ try {
   assert.equal(login.status, 200);
   cookie = login.headers.get("set-cookie").split(";")[0];
   const admin = await login.json();
-  await api(
+  const logApp = await api(
     "/namespaces/spark/applications",
     "POST",
     JSON.stringify({
@@ -306,6 +307,52 @@ try {
   assert(middleLogs.lines[0].endsWith("driver-line-06001"));
   const tailLogs = await api(`${driverLogPath}?mode=tail&limit=2000`);
   assert(tailLogs.lines[0].endsWith("driver-line-10051"));
+  // Exercise persistent history via the full gateway, backend and SQL stack.
+  await api(
+    `/namespaces/spark/applications/${logApp.id}/kill`,
+    "POST",
+    JSON.stringify({ reason: "archive regression" }),
+  );
+  await api(
+    `/namespaces/spark/applications/${logApp.id}`,
+    "DELETE",
+    JSON.stringify({ reason: "same-name replacement regression" }),
+  );
+  const replacement = await api(
+    "/namespaces/spark/applications",
+    "POST",
+    JSON.stringify({
+      yaml:
+        logApp.yaml ||
+        "apiVersion: sparkoperator.k8s.io/v1beta2\nkind: SparkApplication\nmetadata:\n  name: logs-regression\n  namespace: spark\nspec:\n  type: Scala\n  mode: cluster\n  image: spark:3.5.3\n  mainClass: example.Main\n  mainApplicationFile: local:///app.jar\n  sparkVersion: 3.5.3\n",
+    }),
+  );
+  assert.notEqual(replacement.id, logApp.id);
+  const archive = await api(`/namespaces/spark/applications/${logApp.id}`);
+  assert.equal(archive.historical, true);
+  assert.equal(archive.state, "FAILED");
+  assert.equal(
+    (await api(`/namespaces/spark/applications/${replacement.id}`)).state,
+    "RUNNING",
+  );
+  for (const suffix of ["/kill", ""]) {
+    const blocked = await fetch(
+      `${origin}/api/v1/namespaces/spark/applications/${logApp.id}${suffix}`,
+      {
+        method: suffix ? "POST" : "DELETE",
+        headers: { Cookie: cookie, "Content-Type": "application/json" },
+        body: "{}",
+      },
+    );
+    assert.equal(blocked.status, 409, "archived action reached replacement");
+  }
+  await wait(async () => {
+    const list = await api("/applications?page=1&pageSize=20");
+    return (
+      list.items.some((x) => x.id === logApp.id && x.historical) &&
+      list.items.some((x) => x.id === replacement.id && !x.historical)
+    );
+  });
   let info = await api("/object-storage/connections");
   assert.deepEqual(info.connections[0].roots.map((x) => x.bucket).sort(), [
     "secondary-artifacts",
@@ -407,14 +454,20 @@ try {
     JSON.stringify({ content: "nested search", version: "" }),
   );
   const storageSearch = await api(
-    `/object-storage/objects${obj("team/a/")}&search=SEARCH-TARGET&limit=1`,
+    `/object-storage/objects${obj("team/a/nested/")}&search=SEARCH-TARGET&limit=1`,
+  );
+  assert.deepEqual(
+    (await api(`/object-storage/objects${obj("team/a/")}&search=SEARCH-TARGET`))
+      .objects,
+    [],
+    "parent search expanded a child prefix",
   );
   let searchPage = storageSearch;
   const matchedKeys = searchPage.objects.map((x) => x.key);
   for (let batches = 0; searchPage.next; batches++) {
     assert(batches < 20, "search cursor failed to progress");
     searchPage = await api(
-      `/object-storage/objects${obj("team/a/")}&search=SEARCH-TARGET&limit=1&cursor=${encodeURIComponent(searchPage.next)}`,
+      `/object-storage/objects${obj("team/a/nested/")}&search=SEARCH-TARGET&limit=1&cursor=${encodeURIComponent(searchPage.next)}`,
     );
     matchedKeys.push(...searchPage.objects.map((x) => x.key));
   }
@@ -722,6 +775,15 @@ try {
     403,
   );
   if (process.env.QA_STORAGE_VISUAL === "1") {
+    const instances = await dockerAsync(
+      process.execPath,
+      [resolve("scripts/visual-qa-application-instances.mjs")],
+      {
+        env: { ...process.env, QA_BASE_URL: origin, QA_CORE_COOKIE: cookie },
+        timeout: 120000,
+      },
+    );
+    console.log(instances.stdout.trim());
     const { stdout } = await dockerAsync(
       process.execPath,
       [resolve("scripts/visual-qa-object-storage.mjs")],

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -84,6 +86,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if e != nil {
 		return e
 	}
+	if e = migrateLimits(ctx, tx); e != nil {
+		return e
+	}
 	return tx.Commit(ctx)
 }
 func (s *Store) Identity(ctx context.Context, id, tenant string) (Identity, error) {
@@ -128,36 +133,6 @@ func (s *Store) Finish(ctx context.Context, id, result string) error {
 	_, e := s.Pool.Exec(ctx, `UPDATE object_storage_operations SET result=$2,finished_at=now() WHERE id=$1 AND result='pending'`, id, result)
 	return e
 }
-func (s *Store) Lease(ctx context.Context, u Identity, id string) (func(), error) {
-	conn, e := s.Pool.Acquire(ctx)
-	if e != nil {
-		return nil, e
-	}
-	var locked bool
-	if e = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended($1,15001501))`, id).Scan(&locked); e != nil || !locked {
-		conn.Release()
-		if e != nil {
-			return nil, e
-		}
-		return nil, fail(409, "upload_busy")
-	}
-	release := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_, e := conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtextextended($1,15001501))`, id)
-		if e != nil {
-			_ = conn.Conn().Close(ctx)
-		}
-		conn.Release()
-	}
-	var result string
-	e = conn.QueryRow(ctx, `SELECT result FROM object_storage_operations WHERE id=$1 AND user_id=$2 AND tenant_id=$3`, id, u.ID, u.Tenant).Scan(&result)
-	if e != nil || result != "pending" {
-		release()
-		return nil, fail(409, "upload_not_pending")
-	}
-	return release, nil
-}
 func (s *Store) Bootstrap(ctx context.Context, items []Bootstrap) error {
 	for _, x := range items {
 		if !ValidPrefix(x.Prefix) || len(x.Actions) == 0 || x.Tenant == "" {
@@ -173,9 +148,12 @@ func (s *Store) Bootstrap(ctx context.Context, items []Bootstrap) error {
 		if e != nil {
 			return e
 		}
-		raw, _ := json.Marshal(x)
-		key := string(raw)
-		tag, e := tx.Exec(ctx, `INSERT INTO object_storage_bootstrap(id) VALUES($1) ON CONFLICT DO NOTHING`, key)
+		// Scope, not the actions JSON, is the one-time identity. Editing actions
+		// must neither silently broaden an existing grant nor resurrect revocations.
+		scope, _ := json.Marshal(map[string]string{"username": x.Username, "tenantId": x.Tenant, "connection": x.Connection, "bucket": x.Bucket, "prefix": x.Prefix})
+		sum := sha256.Sum256(scope)
+		key := "scope:" + hex.EncodeToString(sum[:])
+		tag, e := tx.Exec(ctx, `INSERT INTO object_storage_bootstrap(id) SELECT $1 WHERE NOT EXISTS(SELECT 1 FROM object_storage_bootstrap WHERE CASE WHEN left(id,1)='{' THEN id::jsonb @> $2::jsonb ELSE false END) ON CONFLICT DO NOTHING`, key, scope)
 		if e == nil && tag.RowsAffected() > 0 {
 			var u Identity
 			e = tx.QueryRow(ctx, `SELECT id,tenant_id,role,username FROM local_users WHERE username=$1 AND tenant_id=$2 AND role='admin' AND NOT disabled`, x.Username, x.Tenant).Scan(&u.ID, &u.Tenant, &u.Role, &u.Username)
@@ -188,10 +166,11 @@ func (s *Store) Bootstrap(ctx context.Context, items []Bootstrap) error {
 				_, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,15001502))`, grantScope(Grant{UserID: u.ID, Tenant: x.Tenant, Connection: x.Connection, Bucket: x.Bucket, Prefix: x.Prefix}))
 			}
 			if e == nil {
-				_, e = tx.Exec(ctx, `INSERT INTO object_storage_grants(id,user_id,tenant_id,connection_id,bucket,prefix,actions) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`, newID(), u.ID, u.Tenant, x.Connection, x.Bucket, x.Prefix, x.Actions)
-			}
-			if e == nil {
-				_, e = tx.Exec(ctx, `INSERT INTO object_storage_operations(id,user_id,tenant_id,username,action,connection_id,bucket,object_key,result,finished_at) VALUES($1,$2,$3,'bootstrap','POLICY_CHANGE',$4,$5,$6,'succeeded',now())`, newID(), u.ID, u.Tenant, x.Connection, x.Bucket, x.Prefix)
+				var result pgconn.CommandTag
+				result, e = tx.Exec(ctx, `INSERT INTO object_storage_grants(id,user_id,tenant_id,connection_id,bucket,prefix,actions) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`, newID(), u.ID, u.Tenant, x.Connection, x.Bucket, x.Prefix, x.Actions)
+				if e == nil && result.RowsAffected() > 0 {
+					_, e = tx.Exec(ctx, `INSERT INTO object_storage_operations(id,user_id,tenant_id,username,action,connection_id,bucket,object_key,result,finished_at) VALUES($1,$2,$3,'bootstrap','POLICY_CHANGE',$4,$5,$6,'succeeded',now())`, newID(), u.ID, u.Tenant, x.Connection, x.Bucket, x.Prefix)
+				}
 			}
 		}
 		if e != nil {

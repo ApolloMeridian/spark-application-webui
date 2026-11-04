@@ -29,8 +29,10 @@ jobs:
       - name: Test and build frontend
         run: |
           npm ci
+          npm audit --audit-level=high
           npm test
           npm run build
+          npm run docs:check
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -42,6 +44,11 @@ jobs:
         uses: azure/setup-helm@v4
 
       # The harness runs backend/plugin tests and vet with its own SQL fixtures.
+      - name: Check reachable Go vulnerabilities
+        run: |
+          (cd backend && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...)
+          (cd object-storage && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...)
+
       - name: Test Go backend and storage integrations
         run: node scripts/object-storage-local-test.mjs
 

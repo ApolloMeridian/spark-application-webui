@@ -35,7 +35,7 @@ const c: StorageConnection = {
 };
 describe("storage permissions and mock operations", () => {
   beforeEach(() => localStorage.clear());
-  it("searches nested paths case-insensitively inside the selected prefix without auditing", async () => {
+  it("searches immediate files and folders without expanding descendants or auditing", async () => {
     const service = storageService(admin);
     const target = {
       connection: "demo",
@@ -47,7 +47,15 @@ describe("storage permissions and mock operations", () => {
       "hello",
     );
     const before = (await service.operations()).length;
-    const result = await service.list(target, "", "NESTED/EXAMPLE");
+    expect((await service.list(target, "", "EXAMPLE")).objects).toEqual([]);
+    expect(
+      (await service.list(target, "", "NESTED")).objects[0].directory,
+    ).toBe(true);
+    const result = await service.list(
+      { ...target, key: target.key + "nested/" },
+      "",
+      "EXAMPLE",
+    );
     expect(result.objects.map((x) => x.key)).toEqual([
       target.key + "nested/Example.txt",
     ]);

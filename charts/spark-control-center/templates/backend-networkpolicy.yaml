@@ -1,0 +1,27 @@
+{{- if and .Values.networkPolicy.enabled .Values.backend.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "spark-control-center.fullname" . }}-backend
+  labels:
+    {{- include "spark-control-center.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "spark-control-center.backendSelectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress{{ if .Values.backend.networkPolicy.egress }}, Egress{{ end }}]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "spark-control-center.selectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.backend.service.port }} }
+    {{- with .Values.backend.networkPolicy.additionalIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.backend.networkPolicy.egress }}
+  egress:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

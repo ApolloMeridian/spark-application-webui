@@ -68,9 +68,25 @@ func (fakeService) Subscribe(context.Context, []string) <-chan domain.Applicatio
 }
 
 type fakeAuthStore struct {
-	user     domain.User
-	hash     string
-	sessions map[string]domain.UserSession
+	uiTickets map[string]domain.SparkUITicket
+	user      domain.User
+	hash      string
+	sessions  map[string]domain.UserSession
+}
+
+func (f *fakeAuthStore) SaveSparkUITicket(_ context.Context, t domain.SparkUITicket) error {
+	if f.uiTickets == nil {
+		f.uiTickets = map[string]domain.SparkUITicket{}
+	}
+	f.uiTickets[t.TokenHash] = t
+	return nil
+}
+func (f *fakeAuthStore) FindSparkUITicket(_ context.Context, hash string) (domain.SparkUITicket, error) {
+	t, ok := f.uiTickets[hash]
+	if !ok {
+		return t, localauth.ErrUnauthorized
+	}
+	return t, nil
 }
 
 func (f *fakeAuthStore) BootstrapInitialAdmin(context.Context, domain.User, string, string) error {
@@ -135,7 +151,9 @@ func authenticatedHandlerWithNamespaces(t *testing.T, role domain.UserRole, name
 	authService := localauth.New(store, time.Hour, bcrypt.MinCost)
 	handler := New(config.Config{AuthMode: "local", Namespaces: []string{"spark"}}, fakeService{}, authService, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewBufferString(`{"username":"alice","password":"password123"}`)))
+	loginRequest := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewBufferString(`{"username":"alice","password":"password123"}`))
+	loginRequest.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(recorder, loginRequest)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("login failed: %d %s", recorder.Code, recorder.Body.String())
 	}
@@ -148,6 +166,7 @@ func authenticatedHandlerWithNamespaces(t *testing.T, role domain.UserRole, name
 
 func serveAuthenticated(handler http.Handler, cookie *http.Cookie, recorder *httptest.ResponseRecorder, request *http.Request) {
 	request.AddCookie(cookie)
+	request.Header.Set("X-Requested-With", "SparkControlCenter")
 	handler.ServeHTTP(recorder, request)
 }
 

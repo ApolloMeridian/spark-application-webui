@@ -20,6 +20,7 @@ func TestOIDCModeDoesNotRequireInitialAdministrator(t *testing.T) {
 	t.Setenv("OIDC_ISSUER_URL", "https://keycloak.example.test/realms/platform")
 	t.Setenv("OIDC_CLIENT_ID", "spark-control-center")
 	t.Setenv("OIDC_CLIENT_SECRET", "client-secret")
+	t.Setenv("OIDC_REDIRECT_URL", "https://console.example.test/api/v1/auth/oidc/callback")
 
 	cfg, err := Load()
 	if err != nil {

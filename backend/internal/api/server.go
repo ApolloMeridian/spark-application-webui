@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -65,17 +66,21 @@ type ManagementService interface {
 }
 
 type Server struct {
-	flows    *workflow.Service
-	config   config.Config
-	service  ApplicationService
-	auth     *localauth.Service
-	oidc     *oidcauth.Service
-	logger   *slog.Logger
-	requests atomic.Uint64
-	errors   atomic.Uint64
+	flows     *workflow.Service
+	config    config.Config
+	service   ApplicationService
+	auth      *localauth.Service
+	oidc      *oidcauth.Service
+	logger    *slog.Logger
+	requests  atomic.Uint64
+	errors    atomic.Uint64
+	loginGate authGate
 }
 
 func New(cfg config.Config, applicationService ApplicationService, authService *localauth.Service, oidcService *oidcauth.Service, logger *slog.Logger, workflows ...*workflow.Service) http.Handler {
+	if cfg.APIPrefix == "" {
+		cfg.APIPrefix = "/api"
+	}
 	server := &Server{config: cfg, service: applicationService, auth: authService, oidc: oidcService, logger: logger}
 	if len(workflows) > 0 {
 		server.flows = workflows[0]
@@ -105,6 +110,7 @@ func New(cfg config.Config, applicationService ApplicationService, authService *
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/prepare", server.prepareApplication)
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/spark-ui", server.sparkUIProxy)
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/spark-ui/{path...}", server.sparkUIProxy)
+	mux.HandleFunc("OPTIONS /v1/namespaces/{namespace}/applications/{name}/spark-ui/{path...}", server.sparkUIPreflight)
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/executors/{pod}/logs", server.executorLogs)
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/driver/logs", server.driverLogs)
 	mux.HandleFunc("POST /v1/namespaces/{namespace}/applications/{name}/kill", server.killApplication)
@@ -178,6 +184,20 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body"))
 		return
 	}
+	if !s.loginGate.allow(r.RemoteAddr, strings.ToLower(strings.TrimSpace(body.Username))) {
+		w.Header().Set("Retry-After", "60")
+		s.writeError(w, 429, fmt.Errorf("too many authentication attempts"))
+		return
+	}
+	if !s.loginGate.acquire() {
+		w.Header().Set("Retry-After", "2")
+		s.writeError(w, 429, fmt.Errorf("authentication capacity exceeded"))
+		return
+	}
+	defer s.loginGate.release()
+	if !s.checkSharedAuthBudget(w, r, body.Username) {
+		return
+	}
 	user, token, expiresAt, err := s.auth.Login(r.Context(), body.Username, body.Password)
 	if err != nil {
 		s.writeAuthError(w, err)
@@ -203,7 +223,8 @@ func (s *Server) oidcLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	redirectURL := s.config.OIDCRedirectURL
 	if redirectURL == "" {
-		redirectURL = externalBaseURL(r) + strings.TrimRight(r.Header.Get("X-Forwarded-Prefix"), "/") + "/v1/auth/oidc/callback"
+		s.writeError(w, 503, fmt.Errorf("explicit OIDC redirect URL is required"))
+		return
 	}
 	returnURL := safeReturnURL(r, r.URL.Query().Get("returnUrl"), "/overview")
 	authorizationURL, err := s.oidc.Begin(r.Context(), redirectURL, returnURL)
@@ -248,6 +269,24 @@ func externalBaseURL(r *http.Request) string {
 }
 
 func (s *Server) listApplications(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Has("page") || r.URL.Query().Has("pageSize") {
+		if query, ok := s.service.(interface {
+			QueryApplications(context.Context, domain.ApplicationQuery) (domain.ApplicationList, error)
+		}); ok {
+			v := r.URL.Query()
+			size := parsePositive(v.Get("pageSize"), 20)
+			if size > 200 {
+				size = 200
+			}
+			result, err := query.QueryApplications(r.Context(), domain.ApplicationQuery{Namespaces: currentUser(r).Namespaces, Namespace: v.Get("namespace"), Keyword: v.Get("keyword"), State: v.Get("state"), Owner: v.Get("owner"), Sort: v.Get("sort"), Direction: v.Get("direction"), Favorite: v.Get("favorite") == "true", UserID: currentUser(r).ID, Page: parsePositive(v.Get("page"), 1), PageSize: size})
+			if err != nil {
+				s.writeServiceError(w, err)
+				return
+			}
+			s.writeJSON(w, 200, result)
+			return
+		}
+	}
 	apps, err := s.service.ListApplicationsForNamespaces(r.Context(), currentUser(r).Namespaces)
 	if err != nil {
 		s.writeServiceError(w, err)
@@ -256,16 +295,6 @@ func (s *Server) listApplications(w http.ResponseWriter, r *http.Request) {
 	filters := r.URL.Query()
 	filtered := make([]domain.SparkApplication, 0, len(apps))
 	for _, app := range apps {
-		if s.flows != nil {
-			allowed, err := s.flows.ApplicationTenant(r.Context(), currentUser(r), app.Namespace, app.Name)
-			if err != nil {
-				s.writeServiceError(w, err)
-				return
-			}
-			if !allowed {
-				continue
-			}
-		}
 		if matches(app, filters.Get("keyword"), filters.Get("state"), filters.Get("owner"), filters.Get("namespace")) {
 			filtered = append(filtered, app)
 		}
@@ -340,20 +369,33 @@ func (s *Server) applicationStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	controller := http.NewResponseController(w)
+	_ = controller.SetWriteDeadline(time.Now().Add(35 * time.Second))
 	_, _ = io.WriteString(w, "event: ready\ndata: {}\n\n")
 	flusher.Flush()
 	changes := s.service.Subscribe(r.Context(), currentUser(r).Namespaces)
 	heartbeat := time.NewTicker(20 * time.Second)
 	defer heartbeat.Stop()
-	connectionLifetime := time.NewTimer(60 * time.Second)
+	connectionLifetime := time.NewTimer(10 * time.Minute)
 	defer connectionLifetime.Stop()
 	for {
+		_ = controller.SetWriteDeadline(time.Now().Add(35 * time.Second))
 		select {
 		case <-r.Context().Done():
 			return
 		case <-connectionLifetime.C:
 			return
 		case <-heartbeat.C:
+			cookie, err := r.Cookie("spark-console-session")
+			if err != nil {
+				return
+			}
+			fresh, _, err := s.auth.Authenticate(r.Context(), cookie.Value)
+			before, _ := json.Marshal(currentUser(r))
+			after, _ := json.Marshal(fresh)
+			if err != nil || !bytes.Equal(before, after) {
+				return
+			}
 			_, _ = io.WriteString(w, ": heartbeat\n\n")
 			flusher.Flush()
 		case change, open := <-changes:
@@ -482,6 +524,9 @@ func (s *Server) prepareApplication(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sparkUIProxy(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	r = r.WithContext(ctx)
 	if !s.requireNamespace(w, currentUser(r), r.PathValue("namespace")) {
 		return
 	}
@@ -495,35 +540,85 @@ func (s *Server) sparkUIProxy(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadGateway, fmt.Errorf("invalid Spark UI target"))
 		return
 	}
+	uiPath := r.PathValue("path")
+	ticket, _, _, ticketPath := sparkUITicketPath(r.URL.Path)
+	if ticket == "" {
+		if !s.loginGate.allow(r.RemoteAddr, "spark-ui:"+currentUser(r).ID) {
+			s.writeError(w, 429, fmt.Errorf("Spark UI session rate limited"))
+			return
+		}
+		cookie, err := r.Cookie("spark-console-session")
+		if err != nil {
+			s.writeAuthError(w, localauth.ErrUnauthorized)
+			return
+		}
+		ticket, err = s.auth.IssueSparkUITicket(r.Context(), cookie.Value, r.PathValue("namespace"), r.PathValue("name"))
+		if err != nil {
+			s.writeAuthError(w, err)
+			return
+		}
+		root := strings.TrimSuffix(r.URL.Path, "/"+uiPath)
+		if uiPath == "" {
+			root = strings.TrimRight(r.URL.Path, "/")
+		}
+		location := s.config.APIPrefix + root + "/t/" + ticket + "/" + uiPath
+		if r.URL.RawQuery != "" {
+			location += "?" + r.URL.RawQuery
+		}
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		http.Redirect(w, r, location, http.StatusFound)
+		return
+	}
+	uiPath = ticketPath
 	basePath := strings.TrimSuffix(r.URL.Path, "/"+r.PathValue("path"))
 	if r.PathValue("path") == "" {
 		basePath = strings.TrimSuffix(r.URL.Path, "/")
 	}
-	externalPrefix := strings.TrimRight(r.Header.Get("X-Forwarded-Prefix"), "/") + basePath
+	basePath += "/t/" + ticket
+	externalPrefix := s.config.APIPrefix + basePath
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = sparkUITransport
 	originalDirector := proxy.Director
 	proxy.Director = func(request *http.Request) {
 		originalDirector(request)
-		request.URL.Path = "/" + r.PathValue("path")
+		request.URL.Path = "/" + uiPath
 		request.URL.RawPath = ""
 		request.Host = target.Host
+		request.Header.Del("Cookie")
+		request.Header.Del("Authorization")
+		request.Header.Del("Origin")
 		request.Header.Del("Accept-Encoding")
 		request.Header.Set("X-Forwarded-Prefix", externalPrefix)
 		request.Header.Set("X-Forwarded-Context", externalPrefix)
 	}
 	proxy.ModifyResponse = func(response *http.Response) error {
+		response.Header.Del("Set-Cookie")
+		response.Header.Del("Access-Control-Allow-Origin")
+		response.Header.Del("Access-Control-Allow-Credentials")
+		response.Header.Set("Content-Security-Policy", "sandbox allow-scripts; default-src 'self' data:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'self'")
+		response.Header.Set("Referrer-Policy", "no-referrer")
+		response.Header.Set("Cache-Control", "no-store")
+		if r.Header.Get("Origin") == "null" {
+			response.Header.Set("Access-Control-Allow-Origin", "null")
+			response.Header.Set("Access-Control-Allow-Credentials", "true")
+			response.Header.Add("Vary", "Origin")
+		}
 		if location := response.Header.Get("Location"); location != "" {
 			response.Header.Set("Location", rewriteSparkUILocation(location, target, externalPrefix))
 		}
 		if !strings.Contains(response.Header.Get("Content-Type"), "text/html") {
 			return nil
 		}
-		data, readErr := io.ReadAll(io.LimitReader(response.Body, 16<<20))
+		data, readErr := io.ReadAll(io.LimitReader(response.Body, (16<<20)+1))
 		if readErr != nil {
 			return readErr
 		}
 		_ = response.Body.Close()
+		if len(data) > 16<<20 {
+			return fmt.Errorf("Spark UI HTML exceeds response limit")
+		}
 		data = rewriteSparkUIHTML(data, target, externalPrefix)
+		data = sparkUIBootstrap(data, externalPrefix)
 		response.Body = io.NopCloser(bytes.NewReader(data))
 		response.ContentLength = int64(len(data))
 		response.Header.Set("Content-Length", strconv.Itoa(len(data)))
@@ -686,6 +781,14 @@ func (s *Server) profile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) updateProfile(w http.ResponseWriter, r *http.Request) {
+	if !s.loginGate.allow(r.RemoteAddr, "profile:"+currentUser(r).ID) || !s.loginGate.acquire() {
+		s.writeError(w, 429, fmt.Errorf("profile update rate limited"))
+		return
+	}
+	defer s.loginGate.release()
+	if !s.checkSharedAuthBudget(w, r, "profile:"+currentUser(r).ID) {
+		return
+	}
 	var body struct {
 		DisplayName     *string `json:"displayName"`
 		Email           *string `json:"email"`
@@ -1307,14 +1410,28 @@ type principalContextKey struct{}
 func (s *Server) sameOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
-			if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+			origin := strings.TrimSpace(r.Header.Get("Origin"))
+			if origin == "" {
+				if referer := r.Header.Get("Referer"); referer != "" {
+					if u, e := url.Parse(referer); e == nil {
+						origin = u.Scheme + "://" + u.Host
+					}
+				}
+			}
+			if origin != "" {
 				parsed, err := url.Parse(origin)
 				host := r.Host
 				if forwarded := r.Header.Get("X-Forwarded-Host"); forwarded != "" {
 					host = strings.TrimSpace(strings.Split(forwarded, ",")[0])
 				}
-				if err != nil || !strings.EqualFold(parsed.Host, host) || !strings.EqualFold(parsed.Scheme, requestScheme(r)) {
+				if err != nil || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || !strings.EqualFold(parsed.Host, host) || !strings.EqualFold(parsed.Scheme, requestScheme(r)) {
 					s.writeError(w, http.StatusForbidden, fmt.Errorf("cross-origin state-changing request rejected"))
+					return
+				}
+			} else {
+				mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+				if (r.Header.Get("Sec-Fetch-Site") != "" && r.Header.Get("Sec-Fetch-Site") != "same-origin") || (mediaType != "application/json" && r.Header.Get("X-Requested-With") != "SparkControlCenter") {
+					s.writeError(w, 403, fmt.Errorf("state-changing requests require a same-origin Origin/Referer or an explicit API request header"))
 					return
 				}
 			}
@@ -1325,18 +1442,31 @@ func (s *Server) sameOrigin(next http.Handler) http.Handler {
 
 func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodOptions && strings.Contains(r.URL.Path, "/spark-ui/") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !strings.HasPrefix(r.URL.Path, "/v1/") || r.URL.Path == "/v1/auth/login" || r.URL.Path == "/v1/auth/logout" || r.URL.Path == "/v1/auth/oidc/login" || r.URL.Path == "/v1/auth/oidc/callback" {
 			next.ServeHTTP(w, r)
 			return
 		}
-		cookie, err := r.Cookie("spark-console-session")
-		if err != nil {
-			s.writeAuthError(w, localauth.ErrUnauthorized)
-			return
+		var user domain.User
+		var err error
+		ticket, ns, name, _ := sparkUITicketPath(r.URL.Path)
+		if ticket != "" && r.Method == http.MethodGet {
+			user, err = s.auth.AuthenticateSparkUITicket(r.Context(), ticket, ns, name)
+		} else {
+			cookie, cookieErr := r.Cookie("spark-console-session")
+			if cookieErr != nil {
+				s.writeAuthError(w, localauth.ErrUnauthorized)
+				return
+			}
+			user, _, err = s.auth.Authenticate(r.Context(), cookie.Value)
 		}
-		user, _, err := s.auth.Authenticate(r.Context(), cookie.Value)
 		if err != nil {
-			http.SetCookie(w, sessionCookie(r, "", time.Unix(1, 0), -1))
+			if ticket == "" {
+				http.SetCookie(w, sessionCookie(r, "", time.Unix(1, 0), -1))
+			}
 			s.writeAuthError(w, err)
 			return
 		}
@@ -1357,7 +1487,8 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		if capability := requestCapability(r); capability != "" && !s.requirePermission(w, user, capability) {
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalContextKey{}, user)))
+		ctx := domain.WithTenant(r.Context(), user.TenantID)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, principalContextKey{}, user)))
 	})
 }
 
@@ -1404,6 +1535,21 @@ func sessionCookie(r *http.Request, value string, expires time.Time, maxAge int)
 func (s *Server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
+		// Forwarded headers are client-controlled unless verified by deployment
+		// infrastructure. Use the configured public origin, never these headers.
+		r.Header.Del("X-Forwarded-Host")
+		r.Header.Del("X-Forwarded-Proto")
+		r.Header.Del("X-Forwarded-Prefix")
+		public := s.config.PublicURL
+		if public == "" && s.config.OIDCRedirectURL != "" {
+			if u, err := url.Parse(s.config.OIDCRedirectURL); err == nil {
+				public = u.Scheme + "://" + u.Host
+			}
+		}
+		if u, err := url.Parse(public); public != "" && err == nil {
+			r.Header.Set("X-Forwarded-Host", u.Host)
+			r.Header.Set("X-Forwarded-Proto", u.Scheme)
+		}
 		s.requests.Add(1)
 		wrapped := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		wrapped.Header().Set("X-Content-Type-Options", "nosniff")
@@ -1419,7 +1565,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			if wrapped.status >= 500 {
 				s.errors.Add(1)
 			}
-			s.logger.Info("http request", "method", r.Method, "path", r.URL.Path, "status", wrapped.status, "duration_ms", time.Since(started).Milliseconds())
+			s.logger.Info("http request", "method", r.Method, "path", redactSparkUITicket(r.URL.Path), "status", wrapped.status, "duration_ms", time.Since(started).Milliseconds())
 		}()
 		next.ServeHTTP(wrapped, r)
 	})
@@ -1505,11 +1651,11 @@ func safeReturnURL(r *http.Request, value, fallback string) string {
 		return fallback
 	}
 	parsed, err := url.Parse(value)
-	if err != nil {
+	if err != nil || parsed.User != nil || strings.ContainsAny(parsedPath(parsed), "\\\r\n") {
 		return fallback
 	}
 	if !parsed.IsAbs() {
-		if strings.HasPrefix(parsed.Path, "/") && !strings.HasPrefix(parsed.Path, "//") {
+		if parsed.Host == "" && parsed.User == nil && strings.HasPrefix(parsed.Path, "/") && !strings.HasPrefix(parsed.Path, "//") {
 			return parsed.String()
 		}
 		return fallback
@@ -1518,10 +1664,17 @@ func safeReturnURL(r *http.Request, value, fallback string) string {
 	if forwarded := r.Header.Get("X-Forwarded-Host"); forwarded != "" {
 		host = strings.TrimSpace(strings.Split(forwarded, ",")[0])
 	}
-	if parsed.Host != host || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+	if parsed.Host != host || parsed.Scheme != requestScheme(r) {
 		return fallback
 	}
 	return parsed.String()
+}
+
+func parsedPath(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	return u.Path
 }
 
 func requestScheme(r *http.Request) string {

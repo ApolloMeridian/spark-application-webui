@@ -25,8 +25,14 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Audit dependency vulnerabilities
+        run: npm audit --audit-level=high
+
       - name: Test frontend
         run: npm test
+
+      - name: Check bilingual contract documentation
+        run: npm run docs:check
 
       - name: Build frontend
         run: npm run build
@@ -39,6 +45,11 @@ jobs:
 
       # This harness owns isolated PostgreSQL/MinIO fixtures and runs both Go
       # modules' tests/vet, including workflow SQL regression, once.
+      - name: Check reachable Go vulnerabilities
+        run: |
+          (cd backend && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...)
+          (cd object-storage && go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...)
+
       - name: Test Go backend and storage integrations
         run: node scripts/object-storage-local-test.mjs
 

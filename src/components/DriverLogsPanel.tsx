@@ -83,7 +83,7 @@ export function DriverLogsPanel({ app }: { app: SparkApplication }) {
     try {
       const next = await sparkService.getDriverLogs(
         app.namespace,
-        app.name,
+        app.id,
         query,
       );
       if (request === revision.current) setResult(next);
@@ -107,7 +107,7 @@ export function DriverLogsPanel({ app }: { app: SparkApplication }) {
     return () => {
       revision.current++;
     };
-  }, [app.namespace, app.name]);
+  }, [app.namespace, app.id]);
   const lines = (result?.lines ?? [])
     .map((line, i) => ({ line, number: (result?.startLine || 1) + i }))
     .filter(

@@ -35,7 +35,9 @@ func (f *driverRoleLogs) QueryRoleLogs(_ context.Context, _, pod, role string, _
 	return []domain.LogEntry{{Timestamp: "2026-10-20T00:00:00Z", Line: "retained driver"}}, nil
 }
 func TestDriverLogSourceUsesApplicationDriverAndNamespaces(t *testing.T) {
-	k := &logWindowKube{fakeKubernetes: fakeKubernetes{object: kube.Object{"status": map[string]any{"driverInfo": map[string]any{"podName": "actual-driver"}}}}}
+	object := runningObject()
+	object["status"].(map[string]any)["driverInfo"] = map[string]any{"podName": "actual-driver"}
+	k := &logWindowKube{fakeKubernetes: fakeKubernetes{object: object, pods: []kube.Pod{{Name: "actual-driver", Role: "driver", ApplicationUID: "uid-1"}}}}
 	l := &driverRoleLogs{}
 	s := New(config.Config{Namespaces: []string{"spark"}, LokiMaxEntries: 5000}, k, fakePrometheus{}, &fakeStore{}, slog.New(slog.NewTextHandler(io.Discard, nil)), l)
 	q := domain.DriverLogQuery{Source: "kubernetes", Mode: "range", StartLine: 1, EndLine: 2000, Limit: 2000}

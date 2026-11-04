@@ -1,7 +1,6 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -55,18 +54,22 @@ type LogSource interface {
 }
 
 type Service struct {
-	config      config.Config
-	kubernetes  Kubernetes
-	prometheus  Prometheus
-	logs        LogSource
-	audits      store.AuditStore
-	logger      *slog.Logger
-	subMu       sync.RWMutex
-	subscribers map[chan domain.ApplicationChange]map[string]bool
+	config        config.Config
+	kubernetes    Kubernetes
+	prometheus    Prometheus
+	logs          LogSource
+	audits        store.AuditStore
+	logger        *slog.Logger
+	subMu         sync.RWMutex
+	subscribers   map[chan domain.ApplicationChange]map[string]bool
+	cacheMu       sync.Mutex
+	listCache     map[string]*applicationCache
+	webhookClient *http.Client
+	webhookOnce   sync.Once
 }
 
 func New(cfg config.Config, kubernetes Kubernetes, prometheus Prometheus, audits store.AuditStore, logger *slog.Logger, logSources ...LogSource) *Service {
-	service := &Service{config: cfg, kubernetes: kubernetes, prometheus: prometheus, audits: audits, logger: logger, subscribers: map[chan domain.ApplicationChange]map[string]bool{}}
+	service := &Service{config: cfg, kubernetes: kubernetes, prometheus: prometheus, audits: audits, logger: logger, subscribers: map[chan domain.ApplicationChange]map[string]bool{}, listCache: map[string]*applicationCache{}, webhookClient: newWebhookClient(cfg.AlertWebhookTimeout)}
 	if len(logSources) > 0 {
 		service.logs = logSources[0]
 	}
@@ -74,6 +77,8 @@ func New(cfg config.Config, kubernetes Kubernetes, prometheus Prometheus, audits
 }
 
 func (s *Service) StartWatch(ctx context.Context) {
+	go s.collectHistory(ctx)
+	go s.reconcileStops(ctx)
 	for _, namespace := range s.config.Namespaces {
 		namespace := namespace
 		go func() {
@@ -100,6 +105,7 @@ func (s *Service) StartWatch(ctx context.Context) {
 }
 
 func (s *Service) StartAlertEvaluator(ctx context.Context) {
+	s.startAlertWebhookWorkers(ctx)
 	ticker := time.NewTicker(s.config.AlertEvaluationInterval)
 	go func() {
 		defer ticker.Stop()
@@ -136,6 +142,12 @@ func (s *Service) Subscribe(ctx context.Context, namespaces []string) <-chan dom
 }
 
 func (s *Service) publishChange(change domain.ApplicationChange) {
+	s.cacheMu.Lock()
+	if cached := s.listCache[change.Namespace]; cached != nil {
+		cached.expires = time.Time{}
+		cached.version++
+	}
+	s.cacheMu.Unlock()
 	s.subMu.RLock()
 	defer s.subMu.RUnlock()
 	for channel, namespaces := range s.subscribers {
@@ -164,7 +176,11 @@ func (s *Service) ListApplications(ctx context.Context) ([]domain.SparkApplicati
 	return s.ListApplicationsForNamespaces(ctx, nil)
 }
 
-func (s *Service) ListApplicationsForNamespaces(ctx context.Context, namespaces []string) ([]domain.SparkApplication, error) {
+func (s *Service) listApplicationsUncached(ctx context.Context, namespaces []string) ([]domain.SparkApplication, error) {
+	return s.listApplicationsWithManifests(ctx, namespaces, false)
+}
+
+func (s *Service) listApplicationsWithManifests(ctx context.Context, namespaces []string, saveManifest bool) ([]domain.SparkApplication, error) {
 	applications := make([]domain.SparkApplication, 0)
 	for _, namespace := range allowedNamespaces(s.config.Namespaces, namespaces) {
 		objects, err := s.kubernetes.ListSparkApplications(ctx, namespace)
@@ -184,15 +200,19 @@ func (s *Service) ListApplicationsForNamespaces(ctx context.Context, namespaces 
 		for _, object := range objects {
 			related := relatedPods(object, pods)
 			app := s.mapApplication(object, related, usage)
+			if saveManifest {
+				raw, e := json.Marshal(object)
+				if e != nil {
+					return nil, e
+				}
+				app.YAML = string(raw)
+			}
 			app.Diagnostics = diagnoseApplication(app)
 			app.Lifecycle = buildLifecycle(app)
 			applications = append(applications, app)
 		}
 	}
 	sort.Slice(applications, func(i, j int) bool { return applications[i].CreatedAt > applications[j].CreatedAt })
-	if err := s.audits.UpsertApplications(ctx, applications); err != nil {
-		s.logger.Warn("could not persist SparkApplication history", "error", err)
-	}
 	return applications, nil
 }
 
@@ -217,16 +237,14 @@ func (s *Service) GetApplication(ctx context.Context, namespace, name string) (d
 	if !s.config.NamespaceAllowed(namespace) {
 		return domain.SparkApplication{}, &kube.APIError{StatusCode: 403, Message: "namespace is not configured for this service"}
 	}
-	object, err := s.kubernetes.GetSparkApplication(ctx, namespace, name)
+	object, snapshot, err := s.resolveApplication(ctx, namespace, name)
 	if err != nil {
-		var apiErr *kube.APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
-			if snapshot, snapshotErr := s.audits.GetApplicationSnapshot(ctx, namespace, name); snapshotErr == nil {
-				return snapshot, nil
-			}
-		}
 		return domain.SparkApplication{}, err
 	}
+	if snapshot != nil {
+		return *snapshot, nil
+	}
+	name = kube.String(object, "metadata", "name")
 	pods, err := s.kubernetes.ListPods(ctx, namespace)
 	if err != nil {
 		return domain.SparkApplication{}, err
@@ -254,7 +272,16 @@ func (s *Service) GetApplication(ctx context.Context, namespace, name string) (d
 			}
 		}
 	}
-	logs, logErr := s.kubernetes.PodLog(ctx, namespace, app.DriverPod, 5000)
+	verifiedDriver := ""
+	for _, p := range related {
+		if p.Role == "driver" {
+			verifiedDriver = p.Name
+			if p.Name == app.DriverPod {
+				break
+			}
+		}
+	}
+	logs, logErr := s.kubernetes.PodLog(ctx, namespace, verifiedDriver, 5000)
 	if logErr != nil {
 		s.logger.Warn("driver log query failed", "namespace", namespace, "application", name, "pod", app.DriverPod, "error", logErr)
 	} else {
@@ -277,9 +304,25 @@ func (s *Service) GetApplicationMetrics(ctx context.Context, namespace, name str
 	if !from.Before(to) {
 		return nil, &kube.APIError{StatusCode: 400, Message: "from timestamp must be before to timestamp"}
 	}
-	object, err := s.kubernetes.GetSparkApplication(ctx, namespace, name)
+	object, snapshot, err := s.resolveApplication(ctx, namespace, name)
 	if err != nil {
 		return nil, err
+	}
+	if snapshot != nil {
+		from, to = historicalRange(*snapshot, from, to)
+		if !from.Before(to) {
+			return []domain.MetricPoint{}, nil
+		}
+		names := []string{snapshot.DriverPod}
+		for _, p := range snapshot.Executors {
+			names = append(names, p.Name)
+		}
+		_, points, e := s.prometheus.UsageRange(ctx, namespace, names, from, to)
+		return points, e
+	}
+	from, to = historicalRange(s.mapApplication(object, nil, nil), from, to)
+	if !from.Before(to) {
+		return []domain.MetricPoint{}, nil
 	}
 	pods, err := s.kubernetes.ListPods(ctx, namespace)
 	if err != nil {
@@ -298,9 +341,12 @@ func (s *Service) SparkUIProxyTarget(ctx context.Context, namespace, name string
 	if !s.config.NamespaceAllowed(namespace) {
 		return "", &kube.APIError{StatusCode: 403, Message: "namespace is not configured for this service"}
 	}
-	object, err := s.kubernetes.GetSparkApplication(ctx, namespace, name)
+	object, snapshot, err := s.resolveApplication(ctx, namespace, name)
 	if err != nil {
 		return "", err
+	}
+	if snapshot != nil {
+		return "", archivedWriteError()
 	}
 	if normalizedState(kube.String(object, "status", "applicationState", "state")) != "RUNNING" {
 		return "", &kube.APIError{StatusCode: 409, Message: "Spark UI proxy is available only for RUNNING applications"}
@@ -316,6 +362,15 @@ func (s *Service) SparkUIProxyTarget(ctx context.Context, namespace, name string
 	if port > 65535 {
 		return "", &kube.APIError{StatusCode: 502, Message: "Spark driver UI Service has an invalid port"}
 	}
+	validator, ok := s.kubernetes.(interface {
+		ValidateSparkUIService(context.Context, string, string, int, kube.Object) error
+	})
+	if !ok {
+		return "", &kube.APIError{StatusCode: 503, Message: "Spark UI Service ownership validation unavailable"}
+	}
+	if err := validator.ValidateSparkUIService(ctx, namespace, serviceName, port, object); err != nil {
+		return "", err
+	}
 	return fmt.Sprintf("http://%s.%s.svc:%d", serviceName, namespace, port), nil
 }
 
@@ -326,11 +381,26 @@ func (s *Service) GetExecutorLogs(ctx context.Context, namespace, name, pod stri
 	if s.logs == nil {
 		return nil, &kube.APIError{StatusCode: 503, Message: "Loki is not configured"}
 	}
-	object, err := s.kubernetes.GetSparkApplication(ctx, namespace, name)
+	object, snapshot, err := s.resolveApplication(ctx, namespace, name)
 	if err != nil {
 		return nil, err
 	}
 	validExecutor := false
+	if snapshot != nil {
+		for _, p := range snapshot.Executors {
+			if p.Name == pod {
+				validExecutor = true
+			}
+		}
+		from, to = historicalRange(*snapshot, from, to)
+		if !validExecutor {
+			return nil, &kube.APIError{StatusCode: 404, Message: "executor does not belong to this application instance"}
+		}
+		if !from.Before(to) {
+			return []domain.LogEntry{}, nil
+		}
+		return s.logs.QueryLogs(ctx, namespace, pod, from, to, direction, limit)
+	}
 	if states, ok := kube.Map(object, "status", "executorState"); ok {
 		_, validExecutor = states[pod]
 	}
@@ -349,6 +419,10 @@ func (s *Service) GetExecutorLogs(ctx context.Context, namespace, name, pod stri
 	if !validExecutor {
 		return nil, &kube.APIError{StatusCode: 404, Message: "executor does not belong to this SparkApplication"}
 	}
+	from, to = historicalRange(s.mapApplication(object, nil, nil), from, to)
+	if !from.Before(to) {
+		return []domain.LogEntry{}, nil
+	}
 	entries, err := s.logs.QueryLogs(ctx, namespace, pod, from, to, direction, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query executor logs: %w", err)
@@ -366,7 +440,7 @@ func (s *Service) SummaryForNamespaces(ctx context.Context, from, to time.Time, 
 	if err != nil {
 		return domain.DashboardSummary{}, err
 	}
-	summary := domain.DashboardSummary{Total: len(apps), ByState: map[string]int{}}
+	summary := domain.DashboardSummary{Total: len(apps), ByState: map[string]int{}, Applications: apps}
 	expectedMetricPods := 0
 	observedMetricPods := 0
 	for _, app := range apps {
@@ -438,12 +512,16 @@ func (s *Service) KillApplication(ctx context.Context, namespace, name, operator
 	if !s.config.NamespaceAllowed(namespace) {
 		return domain.OperationAudit{}, &kube.APIError{StatusCode: 403, Message: "namespace is not configured for this service"}
 	}
-	object, err := s.kubernetes.GetSparkApplication(ctx, namespace, name)
+	object, snapshot, err := s.resolveApplication(ctx, namespace, name)
+	if err == nil && snapshot != nil {
+		err = archivedWriteError()
+	}
 	if err != nil {
 		audit := domain.NewAudit(newID(), namespace, name, operator, reason, "FAILED", "SparkApplication lookup failed: "+err.Error())
 		s.persistAudit(ctx, audit)
 		return audit, err
 	}
+	name = kube.String(object, "metadata", "name")
 	state := normalizedState(kube.String(object, "status", "applicationState", "state"))
 	if state != "RUNNING" && state != "SUBMITTED" {
 		err = &kube.APIError{StatusCode: 409, Message: "only RUNNING or SUBMITTED SparkApplications can be killed"}
@@ -457,23 +535,41 @@ func (s *Service) KillApplication(ctx context.Context, namespace, name, operator
 		s.persistAudit(ctx, audit)
 		return audit, err
 	}
-	if err := s.kubernetes.DisableSparkApplicationRestart(ctx, namespace, name); err != nil {
-		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "FAILED", "Could not disable SparkApplication restart policy: "+err.Error())
-		s.persistAudit(ctx, audit)
-		return audit, err
-	}
 	related := relatedPods(object, pods)
-	driverPod := kube.String(object, "status", "driverInfo", "podName")
-	if driverPod == "" {
-		for _, pod := range related {
-			if pod.Role == "driver" {
+	statusDriver := kube.String(object, "status", "driverInfo", "podName")
+	driverPod := ""
+	var driver kube.Pod
+	for _, pod := range related {
+		if pod.Role == "driver" {
+			if driverPod == "" || pod.Name == statusDriver {
 				driverPod = pod.Name
+				driver = pod
+			}
+			if pod.Name == statusDriver {
 				break
 			}
 		}
 	}
-	driverPod = firstNonEmpty(driverPod, name+"-driver")
-	if err := s.kubernetes.TerminatePodByDeadline(ctx, namespace, driverPod); err != nil {
+	if driverPod == "" {
+		err := &kube.APIError{StatusCode: 409, Message: "Driver Pod ownership could not be verified; no Pods were terminated"}
+		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "FAILED", err.Error())
+		s.persistAudit(ctx, audit)
+		return audit, err
+	}
+	var stopErr error
+	if writer, ok := s.kubernetes.(interface {
+		RequestApplicationStop(context.Context, string, kube.Object) error
+	}); ok {
+		stopErr = writer.RequestApplicationStop(ctx, namespace, object)
+	} else {
+		stopErr = s.kubernetes.DisableSparkApplicationRestart(ctx, namespace, name)
+	}
+	if err := stopErr; err != nil {
+		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "FAILED", "Could not disable SparkApplication restart policy: "+err.Error())
+		s.persistAudit(ctx, audit)
+		return audit, err
+	}
+	if err := s.stopPod(ctx, namespace, driver); err != nil && HTTPStatus(err) != 404 {
 		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "FAILED", "Driver deadline termination failed: "+err.Error())
 		s.persistAudit(ctx, audit)
 		return audit, err
@@ -483,14 +579,14 @@ func (s *Service) KillApplication(ctx context.Context, namespace, name, operator
 		if pod.Role != "executor" {
 			continue
 		}
-		if err := s.kubernetes.ForceDeletePod(ctx, namespace, pod.Name); err != nil {
+		if err := s.stopPod(ctx, namespace, pod); err != nil && HTTPStatus(err) != 404 {
 			audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "FAILED", "Executor cleanup failed for "+pod.Name+": "+err.Error())
 			s.persistAudit(ctx, audit)
 			return audit, err
 		}
 		executorsDeleted++
 	}
-	audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "SUCCESS", fmt.Sprintf("Driver pod terminated by deadline and retained; %d executor pods cleaned; SparkApplication retained", executorsDeleted))
+	audit := domain.NewOperationAudit(newID(), namespace, name, operator, "KILL", reason, "SUCCESS", fmt.Sprintf("Stop requested; Driver deadline set; %d executor pods cleaned; SparkApplication retained; resubmitted Drivers will also be stopped", executorsDeleted))
 	if err := s.persistAudit(ctx, audit); err != nil {
 		return audit, fmt.Errorf("SparkApplication pods were terminated but audit persistence failed: %w", err)
 	}
@@ -521,19 +617,19 @@ func (s *Service) PrepareApplication(ctx context.Context, namespace, name, mode 
 	if mode != "clone" && mode != "retry" {
 		return domain.ManifestPreview{}, &kube.APIError{StatusCode: 400, Message: "mode must be clone or retry"}
 	}
-	object, err := s.kubernetes.GetSparkApplication(ctx, namespace, name)
+	object, snapshot, err := s.resolveApplication(ctx, namespace, name)
 	if err != nil {
-		if HTTPStatus(err) != 404 {
-			return domain.ManifestPreview{}, err
-		}
-		snapshot, snapshotErr := s.audits.GetApplicationSnapshot(ctx, namespace, name)
-		if snapshotErr != nil || strings.TrimSpace(snapshot.YAML) == "" {
-			return domain.ManifestPreview{}, err
+		return domain.ManifestPreview{}, err
+	}
+	if snapshot != nil {
+		if strings.TrimSpace(snapshot.YAML) == "" {
+			return domain.ManifestPreview{}, &kube.APIError{StatusCode: 404, Message: "historical YAML is unavailable"}
 		}
 		if unmarshalErr := yaml.Unmarshal([]byte(snapshot.YAML), &object); unmarshalErr != nil {
 			return domain.ManifestPreview{}, fmt.Errorf("decode historical SparkApplication snapshot: %w", unmarshalErr)
 		}
 	}
+	name = kube.String(object, "metadata", "name")
 	newName := derivedApplicationName(name, mode)
 	cleanObjectForSubmission(object, namespace, newName, "")
 	if metadata, ok := kube.Map(object, "metadata"); ok {
@@ -560,6 +656,9 @@ func (s *Service) SubmitApplication(ctx context.Context, namespace, manifest, op
 		return domain.SparkApplication{}, err
 	}
 	application := s.mapApplication(created, nil, map[string]metrics.PodUsage{})
+	if raw, e := json.Marshal(created); e == nil {
+		application.YAML = string(raw)
+	}
 	application.Diagnostics = diagnoseApplication(application)
 	application.Lifecycle = buildLifecycle(application)
 	if err := s.audits.UpsertApplications(ctx, []domain.SparkApplication{application}); err != nil {
@@ -643,18 +742,27 @@ func cleanObjectForSubmission(object kube.Object, namespace, name, operator stri
 		}
 	}
 	delete(object, "status")
+	if metadata, ok := kube.Map(object, "metadata"); ok {
+		if annotations, ok := metadata["annotations"].(map[string]any); ok {
+			delete(annotations, kube.StopAnnotation)
+		}
+	}
 }
 
 func (s *Service) DeleteApplication(ctx context.Context, namespace, name, operator, reason string) (domain.OperationAudit, error) {
 	if !s.config.NamespaceAllowed(namespace) {
 		return domain.OperationAudit{}, &kube.APIError{StatusCode: 403, Message: "namespace is not configured for this service"}
 	}
-	object, err := s.kubernetes.GetSparkApplication(ctx, namespace, name)
+	object, snapshot, err := s.resolveApplication(ctx, namespace, name)
+	if err == nil && snapshot != nil {
+		err = archivedWriteError()
+	}
 	if err != nil {
 		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "DELETE", reason, "FAILED", "SparkApplication lookup failed: "+err.Error())
 		s.persistAudit(ctx, audit)
 		return audit, err
 	}
+	name = kube.String(object, "metadata", "name")
 	state := normalizedState(kube.String(object, "status", "applicationState", "state"))
 	if !terminalState(state) {
 		err = &kube.APIError{StatusCode: 409, Message: "only terminal SparkApplications can be deleted"}
@@ -671,7 +779,15 @@ func (s *Service) DeleteApplication(ctx context.Context, namespace, name, operat
 	if err := s.audits.UpsertApplications(ctx, []domain.SparkApplication{terminalApplication}); err != nil {
 		s.logger.Warn("could not persist terminal SparkApplication before deletion", "namespace", namespace, "application", name, "error", err)
 	}
-	if err := s.kubernetes.DeleteSparkApplication(ctx, namespace, name); err != nil {
+	var deleteErr error
+	if writer, ok := s.kubernetes.(interface {
+		DeleteApplicationInstance(context.Context, string, string, string) error
+	}); ok {
+		deleteErr = writer.DeleteApplicationInstance(ctx, namespace, name, kube.String(object, "metadata", "uid"))
+	} else {
+		deleteErr = s.kubernetes.DeleteSparkApplication(ctx, namespace, name)
+	}
+	if err := deleteErr; err != nil {
 		audit := domain.NewOperationAudit(newID(), namespace, name, operator, "DELETE", reason, "FAILED", "Kubernetes delete failed: "+err.Error())
 		s.persistAudit(ctx, audit)
 		return audit, err
@@ -712,7 +828,8 @@ func (s *Service) mapApplication(object kube.Object, pods []kube.Pod, usage map[
 	driverPodName := firstNonEmpty(kube.String(object, "status", "driverInfo", "podName"), name+"-driver")
 	state := normalizedState(kube.String(object, "status", "applicationState", "state"))
 	app := domain.SparkApplication{
-		ID: firstNonEmpty(kube.String(object, "metadata", "uid"), namespace+"/"+name), Name: name, Namespace: namespace,
+		WorkflowTaskID: annotations["spark-control-center.io/task-instance"],
+		ID:             firstNonEmpty(kube.String(object, "metadata", "uid"), namespace+"/"+name), Name: name, Namespace: namespace,
 		Cluster: s.config.ClusterName, Owner: firstNonEmpty(annotations[consoleOwnerAnnotation], "unknown"), State: state,
 		CreatedAt:  kube.String(object, "metadata", "creationTimestamp"),
 		StartedAt:  firstNonEmpty(kube.String(object, "status", "lastSubmissionAttemptTime"), kube.String(object, "status", "applicationState", "stateTransitionTime")),
@@ -904,23 +1021,41 @@ func buildLifecycle(app domain.SparkApplication) []domain.LifecycleEvent {
 
 func relatedPods(object kube.Object, pods []kube.Pod) []kube.Pod {
 	name := kube.String(object, "metadata", "name")
-	driver := kube.String(object, "status", "driverInfo", "podName")
-	executors := map[string]bool{}
-	if states, ok := kube.Map(object, "status", "executorState"); ok {
-		for podName := range states {
-			executors[podName] = true
+	uid := kube.String(object, "metadata", "uid")
+	selectors := map[string]bool{}
+	for _, pod := range pods {
+		matched, conflict := podApplicationIdentity(pod, name, uid)
+		if pod.Role == "driver" && matched && !conflict && pod.Labels["spark-app-selector"] != "" {
+			selectors[pod.Labels["spark-app-selector"]] = true
 		}
 	}
 	result := make([]kube.Pod, 0)
 	for _, pod := range pods {
-		labelMatch := pod.Labels["sparkoperator.k8s.io/app-name"] == name || pod.Labels["spark-app-name"] == name
-		exactMatch := pod.Name == driver || executors[pod.Name]
-		prefixFallback := (pod.Role == "driver" || pod.Role == "executor") && strings.HasPrefix(pod.Name, name+"-")
-		if labelMatch || exactMatch || prefixFallback {
+		matched, conflict := podApplicationIdentity(pod, name, uid)
+		selectorMatch := pod.Role == "executor" && selectors[pod.Labels["spark-app-selector"]]
+		if !conflict && (matched || selectorMatch) {
 			result = append(result, pod)
 		}
 	}
 	return result
+}
+
+func podApplicationIdentity(pod kube.Pod, name, uid string) (matched, conflict bool) {
+	for _, key := range []string{"sparkoperator.k8s.io/app-name", "spark-app-name"} {
+		if value := pod.Labels[key]; value != "" {
+			if value != name {
+				return false, true
+			}
+			matched = true
+		}
+	}
+	if pod.ApplicationUID != "" {
+		if pod.ApplicationUID != uid {
+			return false, true
+		}
+		matched = true
+	}
+	return matched || (pod.Role == "driver" && pod.Name == name+"-driver"), false
 }
 
 func applicationPodNames(object kube.Object, related []kube.Pod) []string {
@@ -1345,6 +1480,9 @@ func (s *Service) BatchPreview(ctx context.Context, operation string, items []do
 		if err != nil {
 			item.Allowed = false
 			item.Reason = err.Error()
+		} else if app.Historical {
+			item.Allowed = false
+			item.Reason = "application instance is archived"
 		} else if operation == "kill" && !containsString([]string{"RUNNING", "SUBMITTED"}, app.State) {
 			item.Allowed = false
 			item.Reason = "application is not running or submitted"
@@ -1572,6 +1710,15 @@ func maxInt64(a, b int64) int64 {
 }
 
 func (s *Service) EvaluateAlerts(ctx context.Context, namespaces []string) error {
+	if coordinator, ok := s.audits.(interface {
+		RunAlertEvaluation(context.Context, time.Duration, func(context.Context) error) error
+	}); ok {
+		return coordinator.RunAlertEvaluation(ctx, s.config.AlertEvaluationInterval, func(ctx context.Context) error { return s.evaluateAlerts(ctx, namespaces) })
+	}
+	return s.evaluateAlerts(ctx, namespaces)
+}
+
+func (s *Service) evaluateAlerts(ctx context.Context, namespaces []string) error {
 	value, err := s.alertStore()
 	if err != nil {
 		return err
@@ -1587,11 +1734,27 @@ func (s *Service) EvaluateAlerts(ctx context.Context, namespaces []string) error
 	active := []string{}
 	now := time.Now().UTC()
 	details := map[string]domain.SparkApplication{}
+	failed := map[string]bool{}
+	scopedApps := map[string][]domain.SparkApplication{}
 	for _, rule := range rules {
 		if !rule.Enabled {
 			continue
 		}
-		for _, app := range apps {
+		ruleContext := domain.WithTenant(ctx, rule.TenantID)
+		visible, cached := scopedApps[rule.TenantID]
+		if !cached {
+			visible = apps
+			if filter, ok := s.audits.(interface {
+				FilterTenantApplications(context.Context, []domain.SparkApplication) ([]domain.SparkApplication, error)
+			}); ok {
+				visible, err = filter.FilterTenantApplications(ruleContext, apps)
+				if err != nil {
+					return err
+				}
+			}
+			scopedApps[rule.TenantID] = visible
+		}
+		for _, app := range visible {
 			if !ruleApplies(rule, app) {
 				continue
 			}
@@ -1603,7 +1766,9 @@ func (s *Service) EvaluateAlerts(ctx context.Context, namespaces []string) error
 					var detailErr error
 					detail, detailErr = s.GetApplication(ctx, app.Namespace, app.Name)
 					if detailErr != nil {
-						return fmt.Errorf("collect alert diagnostics for %s: %w", key, detailErr)
+						failed[key] = true
+						s.logger.Warn("collect alert diagnostics", "application", key, "error", detailErr)
+						continue
 					}
 					details[key] = detail
 				}
@@ -1611,38 +1776,34 @@ func (s *Service) EvaluateAlerts(ctx context.Context, namespaces []string) error
 			}
 			for _, alert := range evaluateRuleAlerts(rule, app, now) {
 				active = append(active, alert.ID)
-				savedAlert, _, upsertErr := value.UpsertAlert(ctx, alert)
+				var upsertErr error
+				if rule.NotifyWebhook && s.config.AlertWebhookURL != "" {
+					outbox, ok := s.audits.(store.AlertOutboxStore)
+					if !ok {
+						return fmt.Errorf("durable alert webhook outbox is unavailable")
+					}
+					_, _, upsertErr = outbox.UpsertAlertWithWebhook(ruleContext, alert, s.config.AlertWebhookURL)
+				} else {
+					_, _, upsertErr = value.UpsertAlert(ruleContext, alert)
+				}
 				if upsertErr != nil {
 					return upsertErr
-				}
-				if rule.NotifyWebhook && savedAlert.Status != "silenced" {
-					s.sendAlertWebhook(savedAlert)
 				}
 			}
 		}
 	}
-	return value.ResolveInactiveAlerts(ctx, active)
-}
-func (s *Service) sendAlertWebhook(alert domain.Alert) {
-	if s.config.AlertWebhookURL == "" {
-		return
-	}
-	payload, _ := json.Marshal(alert)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), s.config.AlertWebhookTimeout)
-		defer cancel()
-		request, _ := http.NewRequestWithContext(ctx, http.MethodPost, s.config.AlertWebhookURL, bytes.NewReader(payload))
-		request.Header.Set("Content-Type", "application/json")
-		response, err := http.DefaultClient.Do(request)
+	if len(failed) > 0 {
+		previous, err := value.ListAlerts(ctx, nil)
 		if err != nil {
-			s.logger.Warn("alert webhook failed", "error", err)
-			return
+			return err
 		}
-		_ = response.Body.Close()
-		if response.StatusCode >= 300 {
-			s.logger.Warn("alert webhook returned error", "status", response.Status)
+		for _, alert := range previous {
+			if failed[alert.Namespace+"/"+alert.ApplicationName] {
+				active = append(active, alert.ID)
+			}
 		}
-	}()
+	}
+	return value.ResolveInactiveAlerts(ctx, active)
 }
 func (s *Service) ListAlerts(ctx context.Context, namespaces []string) ([]domain.Alert, error) {
 	value, err := s.alertStore()

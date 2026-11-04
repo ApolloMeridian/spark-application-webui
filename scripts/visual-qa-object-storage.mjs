@@ -14,6 +14,7 @@ try {
   for (const width of [1440, 1024]) {
     const context = await browser.newContext({
       viewport: { width, height: 1000 },
+      permissions: ["clipboard-read", "clipboard-write"],
     });
     const page = await context.newPage();
     const errors = [];
@@ -267,6 +268,9 @@ try {
     await page
       .getByRole("button", { name: "draft-only/", exact: true })
       .waitFor();
+    const folderRow=page.getByRole("row").filter({has:page.getByRole("button",{name:"draft-only/",exact:true})});
+    await folderRow.getByRole("button",{name:"Copy folder path",exact:true}).click();
+    assert.equal(await page.evaluate(()=>navigator.clipboard.readText()),"spark-artifacts/team/analytics/draft-only/");
     await page.waitForFunction(
       () => !document.querySelector(".ant-message-notice"),
     );
@@ -358,8 +362,24 @@ try {
     await page
       .getByLabel("Search current prefix", { exact: true })
       .press("Enter");
+    await page.waitForFunction(
+      () => !document.querySelector(".ant-spin-spinning,.ant-spin-blur"),
+    );
+    assert.equal(
+      await page
+        .getByRole("button", { name: "draft-only/untitled.txt", exact: true })
+        .count(),
+      0,
+      "search expanded a descendant",
+    );
     await page
-      .getByRole("button", { name: "draft-only/untitled.txt", exact: true })
+      .getByLabel("Search current prefix", { exact: true })
+      .fill("DRAFT");
+    await page
+      .getByLabel("Search current prefix", { exact: true })
+      .press("Enter");
+    await page
+      .getByRole("button", { name: "draft-only/", exact: true })
       .waitFor();
     assert.equal(
       await page

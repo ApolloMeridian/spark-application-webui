@@ -163,11 +163,13 @@ export interface SparkApplication {
   pendingReason?: string;
   errorMessage?: string;
   historical?: boolean;
+  lastObservedAt?: string;
   diagnostics?: ApplicationDiagnostic[];
   lifecycle?: LifecycleEvent[];
 }
 
 export interface DashboardSummary {
+	applications?: SparkApplication[];
   total: number;
   byState: Partial<Record<ApplicationState, number>>;
   requested: ResourceAmount;

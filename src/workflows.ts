@@ -112,10 +112,11 @@ export async function workflowRequest<T>(
   const response = await fetch(apiUrl(`/v1${path}`), {
     method,
     credentials: "include",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Requested-With": "SparkControlCenter" },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(runtimeConfig.api.requestTimeoutMs),
   });
+  if (response.status === 401) window.dispatchEvent(new Event("spark-console:unauthorized"));
   if (!response.ok) {
     const error = (await response.json().catch(() => ({}))) as {
       message?: string;

@@ -3,6 +3,7 @@ import type { Locale } from './types';
 
 const messages = {
   'zh-CN': {
+    resourceUsed: '已使用', resourceRequested: '已申请', resourceCapacity: '总容量', metricsUnavailable: 'Prometheus 不可用', applicationHealth: '作业状态分布', totalApplications: '总计', baselinePool: '基线节点池', autoscalePool: '弹性节点池', podsPending: '个 Pod 等待中', waitingCapacity: '等待调度资源', failureReason: '失败原因',
     overview: '运行总览', applications: 'Spark 作业', submitApplication: '提交 Spark 作业', audit: '操作审计', signOut: '退出登录',
     cluster: '集群', namespace: '命名空间', allNamespaces: '全部命名空间', running: '运行中',
     completed: '已完成', failed: '失败', pending: '等待中', requestedCpu: 'CPU 申请', usedCpu: 'CPU 使用',
@@ -30,6 +31,7 @@ const messages = {
     userCreated: '用户已创建', userUpdated: '用户信息已更新', userDeleted: '用户已删除', myProfile: '个人信息', profileHint: '管理你的显示名称、邮箱和登录密码。', accountInformation: '账号信息', profileUpdated: '个人信息已更新', changePassword: '修改密码', currentPassword: '当前密码', newPassword: '新密码', confirmPassword: '确认新密码', passwordMismatch: '两次输入的密码不一致', passwordChangedLoginAgain: '密码已修改，请重新登录',
   },
   'en-US': {
+    resourceUsed: 'used', resourceRequested: 'requested', resourceCapacity: 'capacity', metricsUnavailable: 'Prometheus unavailable', applicationHealth: 'Application health', totalApplications: 'total', baselinePool: 'Baseline pool', autoscalePool: 'Autoscale pool', podsPending: 'pods pending', waitingCapacity: 'Waiting for scheduling capacity', failureReason: 'Reason',
     overview: 'Overview', applications: 'Spark Applications', submitApplication: 'Submit Spark Application', audit: 'Operation Audit', signOut: 'Sign out',
     cluster: 'Cluster', namespace: 'Namespace', allNamespaces: 'All namespaces', running: 'Running',
     completed: 'Completed', failed: 'Failed', pending: 'Pending', requestedCpu: 'CPU requested', usedCpu: 'CPU used',

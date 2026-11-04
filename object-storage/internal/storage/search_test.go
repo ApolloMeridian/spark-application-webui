@@ -15,16 +15,22 @@ import (
 type searchProvider struct{ fakeProvider }
 
 func (f *searchProvider) ListRecursive(_ context.Context, b, p, token string, n int) (Page, error) {
+	panic("recursive search must never be used")
+}
+func (f *searchProvider) List(_ context.Context, b, p, token string, n int) (Page, error) {
 	if p != "team/a/" || n != 1 {
 		return Page{}, fail(400, "unexpected_scan")
 	}
 	if token == "" {
 		return Page{Objects: []Object{{Key: p + "unrelated.txt"}}, Next: "second"}, nil
 	}
-	return Page{Objects: []Object{{Key: p + "nested/Config.YAML"}}}, nil
+	if token == "second" {
+		return Page{Objects: []Object{{Key: p + "Config.YAML"}}, Next: "third"}, nil
+	}
+	return Page{Objects: []Object{{Key: p + "config-folder/", Directory: true}}}, nil
 }
 
-func TestRecursiveSearchScopePaginationAndCursorBinding(t *testing.T) {
+func TestImmediateDirectorySearchCrossesPagesAndBindsCursor(t *testing.T) {
 	store := dbFixture(t)
 	ctx := context.Background()
 	if err := store.Bootstrap(ctx, []Bootstrap{{Username: "admin", Tenant: "default", Connection: "demo", Bucket: "bucket", Prefix: "team/a/", Actions: Actions}}); err != nil {
@@ -56,12 +62,12 @@ func TestRecursiveSearchScopePaginationAndCursorBinding(t *testing.T) {
 	}
 	base := "/v1/objects?connection=demo&bucket=bucket&key=team/a/&limit=1"
 	one := send(base+"&search=CONFIG", 200)
-	if len(one.Objects) != 0 || one.Next == "" || one.Scanned != 1 {
-		t.Fatalf("first empty batch must retain cursor: %+v", one)
+	if len(one.Objects) != 1 || one.Next == "" || one.Scanned != 2 || one.Objects[0].Key != "team/a/Config.YAML" {
+		t.Fatalf("search must find a later provider page automatically: %+v", one)
 	}
 	two := send(base+"&search=config&cursor="+url.QueryEscape(one.Next), 200)
-	if len(two.Objects) != 1 || two.Objects[0].Key != "team/a/nested/Config.YAML" || two.Next != "" {
-		t.Fatalf("nested result: %+v", two)
+	if len(two.Objects) != 1 || !two.Objects[0].Directory || two.Next != "" {
+		t.Fatalf("immediate folder result: %+v", two)
 	}
 	send(base+"&search=other&cursor="+url.QueryEscape(one.Next), 400)
 	send(base+"&cursor="+url.QueryEscape(one.Next), 400)

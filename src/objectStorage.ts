@@ -167,6 +167,7 @@ async function request<T>(
     signal,
     headers: {
       Accept: "application/json",
+      "X-Requested-With": "SparkControlCenter",
       ...(init.body && typeof init.body === "string"
         ? { "Content-Type": "application/json" }
         : {}),
@@ -426,11 +427,6 @@ const mockService: typeof apiService = {
     for (const [k, v] of Object.entries(fixture)) {
       if (!k.startsWith(keyOf(t))) continue;
       const rest = k.slice(keyOf(t).length);
-      if (search) {
-        if (rest.toLowerCase().includes(search.trim().toLowerCase()))
-          objects.push(object(t.key + rest, v));
-        continue;
-      }
       if (rest.includes("/")) {
         dirs.add(t.key + rest.split("/")[0] + "/");
       } else {
@@ -447,7 +443,14 @@ const mockService: typeof apiService = {
           directory: true,
         })),
         ...objects,
-      ],
+      ].filter(
+        (o) =>
+          !search ||
+          o.key
+            .slice(t.key.length)
+            .toLowerCase()
+            .includes(search.trim().toLowerCase()),
+      ),
       next: "",
     };
   },

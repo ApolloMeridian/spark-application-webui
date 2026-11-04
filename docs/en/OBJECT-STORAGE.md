@@ -1,20 +1,20 @@
-# Object storage plugin (1.5.2)
+# Object storage plugin (1.5.3)
 
 An optional, independently deployed stateless service, not an embedded MinIO Console. It is disabled by default, creates no plugin resources when disabled and requires no storage credentials.
 
 ## Build and deploy
 
 ```bash
-docker build -t spark-control-center:1.5.2 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.2 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.2 .
+docker build -t spark-control-center:1.5.3 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.3 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.3 .
 helm package charts/spark-control-center
 
 # First deployment only: export the production template; preserve existing environment values.
-helm show values ./spark-control-center-1.5.2.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.3.tgz > values-production.local.yaml
 # Adapt images, endpoints, bucket, authentication, database and bootstrap grants in that file.
 # Tag and push all three images to your own registry if needed.
-helm upgrade --install spark-console ./spark-control-center-1.5.2.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.5.3.tgz \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
 ```
@@ -70,7 +70,7 @@ Replace project numbers, pool/provider and audiences. For impersonation use the 
 
 ### Search within a prefix
 
-Search file names or relative paths under the current prefix, including subfolders. Matching is case-insensitive and excludes file contents and unsaved draft folders. S3/MinIO and GCS scan metadata in bounded batches (100 objects by default, at most 500 per request). The result banner shows this batch's scanned/matched counts. Use **Next** to continue, even if a batch has no matches; only the last batch completes the scan. Clear the search to return to folder browsing. Navigating to another prefix resets the search. Authorization and cursor validation apply to every batch; search creates no audit rows.
+Search file and folder names in the current authorized prefix, case-insensitively. Child directories are returned as directory entries and are never traversed. The plugin uses the provider's `/` delimiter for both S3/MinIO and GCS. It scans bounded metadata batches and the browser automatically continues past empty batches until it finds matches or reaches the end. Use **Next** for further matches and **Cancel search** to stop a long search. No file contents are downloaded and read-only searches add no audit rows. Clear the search to return to browsing; changing directories resets it. Cursors remain bound to the user, tenant, grants, prefix and query. The directory toolbar and folder rows offer **Copy folder path**, producing `bucket/prefix/`.
 
 ### Draft folders
 
@@ -86,7 +86,7 @@ Only authorized roots are shown. Directories are object-key prefixes, not filesy
 
 New text files and existing objects share a locally bundled Monaco editor: syntax colors, line numbers, folding, comments, undo, Ctrl+F search, Ctrl+H replace, case/whole-word/regex toggles, single/all replacement, Ctrl+D multi-selection, Alt+click and Ctrl+Alt+Up/Down multi-cursors. JSON/YAML/XML have structural diagnostics; JavaScript/TypeScript have syntax diagnostics. Other formats have highlighting/comment support, not a full compiler or remote language server. Supported extensions include md, txt, log, sh, bat, conf, cfg, py, java, xml, sql, hql, json, yml, yaml, ini, js, ts, csv, properties, toml, html and svg. New files require upload permission and conditional creation (no overwrite). Existing saves require edit permission and the original ETag/generation. File sizes use decimal B/KB/MB/GB/TB units (1 KB = 1000 B).
 
-Uploads create new objects by default. The API supports explicit version-matched replacement, but the first UI has no force-overwrite action. Parts default to 8 MiB with four transfers per replica. Select the same name/size/lastModified file and choose Resume to reuse a locally stored, 24-hour encrypted ticket. Internal GCS session URLs are not exposed. Cancelling aborts unfinished transfers; the last GCS part may already have created an object, so refresh before assuming absence.
+Uploads create new objects by default. The API supports explicit version-matched replacement, but the first UI has no force-overwrite action. Parts default to 8 MiB with four transfers shared across replicas using the same PostgreSQL schema. Select the same name/size/lastModified file and choose Resume to reuse a locally stored, 24-hour encrypted ticket. Internal GCS session URLs are not exposed. Cancelling aborts unfinished transfers; the last GCS part may already have created an object, so refresh before assuming absence.
 
 Copy is a server-side single-object operation within one connection, with a non-existing destination. Cross-connection/recursive operations are not supported. Delete affects one object. Older S3-compatible servers may ignore DeleteObject If-Match: the plugin checks the selected version first, but cannot guarantee an atomic delete against external concurrent writers on those servers. GCS uses generation conditions. Use underlying versioning/backups for stronger recovery; this UI does not manage historical object versions.
 
@@ -109,7 +109,7 @@ npm install
 npm test
 npm run build
 node scripts/object-storage-local-test.mjs
-QA_VERSION=1.5.2 node scripts/container-object-storage-smoke.mjs
+QA_VERSION=1.5.3 node scripts/container-object-storage-smoke.mjs
 node scripts/object-storage-helm-test.mjs
 ```
 

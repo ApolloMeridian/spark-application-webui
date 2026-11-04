@@ -161,7 +161,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await fetch(apiUrl(runtimeConfig.auth.oidc.logoutPath), {
           method: "POST",
           credentials: "include",
-          headers: { Accept: "application/json" },
+          headers: { Accept: "application/json", "X-Requested-With": "SparkControlCenter" },
         }).catch(() => undefined);
         setSession(null);
       },

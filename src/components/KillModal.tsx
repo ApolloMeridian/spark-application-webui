@@ -11,8 +11,8 @@ export function ApplicationOperationModal({ application, operation, open, onClos
   const submit = async () => {
     if (!session) return; setLoading(true);
     try {
-      if (operation === 'kill') await sparkService.killApplication(application.namespace, application.name, session.username, reason.trim() || undefined);
-      else await sparkService.deleteApplication(application.namespace, application.name, session.username, reason.trim() || undefined);
+      if (operation === 'kill') await sparkService.killApplication(application.namespace, application.id, session.username, reason.trim() || undefined);
+      else await sparkService.deleteApplication(application.namespace, application.id, session.username, reason.trim() || undefined);
       message.success(t(operation === 'kill' ? 'killSuccess' : 'deleteSuccess')); setReason(''); onCompleted(); onClose();
     }
     catch (error) { message.error(error instanceof Error ? error.message : 'Operation failed'); }

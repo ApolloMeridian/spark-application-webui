@@ -51,7 +51,7 @@ export function formatMemory(value?: number): string {
 
 export function formatDuration(app: SparkApplication, now = dayjs()): string {
   const start = dayjs(app.startedAt ?? app.createdAt);
-  const end = app.finishedAt ? dayjs(app.finishedAt) : now;
+  const end = app.finishedAt ? dayjs(app.finishedAt) : app.historical && app.lastObservedAt ? dayjs(app.lastObservedAt) : now;
   const seconds = Math.max(0, end.diff(start, 'second'));
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);

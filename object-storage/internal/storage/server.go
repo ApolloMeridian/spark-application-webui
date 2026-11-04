@@ -12,10 +12,10 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -33,14 +33,9 @@ type Server struct {
 	Logger        *slog.Logger
 	slots         chan struct{}
 	requestsSlots chan struct{}
-	mu            sync.Mutex
-	rates         map[string]rate
+	nodeID        string
 	Requests      atomic.Uint64
 	Denied        atomic.Uint64
-}
-type rate struct {
-	Time  time.Time
-	Count int
 }
 type principalKey struct{}
 type principal struct {
@@ -49,7 +44,7 @@ type principal struct {
 }
 
 func NewServer(c Config, store *Store, key []byte, providers map[string]Provider, logger *slog.Logger) *Server {
-	return &Server{Config: c, Store: store, Key: key, Providers: providers, Logger: logger, slots: make(chan struct{}, c.Concurrent), requestsSlots: make(chan struct{}, c.Concurrent*4), rates: map[string]rate{}}
+	return &Server{Config: c, Store: store, Key: key, Providers: providers, Logger: logger, slots: make(chan struct{}, c.Concurrent), requestsSlots: make(chan struct{}, c.Concurrent*4), nodeID: newID()}
 }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -105,6 +100,7 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), s.Config.Timeout())
 		defer cancel()
+		ctx = context.WithValue(ctx, budgetCancelKey{}, context.CancelFunc(cancel))
 		r = r.WithContext(ctx)
 		select {
 		case s.requestsSlots <- struct{}{}:
@@ -126,27 +122,21 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 			s.respond(w, nil, e)
 			return
 		}
-		s.mu.Lock()
-		now := time.Now()
-		entry := s.rates[user.ID]
-		if now.Sub(entry.Time) >= time.Minute {
-			entry = rate{Time: now}
-		}
-		entry.Count++
-		s.rates[user.ID] = entry
-		allowed := entry.Count <= s.Config.RequestsPerMinute
-		if len(s.rates) > 10000 {
-			for k, v := range s.rates {
-				if now.Sub(v.Time) > 2*time.Minute {
-					delete(s.rates, k)
-				}
-			}
-		}
-		s.mu.Unlock()
-		if !allowed {
-			s.respond(w, nil, fail(429, "rate_limit"))
+		release, e := s.acquireBudget(r, "request", "", user)
+		if e != nil {
+			s.respond(w, nil, e)
 			return
 		}
+		defer release()
+		stopIO := context.AfterFunc(ctx, func() {
+			controller := http.NewResponseController(w)
+			_ = controller.SetReadDeadline(time.Now())
+			_ = controller.SetWriteDeadline(time.Now())
+			if r.Body != nil {
+				_ = r.Body.Close()
+			}
+		})
+		defer stopIO()
 		grants, e := s.Store.Grants(r.Context(), user, false)
 		if e != nil {
 			s.respond(w, nil, e)
@@ -155,10 +145,16 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, principalKey{}, principal{user, grants})))
 	})
 }
-func (s *Server) transfer(w http.ResponseWriter) (func(), bool) {
+func (s *Server) transfer(w http.ResponseWriter, r *http.Request) (func(), bool) {
 	select {
 	case s.slots <- struct{}{}:
-		return func() { <-s.slots }, true
+		release, err := s.acquireBudget(r, "transfer", "", who(r).User)
+		if err != nil {
+			<-s.slots
+			s.respond(w, nil, err)
+			return nil, false
+		}
+		return func() { release(); <-s.slots }, true
 	default:
 		s.respond(w, nil, fail(429, "transfer_limit"))
 		return nil, false
@@ -284,6 +280,9 @@ func policyHash(grants []Grant) string {
 	return hex.EncodeToString(sum[:])
 }
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	r = r.WithContext(ctx)
 	c, b, k := target(r)
 	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
 	if len(search) > 256 || strings.ContainsFunc(search, func(c rune) bool { return c < 32 || c == 127 }) {
@@ -302,7 +301,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	u := who(r)
 	cursor := ""
 	if value := r.URL.Query().Get("cursor"); value != "" {
-		ticket, e := unseal(s.Key, value, u.User, "page")
+		ticket, e := unseal(s.Key, value, u.User, "page-level-v2")
 		if e != nil || ticket.Connection != c || ticket.Bucket != b || ticket.Key != k || ticket.Search != search || ticket.Policy != policyHash(u.Grants) {
 			s.respond(w, nil, fail(400, "invalid_cursor"))
 			return
@@ -317,30 +316,52 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		n = 500
 	}
 	var out Page
-	if search != "" {
-		out, e = p.ListRecursive(r.Context(), b, k, cursor, n)
-	} else {
+	// Search the whole immediate directory, using delimiter-aware provider pages.
+	// Bound each request; the client resumes empty batches automatically. Never
+	// expand child prefixes or retain the directory in server memory.
+	scanned := 0
+	deadline := time.Now().Add(2 * time.Second)
+	seenCursors := map[string]bool{}
+	for batch := 0; batch < 20; batch++ {
+		if seenCursors[cursor] {
+			e = fail(502, "invalid_provider_response")
+			break
+		}
+		seenCursors[cursor] = true
 		out, e = p.List(r.Context(), b, k, cursor, n)
-	}
-	if e == nil {
+		if e != nil {
+			break
+		}
 		for _, o := range out.Objects {
-			if !ValidKey(o.Key) || !strings.HasPrefix(o.Key, k) {
+			relative := strings.TrimSuffix(strings.TrimPrefix(o.Key, k), "/")
+			if !ValidKey(o.Key) || !strings.HasPrefix(o.Key, k) || strings.Contains(relative, "/") {
 				s.respond(w, nil, fail(502, "invalid_provider_response"))
 				return
 			}
 		}
 		if search != "" {
-			out.Scanned = len(out.Objects)
+			scanned += len(out.Objects)
 			matches := make([]Object, 0, len(out.Objects))
 			for _, o := range out.Objects {
-				if !o.Directory && !strings.HasSuffix(o.Key, "/") && strings.Contains(strings.ToLower(strings.TrimPrefix(o.Key, k)), search) {
+				if strings.Contains(strings.ToLower(strings.TrimPrefix(o.Key, k)), search) {
 					matches = append(matches, o)
 				}
 			}
 			out.Objects = matches
+			out.Scanned = scanned
 		}
+		if out.Next != "" && out.Next == cursor {
+			e = fail(502, "invalid_provider_response")
+			break
+		}
+		if search == "" || len(out.Objects) > 0 || out.Next == "" || time.Now().After(deadline) {
+			break
+		}
+		cursor = out.Next
+	}
+	if e == nil {
 		if out.Next != "" {
-			out.Next, e = seal(s.Key, Ticket{User: u.User.ID, Tenant: u.User.Tenant, Connection: c, Bucket: b, Key: k, Kind: "page", Cursor: out.Next, Search: search, Policy: policyHash(u.Grants), Expires: time.Now().Add(15 * time.Minute).Unix()})
+			out.Next, e = seal(s.Key, Ticket{User: u.User.ID, Tenant: u.User.Tenant, Connection: c, Bucket: b, Key: k, Kind: "page-level-v2", Cursor: out.Next, Search: search, Policy: policyHash(u.Grants), Expires: time.Now().Add(15 * time.Minute).Unix()})
 		}
 	}
 	s.respond(w, out, e)
@@ -383,7 +404,7 @@ func (s *Server) text(w http.ResponseWriter, r *http.Request) {
 		s.respond(w, nil, fail(415, "not_text"))
 		return
 	}
-	release, ok := s.transfer(w)
+	release, ok := s.transfer(w, r)
 	if !ok {
 		return
 	}
@@ -439,7 +460,7 @@ func (s *Server) saveText(w http.ResponseWriter, r *http.Request) {
 		s.respond(w, nil, fail(415, "not_text"))
 		return
 	}
-	release, ok := s.transfer(w)
+	release, ok := s.transfer(w, r)
 	if !ok {
 		return
 	}
@@ -484,7 +505,7 @@ func (s *Server) download(w http.ResponseWriter, r *http.Request) {
 		s.respond(w, nil, e)
 		return
 	}
-	release, ok := s.transfer(w)
+	release, ok := s.transfer(w, r)
 	if !ok {
 		return
 	}
@@ -564,7 +585,7 @@ func (s *Server) copy(w http.ResponseWriter, r *http.Request) {
 		s.respond(w, nil, e)
 		return
 	}
-	release, ok := s.transfer(w)
+	release, ok := s.transfer(w, r)
 	if !ok {
 		return
 	}
@@ -600,7 +621,7 @@ func (s *Server) startUpload(w http.ResponseWriter, r *http.Request) {
 		s.respond(w, nil, fail(413, "upload_too_large"))
 		return
 	}
-	release, ok := s.transfer(w)
+	release, ok := s.transfer(w, r)
 	if !ok {
 		return
 	}
@@ -641,7 +662,7 @@ func (s *Server) upload(r *http.Request) (Ticket, Provider, func(), error) {
 	if e != nil {
 		return t, nil, nil, e
 	}
-	release, e := s.Store.Lease(r.Context(), who(r).User, t.Operation)
+	release, e := s.acquireBudget(r, "upload", t.Operation, who(r).User)
 	return t, p, release, e
 }
 func (s *Server) uploadStatus(w http.ResponseWriter, r *http.Request) {
@@ -661,7 +682,7 @@ func (s *Server) uploadPart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unlock()
-	release, ok := s.transfer(w)
+	release, ok := s.transfer(w, r)
 	if !ok {
 		return
 	}
@@ -685,12 +706,22 @@ func (s *Server) uploadPart(w http.ResponseWriter, r *http.Request) {
 		s.respond(w, nil, fail(409, "upload_offset_mismatch"))
 		return
 	}
-	raw, e := io.ReadAll(http.MaxBytesReader(w, r.Body, wanted+1))
-	if e != nil || int64(len(raw)) != wanted {
+	part, e := os.CreateTemp("", "spark-storage-part-*")
+	if e != nil {
+		s.respond(w, nil, fail(503, "upload_buffer_unavailable"))
+		return
+	}
+	defer func() { _ = part.Close(); _ = os.Remove(part.Name()) }()
+	count, e := io.CopyBuffer(part, http.MaxBytesReader(w, r.Body, wanted+1), make([]byte, 32<<10))
+	if e != nil || count != wanted {
 		s.respond(w, nil, fail(400, "size_mismatch"))
 		return
 	}
-	u, e = p.Part(r.Context(), t.Bucket, t.Key, u, n, bytes.NewReader(raw), wanted)
+	if _, e = part.Seek(0, io.SeekStart); e != nil {
+		s.respond(w, nil, fail(503, "upload_buffer_unavailable"))
+		return
+	}
+	u, e = p.Part(r.Context(), t.Bucket, t.Key, u, n, part, wanted)
 	s.respond(w, map[string]any{"offset": u.Offset, "complete": u.Complete}, e)
 }
 func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {

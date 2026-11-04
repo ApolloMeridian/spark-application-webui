@@ -6,6 +6,8 @@ Use the repository's GitHub private vulnerability reporting feature. Do not open
 
 ## Deployment responsibilities
 
+See [hardening and upgrade requirements](HARDENING.md) for the current development changes, trust boundaries and remaining scheduler/scaling work.
+
 - Store database passwords, local administrator passwords and OIDC client secrets in Kubernetes Secrets.
 - Terminate TLS before exposing the console.
 - Limit Kubernetes RBAC and watched namespaces.

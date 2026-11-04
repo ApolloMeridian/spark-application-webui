@@ -9,6 +9,7 @@ export function cleanApplicationManifest(manifest: string, namespace?: string, n
   const annotations = { ...(metadata.annotations as Record<string, unknown> || {}) };
   delete annotations['kubectl.kubernetes.io/last-applied-configuration'];
   delete annotations['spark-control-center.io/submitted-by'];
+  delete annotations['spark-control-center.io/stop-requested-at'];
   if (namespace) metadata.namespace = namespace;
   if (name) metadata.name = name;
   if (!metadata.name) throw new Error('metadata.name is required');

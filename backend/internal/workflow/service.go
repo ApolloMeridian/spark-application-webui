@@ -97,8 +97,9 @@ func (s *Service) transaction(ctx context.Context, operation func(pgx.Tx) error)
 		return err
 	}
 	defer tx.Rollback(ctx)
-	// Config mutations and scheduler decisions use the same transaction lock.
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(14001400)`); err != nil {
+	// Short configuration transactions must not queue behind scheduler RPCs.
+	// Row locks still serialize edits to the particular active run/workflow.
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(14001401)`); err != nil {
 		return err
 	}
 	if err = operation(tx); err != nil {
@@ -477,6 +478,7 @@ func (s *Service) ListWorkflows(ctx context.Context, user domain.User, project s
 	return result, err
 }
 func (s *Service) SaveWorkflow(ctx context.Context, user domain.User, x domain.Workflow) (domain.Workflow, error) {
+	ctx = domain.WithTenant(ctx, tenant(user))
 	if err := s.prepare(ctx, user, &x); err != nil {
 		return x, err
 	}
@@ -631,6 +633,7 @@ func (s *Service) DeleteWorkflow(ctx context.Context, user domain.User, project,
 }
 
 func (s *Service) TemplateVersionAction(ctx context.Context, user domain.User, key string, version int, remove bool) (domain.ApplicationTemplate, error) {
+	ctx = domain.WithTenant(ctx, tenant(user))
 	x, err := s.store.GetTemplate(ctx, key)
 	if err != nil {
 		return x, err
@@ -644,7 +647,7 @@ func (s *Service) TemplateVersionAction(ctx context.Context, user domain.User, k
 	err = s.transaction(ctx, func(tx pgx.Tx) error {
 		var current int
 		var namespace string
-		if err := tx.QueryRow(ctx, `SELECT current_version,namespace FROM application_templates WHERE id=$1 FOR UPDATE`, key).Scan(&current, &namespace); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT current_version,namespace FROM application_templates WHERE id=$1 AND tenant_id=$2 FOR UPDATE`, key, tenant(user)).Scan(&current, &namespace); err != nil {
 			return err
 		}
 		if err := s.namespace(user, namespace); err != nil {

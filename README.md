@@ -6,6 +6,9 @@ Spark Control Center is a web console for operating Apache Spark applications on
 
 ## Highlights
 
+- Optional independent S3/MinIO/GCS WIF object-storage service: prefix grants, resumable transfers, conditional writes, virtual folders, recursive path search and Monaco text editing.
+- Persist and aggregate failure diagnostics/fingerprints; keep alerts and templates tenant-scoped even when Kubernetes namespaces are shared.
+
 - Discover SparkApplications across configured namespaces, with status, owner, lifecycle timestamps, and resource usage.
 - Inspect Driver/Executor requests, live usage, peaks, scheduling, Kubernetes events, logs, YAML, and selectable Prometheus history ranges.
 - Proxy a running Driver Spark UI through the backend; link terminal jobs to Spark History Server when event logging is enabled.
@@ -58,11 +61,14 @@ See the [UI tour](docs/en/UI.md) for application, log, submission, alert and exe
 - [Workflows and scheduling](docs/en/WORKFLOWS.md): tenants, dependencies, Cron, backfills and persistence.
 - [Security policy](docs/en/SECURITY.md): vulnerability reporting and deployment responsibilities.
 - [Object storage](docs/en/OBJECT-STORAGE.md): optional S3/MinIO and GCS WIF plugin, prefix permissions and local validation.
+- [API/environment reference](docs/en/REFERENCE.md): source-checked route, variable and database inventories.
+- [Security hardening](docs/en/HARDENING.md): 1.5.3 changes, upgrade requirements and deployment boundaries.
 
 ## Architecture
 
 - **Frontend:** React, TypeScript, Vite, Ant Design, ECharts
-- **Backend:** Go HTTP service
+- **Backend:** Go HTTP service with a PostgreSQL-backed workflow scheduler
+- **Object storage:** optional stateless Go service on port 8082, reached through the backend's HMAC-signed gateway; S3/MinIO or GCS WIF credentials remain server-side
 - **Integrations:** Kubernetes Spark Operator API, Prometheus, Loki, PostgreSQL, optional OIDC
 - **Deployment:** non-root container images, Nginx same-origin API proxy, Helm and scoped RBAC
 
@@ -86,12 +92,17 @@ npm test
 npm run build
 ```
 
-Backend validation requires Go 1.24+:
+Backend validation requires Go 1.26.10 or later:
 
 ```bash
 cd backend
 go test ./...
 go vet ./...
+cd ../object-storage
+go test ./...
+go vet ./...
+cd ..
+npm run docs:check
 ```
 
 ## Container images
@@ -99,17 +110,18 @@ go vet ./...
 Build images without a registry prefix:
 
 ```bash
-docker build -t spark-control-center:1.5.2 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.2 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.2 .
+export DOCKER_BUILDKIT=1
+docker build -t spark-control-center:1.5.3 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.3 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.3 .
 ```
 
 [Releases](https://github.com/ApolloMeridian/spark-application-webui/releases) contain three image TAR archives and one Helm TGZ package. Images have no private registry prefix. The optional storage image is included even when the feature is disabled; no checksum file is generated.
 
 ```bash
-docker load -i spark-control-center-1.5.2.tar
-docker load -i spark-control-center-backend-1.5.2.tar
-docker load -i spark-control-center-object-storage-1.5.2.tar
+docker load -i spark-control-center-1.5.3.tar
+docker load -i spark-control-center-backend-1.5.3.tar
+docker load -i spark-control-center-object-storage-1.5.3.tar
 ```
 
 ## Helm deployment
@@ -117,9 +129,9 @@ docker load -i spark-control-center-object-storage-1.5.2.tar
 Chart defaults are a complete production template using the real API and PostgreSQL login. Configure endpoints and existing Secrets in one file. Object storage and OIDC are disabled by default; Mock is available only through its explicit example:
 
 ```bash
-helm show values ./spark-control-center-1.5.2.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.3.tgz > values-production.local.yaml
 
-helm upgrade --install spark-console ./spark-control-center-1.5.2.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.5.3.tgz \
   --namespace spark-console \
   --create-namespace \
   -f values-production.local.yaml
@@ -137,6 +149,7 @@ See [Deployment and configuration](docs/en/DEPLOYMENT.md) for the complete inter
 - New `admin` accounts enter the full-access `admin` tenant and can manage users, tenants and audit records.
 - Administrators configure module read/manage access, namespace access and Spark actions per tenant; viewer accounts can receive explicit operational permissions. Object storage additionally requires bucket/prefix/action grants.
 - Existing user/project tenant assignments are preserved on upgrade. Legacy tenants retain previous access until explicitly configured. [Permission details](docs/en/WORKFLOWS.md).
+- Administrators are not exempt from data tenant boundaries. Storage grants are bound to the recipient's actual tenant and administrators can delegate only their own connection/bucket/prefix/actions. Jobs submitted outside workflows remain shared within the authorized Kubernetes namespace; namespaces are the Kubernetes isolation boundary.
 
 The backend independently checks every privileged operation; hiding a UI button is not treated as authorization.
 

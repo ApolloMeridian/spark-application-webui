@@ -14,6 +14,8 @@ vite.config.d.ts
 backend/spark-control-center-backend
 *.patch
 design.md
+# Local audit input may contain deployment details and undisclosed findings.
+/project_audit_report.md
 *[Rr][Oo][Aa][Dd][Mm][Aa][Pp]*
 *.local.yaml
 *.pem

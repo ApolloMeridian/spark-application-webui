@@ -7,6 +7,9 @@ metadata:
   labels:
     {{- include "spark-control-center.labels" . | nindent 4 }}
 rules:
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get]
   - apiGroups: [sparkoperator.k8s.io]
     resources: [sparkapplications]
     verbs:
@@ -62,6 +65,9 @@ metadata:
   labels:
     {{- include "spark-control-center.labels" $ | nindent 4 }}
 rules:
+  - apiGroups: [""]
+    resources: [services]
+    verbs: [get]
   - apiGroups: [sparkoperator.k8s.io]
     resources: [sparkapplications]
     verbs:

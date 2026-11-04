@@ -11,6 +11,8 @@ import (
 )
 
 type Config struct {
+	PublicURL               string
+	APIPrefix               string
 	ObjectStorageEnabled    bool
 	ObjectStorageURL        string
 	ObjectStorageSigningKey string
@@ -72,6 +74,8 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
+		PublicURL:               strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_URL")), "/"),
+		APIPrefix:               env("EXTERNAL_API_PREFIX", "/api"),
 		ObjectStorageEnabled:    boolEnv("OBJECT_STORAGE_ENABLED", false),
 		ObjectStorageURL:        strings.TrimRight(os.Getenv("OBJECT_STORAGE_URL"), "/"),
 		ObjectStorageSigningKey: os.Getenv("OBJECT_STORAGE_SIGNING_KEY"),
@@ -133,6 +137,15 @@ func Load() (Config, error) {
 	if len(cfg.Namespaces) == 0 {
 		return Config{}, fmt.Errorf("WATCH_NAMESPACES must contain at least one namespace")
 	}
+	if cfg.PublicURL != "" {
+		u, err := url.Parse(cfg.PublicURL)
+		if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && u.Scheme != "http") {
+			return Config{}, fmt.Errorf("PUBLIC_URL must be an http(s) origin without a path")
+		}
+	}
+	if !validAPIPrefix(cfg.APIPrefix) {
+		return Config{}, fmt.Errorf("EXTERNAL_API_PREFIX must contain only slash-separated alphanumeric, underscore or hyphen segments")
+	}
 	if cfg.ObjectStorageEnabled {
 		u, err := url.Parse(cfg.ObjectStorageURL)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" || len(cfg.ObjectStorageSigningKey) < 32 {
@@ -185,6 +198,10 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("OIDC_ENABLED must be true when AUTH_MODE=oidc")
 	}
 	if cfg.OIDCEnabled {
+		u, err := url.Parse(cfg.OIDCRedirectURL)
+		if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" || u.RawQuery != "" || (u.Scheme != "https" && u.Scheme != "http") {
+			return Config{}, fmt.Errorf("OIDC_REDIRECT_URL must be an explicit absolute http(s) callback URL")
+		}
 		if cfg.OIDCIssuerURL == "" || cfg.OIDCClientID == "" || cfg.OIDCClientSecret == "" {
 			return Config{}, fmt.Errorf("OIDC_ISSUER_URL, OIDC_CLIENT_ID, and OIDC_CLIENT_SECRET are required when OIDC_ENABLED=true")
 		}
@@ -204,6 +221,26 @@ func Load() (Config, error) {
 		cfg.KubernetesAPIURL = "https://" + host + ":" + port
 	}
 	return cfg, nil
+}
+
+func validAPIPrefix(value string) bool {
+	if value == "" {
+		return true
+	}
+	if !strings.HasPrefix(value, "/") || strings.HasSuffix(value, "/") {
+		return false
+	}
+	for _, part := range strings.Split(value[1:], "/") {
+		if part == "" {
+			return false
+		}
+		for _, c := range part {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (c Config) PostgresDSN() string {

@@ -40,10 +40,20 @@ func (s *Service) Start(ctx context.Context) {
 	}()
 }
 
-// All decisions are serialized by a PostgreSQL transaction advisory lock. No
-// in-memory queue is authoritative. A lost transaction cannot commit progress;
-// deterministic CREATE names plus ownership checks recover external side effects.
+// Only planning holds the global transaction lock. Observations and durable
+// effect delivery run outside transactions; claims and acknowledgements are short.
 func (s *Service) Tick(ctx context.Context, now time.Time) error {
+	observations, err := s.observeTasks(ctx)
+	if err != nil {
+		return err
+	}
+	if err = s.planTick(ctx, now, observations); err != nil {
+		return err
+	}
+	return s.deliverEffects(ctx, now, 10)
+}
+
+func (s *Service) planTick(ctx context.Context, now time.Time, observations map[string]taskObservation) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -117,7 +127,7 @@ func (s *Service) Tick(ctx context.Context, now time.Time) error {
 		if available < 0 {
 			available = 0
 		}
-		if err = s.advance(ctx, tx, run, runs, now, &budget, &available); err != nil {
+		if err = s.advance(ctx, tx, run, runs, now, &budget, &available, observations); err != nil {
 			return err
 		}
 		if err = writeRun(ctx, tx, *run); err != nil {
@@ -282,7 +292,7 @@ func failRun(run *domain.WorkflowRun, message string, now time.Time) {
 		run.StartedAt = stamp(now)
 	}
 }
-func (s *Service) advance(ctx context.Context, tx pgx.Tx, run *domain.WorkflowRun, runs []domain.WorkflowRun, now time.Time, budget, available *int) error {
+func (s *Service) advance(ctx context.Context, tx pgx.Tx, run *domain.WorkflowRun, runs []domain.WorkflowRun, now time.Time, budget, available *int, observations map[string]taskObservation) error {
 	owner, authErr := s.store.FindUserByID(ctx, run.OwnerID)
 	if authErr != nil || writable(owner) != nil || tenant(owner) != run.Snapshot.TenantID {
 		failRun(run, "owner is missing, disabled, demoted or moved to another tenant", now)
@@ -343,8 +353,20 @@ func (s *Service) advance(ctx context.Context, tx pgx.Tx, run *domain.WorkflowRu
 				break
 			}
 		}
-		if task.Status == "running" || task.Status == "submitting" {
-			app, err := s.apps.GetWorkflowApplication(ctx, task.Namespace, task.ApplicationName)
+		if task.Status == "submitting" {
+			// A durable submit intent owns reconciliation until its result commits.
+			// A missing resource while CREATE is in flight is not a task failure.
+			if err := enqueueEffect(ctx, tx, *run, *task, "submit"); err != nil {
+				return err
+			}
+			continue
+		}
+		if task.Status == "running" {
+			observation, ok := observations[observationKey(*task)]
+			if !ok {
+				continue
+			}
+			app, err := observation.app, observation.err
 			if err != nil {
 				var apiErr *kube.APIError
 				if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
@@ -392,14 +414,11 @@ func (s *Service) advance(ctx context.Context, tx pgx.Tx, run *domain.WorkflowRu
 							continue
 						}
 						*budget--
-						_, err = s.apps.KillApplication(ctx, task.Namespace, task.ApplicationName, run.CreatedBy, "workflow cancellation/timeout")
-						if err != nil {
-							task.Message = "kill retry: " + err.Error()
-							continue
-						}
-						task.CancelRequested = true
 						task.TimedOut = timedOut
-						task.Message = "termination requested; waiting for Kubernetes terminal state"
+						if err = enqueueEffect(ctx, tx, *run, *task, "kill"); err != nil {
+							return err
+						}
+						task.Message = "termination queued; waiting for Kubernetes terminal state"
 					}
 				}
 			}
@@ -476,35 +495,8 @@ func (s *Service) advance(ctx context.Context, tx pgx.Tx, run *domain.WorkflowRu
 			continue
 		}
 		*budget--
-		// Reconcile a CREATE accepted before a crashed/uncommitted tick.
-		app, err := s.apps.GetWorkflowApplication(ctx, task.Namespace, task.ApplicationName)
-		if err == nil {
-			if !owned(app, task.ID) {
-				task.Status = "failed"
-				task.Message = "SparkApplication name already exists; overwrite is forbidden"
-				task.FinishedAt = stamp(now)
-				continue
-			}
-		}
-		if err != nil {
-			var apiErr *kube.APIError
-			if !errors.As(err, &apiErr) || apiErr.StatusCode != 404 {
-				task.Message = "preflight: " + err.Error()
-				continue
-			}
-			_, err = s.apps.DryRunApplication(ctx, task.Namespace, task.Manifest, run.CreatedBy)
-			if err == nil {
-				_, err = s.apps.SubmitApplication(ctx, task.Namespace, task.Manifest, run.CreatedBy)
-			}
-			if err != nil {
-				task.Status = "failed"
-				task.Message = err.Error()
-				task.FinishedAt = stamp(now)
-				continue
-			}
-		}
-		task.Status = "running"
-		if _, err := tx.Exec(ctx, `INSERT INTO workflow_resources(namespace,application_name,task_id,tenant_id) VALUES($1,$2,$3,$4) ON CONFLICT(namespace,application_name) DO UPDATE SET task_id=EXCLUDED.task_id,tenant_id=EXCLUDED.tenant_id`, task.Namespace, task.ApplicationName, task.ID, run.Snapshot.TenantID); err != nil {
+		task.Status = "submitting"
+		if err := enqueueEffect(ctx, tx, *run, *task, "submit"); err != nil {
 			return err
 		}
 		task.StartedAt = stamp(now)
@@ -512,15 +504,26 @@ func (s *Service) advance(ctx context.Context, tx pgx.Tx, run *domain.WorkflowRu
 		task.Message = ""
 		active++
 		*available--
-		if err = auditTx(ctx, tx, run.CreatedBy, "WORKFLOW_TASK_DISPATCH", task.ApplicationName, fmt.Sprintf("run=%s node=%s attempt=%d", run.ID, node.ID, task.Attempt)); err != nil {
-			return err
-		}
+	}
+	return s.finishRun(ctx, tx, run, now)
+}
+
+func (s *Service) finishRun(ctx context.Context, tx pgx.Tx, run *domain.WorkflowRun, now time.Time) error {
+	if terminal(run.Status) {
+		return nil
 	}
 	allDone := true
 	failed := false
 	for _, t := range run.Tasks {
 		if t.Status == "queued" || t.Status == "running" || t.Status == "submitting" {
 			allDone = false
+		}
+		if t.Status == "failed" && run.Status != "cancelling" {
+			for _, n := range run.Snapshot.Nodes {
+				if n.ID == t.NodeID && t.Attempt <= n.Retries {
+					allDone = false
+				}
+			}
 		}
 		if t.Status == "failed" || t.Status == "skipped" {
 			failed = true
@@ -557,7 +560,7 @@ func owned(app domain.SparkApplication, taskID string) bool {
 // namespace-authorized externally submitted jobs retain their existing visibility.
 func (s *Service) ApplicationTenant(ctx context.Context, user domain.User, ns, name string) (bool, error) {
 	var tenants []string
-	rows, err := s.pool.Query(ctx, `SELECT tenant_id FROM workflow_resources WHERE namespace=$1 AND application_name=$2 UNION SELECT p.tenant_id FROM workflow_task_runs t JOIN projects p ON p.id=t.project_id WHERE t.data->>'namespace'=$1 AND t.data->>'applicationName'=$2`, ns, name)
+	rows, err := s.pool.Query(ctx, `SELECT tenant_id FROM workflow_resources WHERE namespace=$1 AND application_name=$2 UNION SELECT p.tenant_id FROM workflow_task_runs t JOIN workflow_runs r ON r.id=t.run_id JOIN projects p ON p.id=t.project_id WHERE t.state IN ('submitting','running') AND t.data->>'namespace'=$1 AND t.data->>'applicationName'=$2 AND EXISTS(SELECT 1 FROM workflow_effects e WHERE e.task_id=t.id AND e.attempt=(t.data->>'attempt')::integer AND e.kind='submit' AND e.state<>'completed')`, ns, name)
 	if err != nil {
 		return false, err
 	}

@@ -11,7 +11,7 @@ import (
 
 func TestPostgresTemplateNodeDateDefaultsKeepConstraints(t *testing.T) {
 	s, user, project, _ := fixture(t)
-	ctx := context.Background()
+	ctx := domain.WithTenant(context.Background(), user.TenantID)
 	parameters := []domain.TemplateParameter{{Name: "businessDate", Type: "string", Default: "$[yyyy-MM-dd]", Pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$", Required: true}}
 	template, err := s.store.SaveTemplate(ctx, domain.ApplicationTemplate{Name: "Date template", Namespace: "spark", Manifest: strings.Replace(testManifest, "$[yyyy-MM-dd-1]", "{{businessDate}}", 1), Parameters: parameters, CreatedBy: user.Username})
 	if err != nil {

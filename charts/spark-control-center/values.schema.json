@@ -412,6 +412,8 @@
       "type": "object",
       "properties": {
         "enabled": { "type": "boolean" },
+        "publicURL": { "type": "string", "pattern": "^$|^https?://[^/?#@]+$" },
+        "externalAPIPrefix": { "type": "string", "pattern": "^(/[A-Za-z0-9_-]+)*$" },
         "podAnnotations": { "$ref": "#/definitions/annotationMap" },
         "serviceAccount": {
           "type": "object",

@@ -1,20 +1,20 @@
-# 对象存储插件（1.5.2）
+# 对象存储插件（1.5.3）
 
 这是可选的独立无状态服务，不是嵌入 MinIO Console。默认关闭，不创建插件资源，不要求存储凭证，不改变已有 Spark 作业/工作流能力。
 
 ## 构建与安装
 
 ```bash
-docker build -t spark-control-center:1.5.2 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.2 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.2 .
+docker build -t spark-control-center:1.5.3 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.3 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.3 .
 helm package charts/spark-control-center
 
 # 首次部署时创建单文件配置；已配置过的文件不要覆盖。
-helm show values ./spark-control-center-1.5.2.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.3.tgz > values-production.local.yaml
 # 修改此文件中的镜像仓库、Endpoint、bucket、认证、数据库和初始授权。
 # 根据内网实际仓库分别 docker tag / docker push 三个镜像。
-helm upgrade --install spark-console ./spark-control-center-1.5.2.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.5.3.tgz \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
 ```
@@ -76,7 +76,7 @@ kubectl -n spark-console create configmap spark-console-storage-wif \
 
 ### 当前目录搜索
 
-按文件名或相对路径搜索当前 Prefix 及其子目录，不区分大小写，不搜索文件内容或未保存的临时文件夹。S3/MinIO 与 GCS 均按有限批次扫描元数据（默认每批 100 个对象，每次最多 500 个），提示栏显示本批扫描量和匹配量。即使本批没有匹配项，只要仍有“下一页”就可继续扫描，直到扫描末尾。清空搜索可恢复目录浏览，切换目录会重置搜索。每批请求均校验目录权限和分页游标，搜索不产生审计记录。
+在当前授权 Prefix 这一层按名称搜索文件与文件夹，不区分大小写。子目录只作为目录项返回，不递归展开；S3/MinIO 与 GCS 均使用 `/` delimiter 分页列举元数据。插件限制单次扫描量，浏览器自动越过没有匹配项的批次，直到找到匹配或到达目录末尾；通过“下一页”继续查看匹配项，长时间搜索可取消。不下载文件内容，不为只读检索增加审计记录。清空搜索恢复浏览，切换目录重置查询；游标仍绑定用户、租户、授权、Prefix 和检索条件。目录工具栏与文件夹行提供“复制目录路径”，格式为 `bucket/prefix/`。
 
 ### 临时文件夹
 
@@ -92,7 +92,7 @@ kubectl -n spark-console create configmap spark-console-storage-wif \
 
 新建和编辑共用本地打包的 Monaco 编辑器：语法着色、行号、折叠、注释、撤销、Ctrl+F 搜索、Ctrl+H 替换、大小写/全字/正则选项、单个/全部替换、Ctrl+D 多选、Alt+点击与 Ctrl+Alt+上下箭头复制光标。JSON/YAML/XML 提供结构错误提示，JavaScript/TypeScript 提供语法提示；其他格式提供高亮与注释，不提供完整编译器或远程语言服务。支持 md、txt、log、sh、bat、conf、cfg、py、java、xml、sql、hql、json、yml、yaml、ini、js、ts、csv、properties、toml、html、svg。新建需要 upload 权限且不覆盖同名对象，编辑需要 edit 权限及原 ETag/generation。文件大小按十进制 B/KB/MB/GB/TB 自适应显示（1 KB = 1000 B）。
 
-上传默认禁止覆盖同名对象；SDK/API 保留显式版本匹配覆盖的能力，页面第一版不提供强制覆盖。上传分片默认 8 MiB、每副本最多 4 路。可重新选择相同名称、大小、lastModified 的文件并勾选恢复，上传票据在浏览器本地保存，24 小时到期，内部 GCS session URI 加密封装。浏览器不访问内部 endpoint，不持有 AK/SK。取消仅取消未完成上传；文件可能已在最后分片完成时创建，须刷新确认。
+上传默认禁止覆盖同名对象；SDK/API 保留显式版本匹配覆盖的能力，页面第一版不提供强制覆盖。上传分片默认 8 MiB、同一 PostgreSQL schema 的所有副本共享最多 4 路。可重新选择相同名称、大小、lastModified 的文件并勾选恢复，上传票据在浏览器本地保存，24 小时到期，内部 GCS session URI 加密封装。浏览器不访问内部 endpoint，不持有 AK/SK。取消仅取消未完成上传；文件可能已在最后分片完成时创建，须刷新确认。
 
 复制是同连接的服务端单对象复制，目标必须不存在；不支持递归目录或跨连接复制。删除是单对象删除。旧 S3 兼容服务可能忽略 DeleteObject If-Match：插件有删除前版本检查，但无法保证外部系统在检查后并发改写时的原子删除。GCS 使用 generation 条件删除。需要更强恢复保障时应启用底层版本管理/备份，第一版不管理这些版本。
 
@@ -115,7 +115,7 @@ npm install
 npm test
 npm run build
 node scripts/object-storage-local-test.mjs
-QA_VERSION=1.5.2 node scripts/container-object-storage-smoke.mjs
+QA_VERSION=1.5.3 node scripts/container-object-storage-smoke.mjs
 node scripts/object-storage-helm-test.mjs
 ```
 

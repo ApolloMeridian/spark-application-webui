@@ -74,7 +74,9 @@ func TestTenantSubmissionPolicyEnforcedAtHTTPBoundary(t *testing.T) {
 			store := &fakeAuthStore{user: domain.User{ID: "user-1", Username: "alice", Role: tc.role, Permissions: &domain.TenantPermissions{AllNamespaces: true, Submit: tc.allow}}, hash: string(hash), sessions: map[string]domain.UserSession{}}
 			handler := New(config.Config{AuthMode: "local", Namespaces: []string{"spark"}}, fakeService{}, localauth.New(store, time.Hour, bcrypt.MinCost), nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			login := httptest.NewRecorder()
-			handler.ServeHTTP(login, httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewBufferString(`{"username":"alice","password":"password123"}`)))
+			loginRequest := httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewBufferString(`{"username":"alice","password":"password123"}`))
+			loginRequest.Header.Set("Content-Type", "application/json")
+			handler.ServeHTTP(login, loginRequest)
 			if login.Code != http.StatusOK {
 				t.Fatalf("login: %d", login.Code)
 			}

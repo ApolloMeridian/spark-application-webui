@@ -272,15 +272,29 @@ export default function ObjectStoragePage() {
     setBusy(true);
     setError("");
     try {
-      const out = await service.list(
+      let out = await service.list(
         { connection: r.connection, bucket: r.bucket, key: prefix },
         cursors[page] || "",
         search,
       );
+      let scannedCount = out.scanned ?? out.objects.length;
+      const seen = new Set<string>();
+      while (search && !out.objects.length && out.next) {
+        if (rev !== listRevision.current) return;
+        if (seen.has(out.next)) throw new Error("invalid_cursor");
+        seen.add(out.next);
+        setScanned(scannedCount);
+        out = await service.list(
+          { connection: r.connection, bucket: r.bucket, key: prefix },
+          out.next,
+          search,
+        );
+        scannedCount += out.scanned ?? out.objects.length;
+      }
       if (rev === listRevision.current) {
         setObjects(out.objects);
         setNext(out.next);
-        setScanned(out.scanned ?? out.objects.length);
+        setScanned(scannedCount);
         if (out.objects.length)
           setDraftFolders((items) => materializeDraftFolders(items, prefix));
       }
@@ -492,6 +506,22 @@ export default function ObjectStoragePage() {
                       onClick={() => void refreshList()}
                     />
                     <Button
+                      icon={<CopyOutlined />}
+                      disabled={!root}
+                      onClick={() => {
+                        void navigator.clipboard
+                          .writeText(`${root?.bucket}/${prefix}`)
+                          .then(() =>
+                            message.success(text("路径已复制", "Path copied")),
+                          )
+                          .catch(() =>
+                            message.error(text("复制失败", "Copy failed")),
+                          );
+                      }}
+                    >
+                      {text("复制目录路径", "Copy folder path")}
+                    </Button>
+                    <Button
                       type="primary"
                       icon={<UploadOutlined />}
                       aria-label={text("上传文件", "Upload file")}
@@ -564,8 +594,8 @@ export default function ObjectStoragePage() {
                   <Input.Search
                     aria-label={text("搜索当前目录", "Search current prefix")}
                     placeholder={text(
-                      "搜索当前目录及子目录的文件名或路径",
-                      "Search file names or paths in this prefix and subfolders",
+                      "搜索当前目录的文件与文件夹（不展开子目录）",
+                      "Search files and folders in this directory only",
                     )}
                     value={searchInput}
                     maxLength={256}
@@ -576,6 +606,7 @@ export default function ObjectStoragePage() {
                     onSearch={(value) => {
                       listRevision.current++;
                       setSearch(value.trim());
+                      setScanned(0);
                       setPage(0);
                       setCursors([""]);
                       setObjects([]);
@@ -589,9 +620,21 @@ export default function ObjectStoragePage() {
                       showIcon
                       style={{ marginBottom: 16 }}
                       message={text(
-                        `按路径匹配（不区分大小写），不搜索内容或临时文件夹。本批扫描 ${scanned} 个对象，匹配 ${objects.length} 个。${next ? "点击下一页继续扫描，即使本批没有匹配项。" : "已到扫描末尾。"}`,
-                        `Case-insensitive path matching; contents and draft folders are excluded. This batch scanned ${scanned} objects, matching ${objects.length}. ${next ? "Next continues scanning, even when this batch has no matches." : "End of scan."}`,
+                        `仅匹配当前目录名称（不区分大小写），不展开子目录或读取文件内容。已扫描 ${scanned} 项，匹配 ${objects.length} 项。${next ? "下一页继续检索。" : busy ? "正在检索…" : "检索完成。"}`,
+                        `Case-insensitive names in this directory only; no subfolder traversal or content reads. Scanned ${scanned}, matched ${objects.length}. ${next ? "Next searches further." : busy ? "Searching…" : "Search complete."}`,
                       )}
+                      action={
+                        busy ? (
+                          <Button
+                            onClick={() => {
+                              listRevision.current++;
+                              setBusy(false);
+                            }}
+                          >
+                            {text("取消检索", "Cancel search")}
+                          </Button>
+                        ) : undefined
+                      }
                     />
                   )}
                   {!root && !busy ? (
@@ -670,25 +713,48 @@ export default function ObjectStoragePage() {
                           width: 220,
                           render: (_: unknown, o: StorageObject) =>
                             o.directory ? (
-                              pendingRows.some(
-                                (draft) => draft.key === o.key,
-                              ) && (
+                              <Space>
                                 <Button
                                   aria-label={text(
-                                    "移除临时文件夹",
-                                    "Remove draft folder",
+                                    "复制目录路径",
+                                    "Copy folder path",
                                   )}
-                                  onClick={() =>
-                                    setDraftFolders((items) =>
-                                      items.filter(
-                                        (key) => !key.startsWith(o.key),
-                                      ),
-                                    )
-                                  }
-                                >
-                                  {text("移除", "Remove")}
-                                </Button>
-                              )
+                                  icon={<CopyOutlined />}
+                                  onClick={() => {
+                                    void navigator.clipboard
+                                      .writeText(`${root?.bucket}/${o.key}`)
+                                      .then(() =>
+                                        message.success(
+                                          text("路径已复制", "Path copied"),
+                                        ),
+                                      )
+                                      .catch(() =>
+                                        message.error(
+                                          text("复制失败", "Copy failed"),
+                                        ),
+                                      );
+                                  }}
+                                />
+                                {pendingRows.some(
+                                  (draft) => draft.key === o.key,
+                                ) && (
+                                  <Button
+                                    aria-label={text(
+                                      "移除临时文件夹",
+                                      "Remove draft folder",
+                                    )}
+                                    onClick={() =>
+                                      setDraftFolders((items) =>
+                                        items.filter(
+                                          (key) => !key.startsWith(o.key),
+                                        ),
+                                      )
+                                    }
+                                  >
+                                    {text("移除", "Remove")}
+                                  </Button>
+                                )}
+                              </Space>
                             ) : (
                               <Space>
                                 <Button

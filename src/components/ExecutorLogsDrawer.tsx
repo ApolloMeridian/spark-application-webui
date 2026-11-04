@@ -21,13 +21,13 @@ export function ExecutorLogsDrawer({ application, executor, onClose }: { applica
   const load = useCallback(async (nextDirection = direction) => {
     setLoading(true); setError('');
     try {
-      setEntries(await sparkService.getExecutorLogs(application.namespace, application.name, executor.name, range[0].toISOString(), range[1].toISOString(), nextDirection));
+      setEntries(await sparkService.getExecutorLogs(application.namespace, application.id, executor.name, range[0].toISOString(), range[1].toISOString(), nextDirection));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Failed to load executor logs');
     } finally {
       setLoading(false);
     }
-  }, [application.name, application.namespace, direction, executor.name, range]);
+  }, [application.id, application.namespace, direction, executor.name, range]);
   useEffect(() => { void load(); }, []); // Each executor opens a keyed drawer instance with its own initial range.
 
   return <Drawer title={<Space><span>{t('executorLogs')}</span><Tag>{executor.name}</Tag></Space>} open width="min(960px, 92vw)" onClose={onClose} destroyOnClose>

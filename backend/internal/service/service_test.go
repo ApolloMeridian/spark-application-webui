@@ -34,6 +34,10 @@ type fakeKubernetes struct {
 	events           []domain.KubernetesEvent
 }
 
+func (f *fakeKubernetes) ValidateSparkUIService(context.Context, string, string, int, kube.Object) error {
+	return nil
+}
+
 func (f *fakeKubernetes) Ready(context.Context, string) error { return nil }
 func (f *fakeKubernetes) ListSparkApplications(context.Context, string) ([]kube.Object, error) {
 	return []kube.Object{f.object}, nil
@@ -256,7 +260,7 @@ func TestKillSubmittedApplicationWithPendingDriver(t *testing.T) {
 }
 
 func TestKillFailureIsAudited(t *testing.T) {
-	kubernetes := &fakeKubernetes{object: runningObject(), podDeleteErr: errors.New("forbidden")}
+	kubernetes := &fakeKubernetes{object: runningObject(), pods: []kube.Pod{{Name: "demo-driver", Role: "driver", ApplicationUID: "uid-1"}}, podDeleteErr: errors.New("forbidden")}
 	store := &fakeStore{}
 	svc := New(config.Config{Namespaces: []string{"spark"}}, kubernetes, fakePrometheus{}, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	audit, err := svc.KillApplication(context.Background(), "spark", "demo", "alice", "test")
@@ -532,7 +536,7 @@ func TestEvaluateAlertsSendsPersistedTimestampsOnEveryMatch(t *testing.T) {
 	object := runningObject()
 	status := object["status"].(map[string]any)
 	status["applicationState"] = map[string]any{"state": "FAILED", "errorMessage": "driver exited"}
-	alerts := &fakeAlertStore{rules: []domain.AlertRule{{ID: "rule-1", Name: "Failures", Type: "failure", Severity: "error", Enabled: true, NotifyWebhook: true}}}
+	alerts := &fakeDurableAlerts{fakeAlertStore: fakeAlertStore{rules: []domain.AlertRule{{ID: "rule-1", Name: "Failures", Type: "failure", Severity: "error", Enabled: true, NotifyWebhook: true}}}}
 	svc := New(config.Config{ClusterName: "kubernetes", Namespaces: []string{"spark"}, AlertWebhookURL: webhook.URL, AlertWebhookTimeout: time.Second}, &fakeKubernetes{object: object}, fakePrometheus{}, alerts, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	receive := func() domain.Alert {
@@ -548,11 +552,17 @@ func TestEvaluateAlertsSendsPersistedTimestampsOnEveryMatch(t *testing.T) {
 	if err := svc.EvaluateAlerts(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
+	if err := svc.DrainAlertWebhooks(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	first := receive()
 	if first.FirstSeenAt == "" || first.LastSeenAt == "" {
 		t.Fatalf("expected persisted timestamps in first webhook, got %#v", first)
 	}
 	if err := svc.EvaluateAlerts(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainAlertWebhooks(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	second := receive()

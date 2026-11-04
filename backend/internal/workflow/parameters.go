@@ -191,6 +191,7 @@ func RenderNode(node domain.WorkflowNode, baseline time.Time, zone, taskID strin
 		annotations = map[string]any{}
 	}
 	annotations["spark-control-center.io/task-instance"] = taskID
+	annotations["spark-control-center.io/task-attempt"] = strconv.Itoa(attempt)
 	metadata["annotations"] = annotations
 	encoded, err := yaml.Marshal(object)
 	return string(encoded), name, err

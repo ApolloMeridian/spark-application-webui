@@ -5,8 +5,9 @@
 从代码库根目录执行，镜像名称不包含私有仓库前缀：
 
 ```bash
-docker build -t spark-control-center:1.5.2 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.2 .
+export DOCKER_BUILDKIT=1
+docker build -t spark-control-center:1.5.3 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.3 .
 ```
 
 如已缓存 Nginx 基础镜像，可先生成前端产物再使用预构建 Dockerfile：
@@ -14,7 +15,7 @@ docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.2 .
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.2 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.3 .
 ```
 
 前端监听 `8080`，以 UID 101 运行，支持只读根文件系统，并提供 `/healthz`。Helm 在运行时挂载 `/usr/share/nginx/html/config/config.js`，无需为不同环境重建镜像。
@@ -23,7 +24,7 @@ docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.2 .
 
 ## Helm 安装与升级
 
-默认配置运行前端演示模式：
+Chart 默认是生产 API 与 PostgreSQL 本地登录模式。只有显式使用以下示例才运行演示模式：
 
 ```bash
 helm upgrade --install spark-console ./charts/spark-control-center \
@@ -34,13 +35,15 @@ helm upgrade --install spark-console ./charts/spark-control-center \
 真实部署先复制生产配置示例，再以私有配置覆盖环境参数：
 
 ```bash
-helm show values ./spark-control-center-1.5.2.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.3.tgz > values-production.local.yaml
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
 ```
 
 配置镜像地址、命名空间、Ingress、PostgreSQL Secret、Prometheus/Loki 及认证服务。Chart 不安装 PostgreSQL、Prometheus、Loki、Keycloak 或 Spark Operator，需要提前准备这些服务。不要提交实际密码、令牌、证书、kubeconfig 或生产专属配置。
+
+启动迁移维护用户/会话、租户隔离的模板与告警、审计/历史、工作流/调度/实例/补数及告警协调状态；选配存储进程在同一身份数据库中维护授权、操作与初始授权记录。数据库账号须有 schema/建表/索引权限，升级前备份。完整清单见 [API、环境变量与数据表参考](REFERENCE.md)。
 
 ## OIDC 与本地认证
 
@@ -116,6 +119,8 @@ CPU 使用 `container_cpu_usage_seconds_total`，内存使用 `container_memory_
 
 后端注入的主要变量：
 
+以下仅为速览，全部变量（含外部 Kubernetes 连接、数据库 URL/连接池、告警、工作流和对象存储进程）见[完整参考](REFERENCE.md)。
+
 - Kubernetes：`KUBERNETES_CLUSTER_NAME`、`WATCH_NAMESPACES`、`SPARKAPPLICATION_API_VERSION` 和 ServiceAccount 令牌。
 - Prometheus：`PROMETHEUS_URL`、`PROMETHEUS_QUERY_TIMEOUT`、`PROMETHEUS_LOOKBACK`、`PROMETHEUS_QUERY_STEP`、`PROMETHEUS_CPU_RATE_WINDOW`。
 - Loki：`LOKI_URL`、`LOKI_QUERY_TIMEOUT`、`LOKI_MAX_ENTRIES`；Executor 查询按 Alloy 标签 `namespace`、`pod`、`spark_role=executor` 关联。
@@ -130,15 +135,17 @@ CPU 使用 `container_cpu_usage_seconds_total`，内存使用 `container_memory_
 
 浏览器仅访问同源 `/api`，下表省略该前缀。JSON 结构见 `src/types.ts` 与 `src/workflows.ts`。
 
+下表仅列常用接口，模板/收藏/告警/工作流/定时/补数/对象存储和 Driver 日志范围接口的完整注册清单见[接口参考](REFERENCE.md)。
+
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | GET | `/v1/dashboard/summary?from=...&to=...` | 实时汇总与数据库历史提交/失败统计 |
 | GET | `/v1/applications` | 作业列表，支持筛选、排序与分页 |
 | GET | `/v1/stream` | Kubernetes Watch 驱动的 SSE 变更流 |
 | GET | `/v1/namespaces/{ns}/applications/{name}` | 完整详情 |
-| POST | `/v1/namespaces/{ns}/applications/dry-run` | 管理员预检 `{yaml}` |
+| POST | `/v1/namespaces/{ns}/applications/dry-run` | 具备提交权限时预检 `{yaml}` |
 | GET | `/v1/namespaces/{ns}/applications/{name}/prepare?mode=clone\|retry` | 清理后的克隆/重试清单 |
-| POST | `/v1/namespaces/{ns}/applications` | 管理员提交 `{yaml}` |
+| POST | `/v1/namespaces/{ns}/applications` | 具备提交权限时创建 `{yaml}` |
 | POST | `/v1/namespaces/{ns}/applications/{name}/kill` | 终止运行或已提交作业 `{reason}` |
 | DELETE | `/v1/namespaces/{ns}/applications/{name}` | 删除终态记录 `{reason}` |
 | GET | `/v1/namespaces/{ns}/applications/{name}/executors/{pod}/logs` | Loki 日志，支持 `from/to/direction/limit` |
@@ -155,7 +162,7 @@ CPU 使用 `container_cpu_usage_seconds_total`，内存使用 `container_memory_
 
 数据接口要求有效的 PostgreSQL 会话，后端独立检查角色、命名空间与租户。命名空间分配留空表示所有 Helm 指定的命名空间，不能越过该范围。审计使用真实登录用户名，不信任客户端传入操作人。最后一名有效管理员不能被禁用、降权或删除，也不能删除自己的账号。
 
-密码采用 bcrypt，随机会话令牌只存 SHA-256 哈希。Cookie 使用 HttpOnly/SameSite，状态变更请求执行同源校验。对外部署需在 Ingress 终止 TLS，前端保留原始转发协议以便后端设置 Secure Cookie。
+密码采用 bcrypt，随机会话令牌只存 SHA-256 哈希。Cookie 使用 HttpOnly/SameSite，写请求执行严格同源检查。TLS 代理后应配置 `backend.publicURL`，或由明确的 OIDC 回调 / Ingress host 与 TLS 派生；不再信任客户端转发头，HTTPS 外部地址会生成 Secure Cookie。启用 OIDC 时必须设置与身份提供商完全一致的固定 `oidc.redirectURL`。升级行为与限制见[安全加固说明](HARDENING.md)。
 
 ## 作业与观测行为
 
@@ -173,8 +180,16 @@ Driver 日志页使用独立查询，不受详情快照中最后 5000 行诊断�
 
 Executor 日志通过 Loki `query_range` 查询，Pod 删除后仍可按时间范围和正/倒序查看。PostgreSQL 保存已删除作业的生命周期快照与诊断；SSE 之外保留定时刷新以恢复断线。`/healthz` 检查进程存活，`/readyz` 检查 Kubernetes 和 PostgreSQL。
 
-## 1.5.2 租户权限与生产默认配置
+## 1.5.3 租户权限与生产默认配置
 
 Chart 默认使用真实后端与 PostgreSQL 登录，不再默认 Mock。在单个 values 文件中指定初始管理员密码 Secret 和数据库 Secret。仅使用 OIDC 时设置 runtimeConfig.auth.mode=oidc、启用 oidc 并配置客户端 Secret/回调，此模式不要求初始本地管理员 Secret。存储仍需显式开启。
 
 新管理员/普通账户默认进入对应内置租户；升级保留已有账户与项目所属租户。在用户管理中配置租户权限，API 与调度器从 PostgreSQL 读取策略。参见[租户权限](WORKFLOWS.md)与[对象存储](OBJECT-STORAGE.md)。发布包含无私有前缀的前端/后端/存储三个 TAR 和 Helm TGZ，不生成校验文件。
+
+## 1.5.3 作业实例与终止操作
+
+详情地址采用 `/applications/<namespace>/<Kubernetes UID>`。Spark ID 在启动前可能为空，Operator 重试时也可能变化，因此作为运行信息展示，不用作资源身份。旧名称链接会解析到当前或最新可见实例。CR 删除后保留已观测的 PostgreSQL 快照；删除后重建的同名资源在列表中分别显示。只有分页作业浏览器包含历史实例，总览资源统计及调度器仍使用 Kubernetes 实时状态。
+
+历史 Loki 和 Prometheus 查询限制在该实例的生命周期内。旧 UID 不能终止、删除或代理同名新实例的 Spark UI。已归档实例的 Kubernetes 日志请求会明确提示不可用，可选 Loki 或已保存的诊断尾部。采集器无法补回从未观测过的资源、已经轮转的日志或已过期指标。
+
+终止时使用 UID/资源版本条件原子写入 `spark-control-center.io/stop-requested-at` 与 `restartPolicy.type: Never`，随后设置已验证 Driver 的 active deadline 并清理 Executor。后端副本会恢复未完成的停止请求，继续终止该 UID 下重新提交的 Driver。控制台保留 CR，不通过删除 Driver 来终止；旧版 Spark Operator 可能在规格变更触发失效重提时自行清理原 Driver，应使用 Loki 持久化日志。所有后端都不可用时，已在途的重提可能运行至恢复协调。克隆/重试会移除停止标记并创建新资源；删除后重建的同名资源不会继承旧 UID 的停止请求。

@@ -449,7 +449,7 @@ func TestPostgresSecondCronFireOnceAndWindow(t *testing.T) {
 
 func TestPostgresTemplateHistoryAndFrozenWorkflow(t *testing.T) {
 	s, user, project, _ := fixture(t)
-	ctx := context.Background()
+	ctx := domain.WithTenant(context.Background(), user.TenantID)
 	template, err := s.store.SaveTemplate(ctx, domain.ApplicationTemplate{Name: "Reusable", Namespace: "spark", Manifest: testManifest, Parameters: []domain.TemplateParameter{}, CreatedBy: user.Username})
 	if err != nil {
 		t.Fatal(err)

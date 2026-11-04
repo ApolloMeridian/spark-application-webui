@@ -4,6 +4,7 @@
 {{- if and (eq .Values.runtimeConfig.auth.mode "local") (not (or .Values.backend.auth.initialAdmin.existingSecret .Values.backend.auth.initialAdmin.createSecret)) }}{{ fail "local authentication requires backend.auth.initialAdmin.existingSecret or createSecret=true" }}{{ end }}
 {{- if and (eq .Values.runtimeConfig.auth.mode "oidc") (not .Values.oidc.enabled) }}{{ fail "runtimeConfig.auth.mode=oidc requires oidc.enabled=true" }}{{ end }}
 {{- if and .Values.oidc.enabled (not (or .Values.oidcSecret.existingSecret .Values.oidcSecret.create)) }}{{ fail "oidc.enabled requires oidcSecret.existingSecret or oidcSecret.create=true" }}{{ end }}
+{{- if and .Values.oidc.enabled (not .Values.oidc.redirectURL) }}{{ fail "oidc.enabled requires an explicit oidc.redirectURL" }}{{ end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -51,6 +52,10 @@ spec:
             - name: http
               containerPort: {{ .Values.backend.service.port }}
           env:
+            - name: PUBLIC_URL
+              value: {{ include "spark-control-center.publicURL" . | quote }}
+            - name: EXTERNAL_API_PREFIX
+              value: {{ .Values.backend.externalAPIPrefix | default "/api" | quote }}
             {{- if .Values.objectStorage.enabled }}
             - name: OBJECT_STORAGE_ENABLED
               value: "true"

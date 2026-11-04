@@ -84,6 +84,7 @@ spec:
       {{- end }}
       securityContext:
         runAsNonRoot: true
+        fsGroup: 65532
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: object-storage
@@ -136,6 +137,7 @@ spec:
           resources:
             {{- toYaml $settings.resources | nindent 12 }}
           volumeMounts:
+            - { name: transfer-tmp, mountPath: /tmp }
             - { name: config, mountPath: /etc/storage/config, readOnly: true }
             {{- range $c := $settings.connections }}
             {{- if eq $c.provider "s3" }}
@@ -149,6 +151,8 @@ spec:
             {{- end }}
             {{- end }}
       volumes:
+        - name: transfer-tmp
+          emptyDir: { sizeLimit: 256Mi }
         - name: config
           configMap: { name: {{ $name }} }
         {{- range $c := $settings.connections }}

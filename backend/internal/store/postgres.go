@@ -255,6 +255,9 @@ CREATE TABLE IF NOT EXISTS operation_audit (
 	if err := s.migrateWorkflows(ctx, tx); err != nil {
 		return err
 	}
+	if err := s.migrateTenantScope(ctx, tx); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
@@ -328,9 +331,10 @@ func (s *PostgresStore) UpsertApplications(ctx context.Context, applications []d
 		}
 		_, err = tx.Exec(ctx, `
 INSERT INTO spark_application_history
-  (application_id, cluster_name, namespace, application_name, owner_name, state, created_at, started_at, finished_at, snapshot, diagnosis)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+  (application_id, cluster_name, namespace, application_name, owner_name, state, created_at, started_at, finished_at, snapshot, diagnosis, tenant_id)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,CASE WHEN $12='' THEN '' ELSE COALESCE((SELECT p.tenant_id FROM workflow_task_runs t JOIN projects p ON p.id=t.project_id WHERE t.id=$12),(SELECT r.tenant_id FROM workflow_resources r WHERE r.task_id=$12 AND r.namespace=$3 AND r.application_name=$4)) END)
 ON CONFLICT (application_id) DO UPDATE SET
+  tenant_id=COALESCE(spark_application_history.tenant_id,EXCLUDED.tenant_id),
   cluster_name=EXCLUDED.cluster_name,
   namespace=EXCLUDED.namespace,
   application_name=EXCLUDED.application_name,
@@ -340,9 +344,12 @@ ON CONFLICT (application_id) DO UPDATE SET
   started_at=COALESCE(EXCLUDED.started_at, spark_application_history.started_at),
   finished_at=COALESCE(EXCLUDED.finished_at, spark_application_history.finished_at),
   snapshot=CASE
-    WHEN COALESCE(EXCLUDED.snapshot->>'yaml', '') <> '' THEN EXCLUDED.snapshot
+    WHEN COALESCE(EXCLUDED.snapshot->>'yaml', '') <> '' THEN EXCLUDED.snapshot || jsonb_build_object(
+      'logs',CASE WHEN jsonb_array_length(COALESCE(NULLIF(EXCLUDED.snapshot->'logs','null'::jsonb),'[]'::jsonb))>0 THEN EXCLUDED.snapshot->'logs' ELSE COALESCE(spark_application_history.snapshot->'logs','[]'::jsonb) END,
+      'events',CASE WHEN jsonb_array_length(COALESCE(NULLIF(EXCLUDED.snapshot->'events','null'::jsonb),'[]'::jsonb))>0 THEN EXCLUDED.snapshot->'events' ELSE COALESCE(spark_application_history.snapshot->'events','[]'::jsonb) END,
+      'metrics',CASE WHEN jsonb_array_length(COALESCE(NULLIF(EXCLUDED.snapshot->'metrics','null'::jsonb),'[]'::jsonb))>0 THEN EXCLUDED.snapshot->'metrics' ELSE COALESCE(spark_application_history.snapshot->'metrics','[]'::jsonb) END)
     WHEN spark_application_history.snapshot = '{}'::jsonb THEN EXCLUDED.snapshot
-    ELSE spark_application_history.snapshot
+    ELSE spark_application_history.snapshot || (EXCLUDED.snapshot - 'yaml' - 'logs' - 'events' - 'metrics')
   END,
   diagnosis=CASE
     WHEN jsonb_array_length(EXCLUDED.diagnosis) > 0 THEN EXCLUDED.diagnosis
@@ -350,7 +357,7 @@ ON CONFLICT (application_id) DO UPDATE SET
   END,
   last_seen_at=now()`,
 			app.ID, app.Cluster, app.Namespace, app.Name, app.Owner, app.State, createdAt,
-			optionalTime(app.StartedAt), optionalTime(app.FinishedAt), snapshot, diagnosis)
+			optionalTime(app.StartedAt), optionalTime(app.FinishedAt), snapshot, diagnosis, app.WorkflowTaskID)
 		if err != nil {
 			return fmt.Errorf("upsert application history for %s/%s: %w", app.Namespace, app.Name, err)
 		}
@@ -372,7 +379,7 @@ SELECT
       AND COALESCE(finished_at, last_seen_at) <= $2
       AND (COALESCE(cardinality($3::text[]),0)=0 OR namespace=ANY($3))
   )
-FROM spark_application_history`, from, to, namespaces).Scan(&result.Submitted, &result.Failed)
+FROM spark_application_history h WHERE ($4='' OR h.tenant_id='' OR h.tenant_id=$4)`, from, to, namespaces, domain.TenantScope(ctx)).Scan(&result.Submitted, &result.Failed)
 	if err != nil {
 		return domain.HistorySummary{}, fmt.Errorf("query application history summary: %w", err)
 	}
@@ -381,10 +388,11 @@ FROM spark_application_history`, from, to, namespaces).Scan(&result.Submitted, &
 
 func (s *PostgresStore) GetApplicationSnapshot(ctx context.Context, namespace, name string) (domain.SparkApplication, error) {
 	var data []byte
+	var seen time.Time
 	err := s.pool.QueryRow(ctx, `
-SELECT snapshot FROM spark_application_history
-WHERE namespace=$1 AND application_name=$2 AND snapshot <> '{}'::jsonb
-ORDER BY last_seen_at DESC LIMIT 1`, namespace, name).Scan(&data)
+SELECT snapshot,last_seen_at FROM spark_application_history
+WHERE namespace=$1 AND application_name=$2 AND snapshot <> '{}'::jsonb AND ($3='' OR tenant_id='' OR tenant_id=$3)
+ORDER BY created_at DESC,application_id LIMIT 1`, namespace, name, domain.TenantScope(ctx)).Scan(&data, &seen)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.SparkApplication{}, ErrSnapshotNotFound
 	}
@@ -396,6 +404,7 @@ ORDER BY last_seen_at DESC LIMIT 1`, namespace, name).Scan(&data)
 		return domain.SparkApplication{}, fmt.Errorf("decode application snapshot: %w", err)
 	}
 	app.Historical = true
+	app.LastObservedAt = seen.UTC().Format(time.RFC3339Nano)
 	return app, nil
 }
 
@@ -641,7 +650,7 @@ WHERE s.token_hash=$1 AND s.expires_at>$2`, tokenHash, now).Scan(
 		return domain.User{}, domain.UserSession{}, fmt.Errorf("query user session: %w", err)
 	}
 	setUserTimes(&user, createdAt, updatedAt)
-	_, _ = s.pool.Exec(ctx, `UPDATE local_user_sessions SET last_seen_at=now() WHERE token_hash=$1`, tokenHash)
+	_, _ = s.pool.Exec(ctx, `UPDATE local_user_sessions SET last_seen_at=now() WHERE token_hash=$1 AND last_seen_at<now()-interval '1 minute'`, tokenHash)
 	return user, session, nil
 }
 
@@ -789,8 +798,8 @@ func (s *PostgresStore) ListTemplates(ctx context.Context, namespaces []string, 
 	rows, err := s.pool.Query(ctx, `
 SELECT id,name,description,namespace,manifest,parameters,current_version,disabled,created_by,created_at,updated_at
 FROM application_templates
-WHERE (COALESCE(cardinality($1::text[]),0)=0 OR namespace=ANY($1)) AND ($2 OR NOT disabled)
-ORDER BY updated_at DESC`, namespaces, includeDisabled)
+WHERE (COALESCE(cardinality($1::text[]),0)=0 OR namespace=ANY($1)) AND ($2 OR NOT disabled) AND ($3='' OR tenant_id=$3)
+ORDER BY updated_at DESC`, namespaces, includeDisabled, domain.TenantScope(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("list application templates: %w", err)
 	}
@@ -825,7 +834,7 @@ func scanTemplate(row rowScanner) (domain.ApplicationTemplate, error) {
 func (s *PostgresStore) GetTemplate(ctx context.Context, id string) (domain.ApplicationTemplate, error) {
 	item, err := scanTemplate(s.pool.QueryRow(ctx, `
 SELECT id,name,description,namespace,manifest,parameters,current_version,disabled,created_by,created_at,updated_at
-FROM application_templates WHERE id=$1`, id))
+FROM application_templates WHERE id=$1 AND ($2='' OR tenant_id=$2)`, id, domain.TenantScope(ctx)))
 	if errors.Is(err, pgx.ErrNoRows) || (err != nil && strings.Contains(err.Error(), "no rows")) {
 		return item, ErrTemplateNotFound
 	}
@@ -869,10 +878,10 @@ func (s *PostgresStore) SaveTemplate(ctx context.Context, item domain.Applicatio
 		item.Version = 1
 		item.CreatedAt = now.Format(time.RFC3339Nano)
 		item.UpdatedAt = item.CreatedAt
-		_, err = tx.Exec(ctx, `INSERT INTO application_templates (id,name,description,namespace,manifest,parameters,current_version,disabled,created_by,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$9)`, item.ID, item.Name, item.Description, item.Namespace, item.Manifest, params, item.Disabled, item.CreatedBy, now)
+		_, err = tx.Exec(ctx, `INSERT INTO application_templates (id,name,description,namespace,manifest,parameters,current_version,disabled,created_by,created_at,updated_at,tenant_id) VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8,$9,$9,$10)`, item.ID, item.Name, item.Description, item.Namespace, item.Manifest, params, item.Disabled, item.CreatedBy, now, domain.WriteTenant(ctx))
 	} else {
 		var created time.Time
-		err = tx.QueryRow(ctx, `UPDATE application_templates SET name=$2,description=$3,namespace=$4,manifest=$5,parameters=$6,current_version=max_version+1,max_version=max_version+1,disabled=$7,updated_at=$8 WHERE id=$1 RETURNING current_version,created_at`, item.ID, item.Name, item.Description, item.Namespace, item.Manifest, params, item.Disabled, now).Scan(&item.Version, &created)
+		err = tx.QueryRow(ctx, `UPDATE application_templates SET name=$2,description=$3,namespace=$4,manifest=$5,parameters=$6,current_version=max_version+1,max_version=max_version+1,disabled=$7,updated_at=$8 WHERE id=$1 AND ($9='' OR tenant_id=$9) RETURNING current_version,created_at`, item.ID, item.Name, item.Description, item.Namespace, item.Manifest, params, item.Disabled, now, domain.TenantScope(ctx)).Scan(&item.Version, &created)
 		item.CreatedAt = created.UTC().Format(time.RFC3339Nano)
 		item.UpdatedAt = now.Format(time.RFC3339Nano)
 	}
@@ -890,7 +899,7 @@ func (s *PostgresStore) SaveTemplate(ctx context.Context, item domain.Applicatio
 }
 
 func (s *PostgresStore) DeleteTemplate(ctx context.Context, id string) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM application_templates WHERE id=$1`, id)
+	result, err := s.pool.Exec(ctx, `DELETE FROM application_templates WHERE id=$1 AND ($2='' OR tenant_id=$2)`, id, domain.TenantScope(ctx))
 	if err != nil {
 		return err
 	}
@@ -928,7 +937,7 @@ func (s *PostgresStore) ListFavorites(ctx context.Context, userID string) ([]dom
 }
 
 func (s *PostgresStore) ListAlertRules(ctx context.Context, namespaces []string) ([]domain.AlertRule, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,current_version,created_by,created_at,updated_at,diagnostic_codes FROM alert_rules WHERE COALESCE(cardinality($1::text[]),0)=0 OR cardinality(namespaces)=0 OR namespaces && $1 ORDER BY updated_at DESC`, namespaces)
+	rows, err := s.pool.Query(ctx, `SELECT id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,current_version,created_by,created_at,updated_at,diagnostic_codes,tenant_id FROM alert_rules WHERE (COALESCE(cardinality($1::text[]),0)=0 OR cardinality(namespaces)=0 OR namespaces && $1) AND ($2='' OR tenant_id=$2) ORDER BY updated_at DESC`, namespaces, domain.TenantScope(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -937,7 +946,7 @@ func (s *PostgresStore) ListAlertRules(ctx context.Context, namespaces []string)
 	for rows.Next() {
 		var x domain.AlertRule
 		var c, u time.Time
-		if err := rows.Scan(&x.ID, &x.Name, &x.Type, &x.Namespaces, &x.Enabled, &x.ThresholdMinutes, &x.ThresholdValue, &x.MinimumRetries, &x.Severity, &x.NotifyWebhook, &x.Version, &x.CreatedBy, &c, &u, &x.DiagnosticCodes); err != nil {
+		if err := rows.Scan(&x.ID, &x.Name, &x.Type, &x.Namespaces, &x.Enabled, &x.ThresholdMinutes, &x.ThresholdValue, &x.MinimumRetries, &x.Severity, &x.NotifyWebhook, &x.Version, &x.CreatedBy, &c, &u, &x.DiagnosticCodes, &x.TenantID); err != nil {
 			return nil, err
 		}
 		x.CreatedAt = c.UTC().Format(time.RFC3339Nano)
@@ -948,6 +957,7 @@ func (s *PostgresStore) ListAlertRules(ctx context.Context, namespaces []string)
 }
 
 func (s *PostgresStore) SaveAlertRule(ctx context.Context, x domain.AlertRule) (domain.AlertRule, error) {
+	x.TenantID = domain.WriteTenant(ctx)
 	now := time.Now().UTC()
 	if x.Namespaces == nil {
 		x.Namespaces = []string{}
@@ -961,13 +971,13 @@ func (s *PostgresStore) SaveAlertRule(ctx context.Context, x domain.AlertRule) (
 		x.ID = fmt.Sprintf("rule-%d", now.UnixNano())
 		x.Version = 1
 		x.CreatedAt = now.Format(time.RFC3339Nano)
-		_, err = tx.Exec(ctx, `INSERT INTO alert_rules (id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,current_version,created_by,created_at,updated_at,diagnostic_codes) VALUES ($1,$2,$3,COALESCE($4::text[], '{}'::text[]),$5,$6,$7,$8,$9,$10,1,$11,$12,$12,COALESCE($13::text[], '{}'::text[]))`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, x.CreatedBy, now, x.DiagnosticCodes)
+		_, err = tx.Exec(ctx, `INSERT INTO alert_rules (id,name,rule_type,namespaces,enabled,threshold_minutes,threshold_value,minimum_retries,severity,notify_webhook,current_version,created_by,created_at,updated_at,diagnostic_codes,tenant_id) VALUES ($1,$2,$3,COALESCE($4::text[], '{}'::text[]),$5,$6,$7,$8,$9,$10,1,$11,$12,$12,COALESCE($13::text[], '{}'::text[]),$14)`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, x.CreatedBy, now, x.DiagnosticCodes, x.TenantID)
 		if err != nil {
 			return x, err
 		}
 	} else {
 		var c time.Time
-		err = tx.QueryRow(ctx, `UPDATE alert_rules SET name=$2,rule_type=$3,namespaces=COALESCE($4::text[], '{}'::text[]),enabled=$5,threshold_minutes=$6,threshold_value=$7,minimum_retries=$8,severity=$9,notify_webhook=$10,current_version=current_version+1,updated_at=$11,diagnostic_codes=COALESCE($12::text[], '{}'::text[]) WHERE id=$1 RETURNING created_at,current_version`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, now, x.DiagnosticCodes).Scan(&c, &x.Version)
+		err = tx.QueryRow(ctx, `UPDATE alert_rules SET name=$2,rule_type=$3,namespaces=COALESCE($4::text[], '{}'::text[]),enabled=$5,threshold_minutes=$6,threshold_value=$7,minimum_retries=$8,severity=$9,notify_webhook=$10,current_version=current_version+1,updated_at=$11,diagnostic_codes=COALESCE($12::text[], '{}'::text[]) WHERE id=$1 AND ($13='' OR tenant_id=$13) RETURNING created_at,current_version,tenant_id`, x.ID, x.Name, x.Type, x.Namespaces, x.Enabled, x.ThresholdMinutes, x.ThresholdValue, x.MinimumRetries, x.Severity, x.NotifyWebhook, now, x.DiagnosticCodes, domain.TenantScope(ctx)).Scan(&c, &x.Version, &x.TenantID)
 		if err != nil {
 			return x, err
 		}
@@ -988,7 +998,7 @@ func (s *PostgresStore) SaveAlertRule(ctx context.Context, x domain.AlertRule) (
 }
 
 func (s *PostgresStore) DeleteAlertRule(ctx context.Context, id string) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM alert_rules WHERE id=$1`, id)
+	_, err := s.pool.Exec(ctx, `DELETE FROM alert_rules WHERE id=$1 AND ($2='' OR tenant_id=$2)`, id, domain.TenantScope(ctx))
 	return err
 }
 
@@ -998,7 +1008,7 @@ func (s *PostgresStore) UpsertAlert(ctx context.Context, x domain.Alert) (domain
 	var firstSeenAt, lastSeenAt time.Time
 	var persistedStatus string
 	var created bool
-	err := s.pool.QueryRow(ctx, `INSERT INTO application_alerts (id,rule_id,rule_name,namespace,application_name,fingerprint,severity,status,summary,evidence,confidence,recommendation,first_seen_at,last_seen_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$11,$12,$12) ON CONFLICT (rule_id,namespace,application_name,fingerprint) DO UPDATE SET rule_name=EXCLUDED.rule_name,severity=EXCLUDED.severity,summary=EXCLUDED.summary,evidence=EXCLUDED.evidence,confidence=EXCLUDED.confidence,recommendation=EXCLUDED.recommendation,last_seen_at=EXCLUDED.last_seen_at,status=CASE WHEN application_alerts.status='recovered' OR (application_alerts.status='silenced' AND application_alerts.silenced_until < now()) THEN 'active' ELSE application_alerts.status END,recovered_at=NULL RETURNING first_seen_at,last_seen_at,status,first_seen_at=last_seen_at`, x.ID, x.RuleID, x.RuleName, x.Namespace, x.ApplicationName, x.Fingerprint, x.Severity, x.Summary, evidence, x.Confidence, x.Recommendation, now).Scan(&firstSeenAt, &lastSeenAt, &persistedStatus, &created)
+	err := s.pool.QueryRow(ctx, `INSERT INTO application_alerts (id,rule_id,rule_name,namespace,application_name,fingerprint,severity,status,summary,evidence,confidence,recommendation,first_seen_at,last_seen_at,tenant_id) VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8,$9,$10,$11,$12,$12,COALESCE((SELECT tenant_id FROM alert_rules WHERE id=$2),'default')) ON CONFLICT (rule_id,namespace,application_name,fingerprint) DO UPDATE SET rule_name=EXCLUDED.rule_name,severity=EXCLUDED.severity,summary=EXCLUDED.summary,evidence=EXCLUDED.evidence,confidence=EXCLUDED.confidence,recommendation=EXCLUDED.recommendation,last_seen_at=EXCLUDED.last_seen_at,status=CASE WHEN application_alerts.status='recovered' OR (application_alerts.status='silenced' AND application_alerts.silenced_until < now()) THEN 'active' ELSE application_alerts.status END,recovered_at=NULL RETURNING first_seen_at,last_seen_at,status,first_seen_at=last_seen_at`, x.ID, x.RuleID, x.RuleName, x.Namespace, x.ApplicationName, x.Fingerprint, x.Severity, x.Summary, evidence, x.Confidence, x.Recommendation, now).Scan(&firstSeenAt, &lastSeenAt, &persistedStatus, &created)
 	if err != nil {
 		return x, false, err
 	}
@@ -1009,12 +1019,12 @@ func (s *PostgresStore) UpsertAlert(ctx context.Context, x domain.Alert) (domain
 }
 
 func (s *PostgresStore) ResolveInactiveAlerts(ctx context.Context, activeIDs []string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE application_alerts SET status='recovered',recovered_at=now() WHERE status IN ('active','acknowledged','silenced') AND NOT (id=ANY(COALESCE($1::text[], '{}'::text[])))`, activeIDs)
+	_, err := s.pool.Exec(ctx, `UPDATE application_alerts SET status='recovered',recovered_at=now() WHERE status IN ('active','acknowledged','silenced') AND NOT (id=ANY(COALESCE($1::text[], '{}'::text[]))) AND ($2='' OR tenant_id=$2)`, activeIDs, domain.TenantScope(ctx))
 	return err
 }
 
 func (s *PostgresStore) ListAlerts(ctx context.Context, namespaces []string) ([]domain.Alert, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,rule_id,rule_name,namespace,application_name,fingerprint,severity,status,summary,evidence,confidence,recommendation,first_seen_at,last_seen_at,acknowledged_by,acknowledged_at,silenced_until,recovered_at FROM application_alerts WHERE COALESCE(cardinality($1::text[]),0)=0 OR namespace=ANY($1) ORDER BY CASE WHEN status='active' THEN 0 WHEN status='acknowledged' THEN 1 ELSE 2 END,last_seen_at DESC`, namespaces)
+	rows, err := s.pool.Query(ctx, `SELECT id,rule_id,rule_name,namespace,application_name,fingerprint,severity,status,summary,evidence,confidence,recommendation,first_seen_at,last_seen_at,acknowledged_by,acknowledged_at,silenced_until,recovered_at FROM application_alerts WHERE (COALESCE(cardinality($1::text[]),0)=0 OR namespace=ANY($1)) AND ($2='' OR tenant_id=$2) AND ($2='' OR NOT EXISTS(SELECT 1 FROM workflow_resources r WHERE r.namespace=application_alerts.namespace AND r.application_name=application_alerts.application_name AND r.tenant_id<>$2)) ORDER BY CASE WHEN status='active' THEN 0 WHEN status='acknowledged' THEN 1 ELSE 2 END,last_seen_at DESC`, namespaces, domain.TenantScope(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -1046,7 +1056,7 @@ func (s *PostgresStore) ListAlerts(ctx context.Context, namespaces []string) ([]
 }
 
 func (s *PostgresStore) UpdateAlertStatus(ctx context.Context, id, status, operator string, silencedUntil *time.Time, namespaces []string) error {
-	result, err := s.pool.Exec(ctx, `UPDATE application_alerts SET status=$2,acknowledged_by=CASE WHEN $2='acknowledged' THEN $3 ELSE acknowledged_by END,acknowledged_at=CASE WHEN $2='acknowledged' THEN now() ELSE acknowledged_at END,silenced_until=CASE WHEN $2='silenced' THEN $4 ELSE silenced_until END WHERE id=$1 AND (COALESCE(cardinality($5::text[]),0)=0 OR namespace=ANY($5))`, id, status, operator, silencedUntil, namespaces)
+	result, err := s.pool.Exec(ctx, `UPDATE application_alerts SET status=$2,acknowledged_by=CASE WHEN $2='acknowledged' THEN $3 ELSE acknowledged_by END,acknowledged_at=CASE WHEN $2='acknowledged' THEN now() ELSE acknowledged_at END,silenced_until=CASE WHEN $2='silenced' THEN $4 ELSE silenced_until END WHERE id=$1 AND (COALESCE(cardinality($5::text[]),0)=0 OR namespace=ANY($5)) AND ($6='' OR tenant_id=$6) AND ($6='' OR NOT EXISTS(SELECT 1 FROM workflow_resources r WHERE r.namespace=application_alerts.namespace AND r.application_name=application_alerts.application_name AND r.tenant_id<>$6))`, id, status, operator, silencedUntil, namespaces, domain.TenantScope(ctx))
 	if err == nil && result.RowsAffected() == 0 {
 		return ErrAlertNotFound
 	}
@@ -1054,7 +1064,7 @@ func (s *PostgresStore) UpdateAlertStatus(ctx context.Context, id, status, opera
 }
 
 func (s *PostgresStore) ListFailureFingerprints(ctx context.Context, namespaces []string) ([]domain.FailureFingerprint, error) {
-	rows, err := s.pool.Query(ctx, `SELECT COALESCE(d->>'code','UNKNOWN'),COUNT(*),MAX(COALESCE(finished_at,last_seen_at)),(array_agg(application_name ORDER BY last_seen_at DESC))[1],(array_agg(namespace ORDER BY last_seen_at DESC))[1],COALESCE((array_agg(d->>'severity' ORDER BY last_seen_at DESC))[1],'warning'),COALESCE((array_agg(d->>'recommendation' ORDER BY last_seen_at DESC))[1],'') FROM spark_application_history CROSS JOIN LATERAL jsonb_array_elements(diagnosis) d WHERE COALESCE(cardinality($1::text[]),0)=0 OR namespace=ANY($1) GROUP BY d->>'code' ORDER BY COUNT(*) DESC`, namespaces)
+	rows, err := s.pool.Query(ctx, `SELECT COALESCE(d->>'code','UNKNOWN'),COUNT(*),MAX(COALESCE(finished_at,last_seen_at)),(array_agg(application_name ORDER BY last_seen_at DESC))[1],(array_agg(namespace ORDER BY last_seen_at DESC))[1],COALESCE((array_agg(d->>'severity' ORDER BY last_seen_at DESC))[1],'warning'),COALESCE((array_agg(d->>'recommendation' ORDER BY last_seen_at DESC))[1],'') FROM spark_application_history h CROSS JOIN LATERAL jsonb_array_elements(diagnosis) d WHERE (COALESCE(cardinality($1::text[]),0)=0 OR namespace=ANY($1)) AND ($2='' OR h.tenant_id='' OR h.tenant_id=$2) GROUP BY d->>'code' ORDER BY COUNT(*) DESC`, namespaces, domain.TenantScope(ctx))
 	if err != nil {
 		return nil, err
 	}

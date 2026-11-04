@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"spark-control-center/backend/internal/domain"
@@ -22,27 +21,36 @@ func (s *Service) GetDriverLogs(ctx context.Context, namespace, name string, q d
 	if q.Source == "loki" && (fromErr != nil || toErr != nil || !from.Before(to) || (q.Direction != "forward" && q.Direction != "backward")) {
 		return out, &kube.APIError{StatusCode: 400, Message: "invalid Loki time range or direction"}
 	}
-	object, err := s.kubernetes.GetSparkApplication(ctx, namespace, name)
-	pod := kube.String(object, "status", "driverInfo", "podName")
+	object, snapshot, err := s.resolveApplication(ctx, namespace, name)
 	if err != nil {
-		var apiErr *kube.APIError
-		if !errors.As(err, &apiErr) || apiErr.StatusCode != 404 {
-			return out, err
+		return out, err
+	}
+	pod := kube.String(object, "status", "driverInfo", "podName")
+	if snapshot != nil {
+		if q.Source == "kubernetes" {
+			return out, &kube.APIError{StatusCode: 410, Message: "Kubernetes logs unavailable for archived instance; select Loki"}
 		}
-		app, snapshotErr := s.audits.GetApplicationSnapshot(ctx, namespace, name)
-		if snapshotErr != nil {
-			return out, err
+		pod = snapshot.DriverPod
+		from, to = historicalRange(*snapshot, from, to)
+		if !from.Before(to) {
+			return out, nil
 		}
-		pod = app.DriverPod
-	} else if pod == "" {
+	} else {
 		pods, listErr := s.kubernetes.ListPods(ctx, namespace)
 		if listErr != nil {
 			return out, listErr
 		}
+		pod = ""
 		for _, p := range relatedPods(object, pods) {
 			if p.Role == "driver" {
 				pod = p.Name
 				break
+			}
+		}
+		if q.Source == "loki" {
+			from, to = historicalRange(s.mapApplication(object, nil, nil), from, to)
+			if !from.Before(to) {
+				return out, nil
 			}
 		}
 	}

@@ -14,7 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
+	"sync"
 
 	"spark-control-center/backend/internal/config"
 	"spark-control-center/backend/internal/domain"
@@ -23,16 +23,18 @@ import (
 type Object map[string]any
 
 type Pod struct {
-	Name      string
-	Namespace string
-	Labels    map[string]string
-	Node      string
-	NodePool  string
-	Role      string
-	Phase     string
-	StartedAt string
-	Restarts  int64
-	Request   domain.ResourceAmount
+	UID            string
+	ApplicationUID string
+	Name           string
+	Namespace      string
+	Labels         map[string]string
+	Node           string
+	NodePool       string
+	Role           string
+	Phase          string
+	StartedAt      string
+	Restarts       int64
+	Request        domain.ResourceAmount
 }
 
 type Client struct {
@@ -44,6 +46,8 @@ type Client struct {
 	apiVersion    string
 	resourcePath  string
 	allowedLookup map[string]bool
+	reflectMu     sync.Mutex
+	reflectors    map[string]*namespaceReflector
 }
 
 type APIError struct {
@@ -109,13 +113,11 @@ func (c *Client) ListSparkApplications(ctx context.Context, namespace string) ([
 	if err := c.ensureNamespace(namespace); err != nil {
 		return nil, err
 	}
-	var response struct {
-		Items []Object `json:"items"`
+	if items, ok := c.reflectedApplications(namespace); ok {
+		return items, nil
 	}
-	if err := c.doJSON(ctx, http.MethodGet, c.sparkCollectionPath(namespace), nil, &response); err != nil {
-		return nil, err
-	}
-	return response.Items, nil
+	items, _, err := c.listApplicationSnapshot(ctx, namespace)
+	return items, err
 }
 
 func (c *Client) GetSparkApplication(ctx context.Context, namespace, name string) (Object, error) {
@@ -156,55 +158,7 @@ func (c *Client) DryRunCreateSparkApplication(ctx context.Context, namespace str
 // the watch timeout expires or the context is cancelled; callers are expected to
 // reconnect with backoff.
 func (c *Client) WatchSparkApplications(ctx context.Context, namespace string, notify func(domain.ApplicationChange)) error {
-	if err := c.ensureNamespace(namespace); err != nil {
-		return err
-	}
-	path := c.sparkCollectionPath(namespace) + "?watch=true&allowWatchBookmarks=true&timeoutSeconds=300&resourceVersion=0"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
-	if err != nil {
-		return err
-	}
-	token, err := c.bearerToken()
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-	watchClient := &http.Client{Transport: c.http.Transport}
-	resp, err := watchClient.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return fmt.Errorf("Kubernetes watch request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return &APIError{StatusCode: resp.StatusCode, Message: strings.TrimSpace(string(data))}
-	}
-	decoder := json.NewDecoder(resp.Body)
-	for {
-		var event struct {
-			Type   string `json:"type"`
-			Object Object `json:"object"`
-		}
-		if err := decoder.Decode(&event); err != nil {
-			if errors.Is(err, io.EOF) || ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return fmt.Errorf("decode Kubernetes watch event: %w", err)
-		}
-		if event.Type == "BOOKMARK" || event.Object == nil {
-			continue
-		}
-		notify(domain.ApplicationChange{
-			Type: strings.ToUpper(event.Type), Namespace: namespace,
-			Name:            String(event.Object, "metadata", "name"),
-			ResourceVersion: String(event.Object, "metadata", "resourceVersion"),
-			Timestamp:       time.Now().UTC().Format(time.RFC3339Nano),
-		})
-	}
+	return c.watchReflected(ctx, namespace, notify)
 }
 
 func (c *Client) DisableSparkApplicationRestart(ctx context.Context, namespace, name string) error {
@@ -259,7 +213,7 @@ func (c *Client) ListPods(ctx context.Context, namespace string) ([]Pod, error) 
 	var response struct {
 		Items []Object `json:"items"`
 	}
-	path := "/api/v1/namespaces/" + url.PathEscape(namespace) + "/pods"
+	path := "/api/v1/namespaces/" + url.PathEscape(namespace) + "/pods?labelSelector=spark-role"
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, &response); err != nil {
 		return nil, err
 	}
@@ -423,7 +377,9 @@ func (c *Client) bearerToken() (string, error) {
 
 func ParsePod(item Object) Pod {
 	pod := Pod{
-		Name: String(item, "metadata", "name"), Namespace: String(item, "metadata", "namespace"),
+		UID:            String(item, "metadata", "uid"),
+		ApplicationUID: applicationOwnerUID(item),
+		Name:           String(item, "metadata", "name"), Namespace: String(item, "metadata", "namespace"),
 		Labels: StringMap(item, "metadata", "labels"), Node: String(item, "spec", "nodeName"),
 		Phase: strings.ToUpper(String(item, "status", "phase")), StartedAt: String(item, "status", "startTime"),
 	}

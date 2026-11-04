@@ -117,6 +117,7 @@ type KubernetesEvent struct {
 }
 
 type SparkApplication struct {
+	WorkflowTaskID     string                  `json:"workflowTaskId,omitempty"`
 	ID                 string                  `json:"id"`
 	Name               string                  `json:"name"`
 	Namespace          string                  `json:"namespace"`
@@ -124,6 +125,7 @@ type SparkApplication struct {
 	Owner              string                  `json:"owner"`
 	State              string                  `json:"state"`
 	CreatedAt          string                  `json:"createdAt"`
+	LastObservedAt     string                  `json:"lastObservedAt,omitempty"`
 	StartedAt          string                  `json:"startedAt,omitempty"`
 	FinishedAt         string                  `json:"finishedAt,omitempty"`
 	Image              string                  `json:"image"`
@@ -149,12 +151,13 @@ type SparkApplication struct {
 }
 
 type DashboardSummary struct {
-	Total            int            `json:"total"`
-	ByState          map[string]int `json:"byState"`
-	Requested        ResourceAmount `json:"requested"`
-	Used             ResourceAmount `json:"used"`
-	Capacity         ResourceAmount `json:"capacity"`
-	MetricsAvailable bool           `json:"metricsAvailable"`
+	Applications     []SparkApplication `json:"applications"`
+	Total            int                `json:"total"`
+	ByState          map[string]int     `json:"byState"`
+	Requested        ResourceAmount     `json:"requested"`
+	Used             ResourceAmount     `json:"used"`
+	Capacity         ResourceAmount     `json:"capacity"`
+	MetricsAvailable bool               `json:"metricsAvailable"`
 	NodePools        struct {
 		Baseline  int `json:"baseline"`
 		Autoscale int `json:"autoscale"`
@@ -242,6 +245,7 @@ type BatchActionResult struct {
 }
 
 type AlertRule struct {
+	TenantID         string   `json:"tenantId,omitempty"`
 	ID               string   `json:"id"`
 	Name             string   `json:"name"`
 	Type             string   `json:"type"`

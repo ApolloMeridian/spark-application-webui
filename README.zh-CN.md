@@ -6,6 +6,9 @@ Spark Control Center 是面向 Kubernetes 上 Apache Spark 作业的运维控制
 
 ## 核心能力
 
+- 可选的独立 S3/MinIO/GCS WIF 对象存储服务：目录授权、断点传输、条件写、临时文件夹、递归路径搜索和 Monaco 文本编辑。
+- 持久化故障根因与指纹聚合；即使共享 Kubernetes 命名空间，模板与告警仍按租户隔离。
+
 - 查询指定命名空间中的 SparkApplication，展示状态、Owner、生命周期时间和资源使用情况。
 - 查看 Driver/Executor 的申请量、实时用量、峰值、调度信息、Kubernetes 事件、日志、YAML 和可选时间范围的 Prometheus 历史曲线。
 - 通过后端代理访问运行中的 Driver Spark UI；终态作业在启用 EventLog 后可跳转 Spark History Server。
@@ -52,11 +55,14 @@ Spark Control Center 是面向 Kubernetes 上 Apache Spark 作业的运维控制
 - [工作流与调度](docs/zh-CN/WORKFLOWS.md)：租户、任务依赖、Cron、补数和持久化。
 - [安全策略](docs/zh-CN/SECURITY.md)：漏洞报告与部署责任。
 - [对象存储](docs/zh-CN/OBJECT-STORAGE.md)：可选 S3/MinIO、GCS WIF 插件、目录权限与本地验证。
+- [API 与环境变量参考](docs/zh-CN/REFERENCE.md)：与源码自动核对的路由、变量和数据库清单。
+- [安全加固说明](docs/zh-CN/HARDENING.md)：1.5.3 变更、升级要求与部署边界。
 
 ## 技术架构
 
 - **前端：** React、TypeScript、Vite、Ant Design、ECharts
-- **后端：** Go HTTP 服务
+- **后端：** Go HTTP 服务与基于 PostgreSQL 的工作流调度器
+- **对象存储：** 可选无状态 Go 服务（8082），主后端通过 HMAC 签名网关访问，S3/MinIO 或 GCS WIF 凭证留在服务端
 - **集成：** Kubernetes Spark Operator API、Prometheus、Loki、PostgreSQL、可选 OIDC
 - **部署：** 非 root 容器、Nginx 同源 API 代理、Helm、最小范围 RBAC
 
@@ -80,12 +86,17 @@ npm test
 npm run build
 ```
 
-后端验证需要 Go 1.24+：
+后端验证需要 Go 1.26.10 或更新版本：
 
 ```bash
 cd backend
 go test ./...
 go vet ./...
+cd ../object-storage
+go test ./...
+go vet ./...
+cd ..
+npm run docs:check
 ```
 
 ## 容器镜像
@@ -93,17 +104,18 @@ go vet ./...
 使用不含仓库前缀的名称构建：
 
 ```bash
-docker build -t spark-control-center:1.5.2 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.2 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.2 .
+export DOCKER_BUILDKIT=1
+docker build -t spark-control-center:1.5.3 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.3 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.3 .
 ```
 
 [Releases](https://github.com/ApolloMeridian/spark-application-webui/releases) 包含三个镜像 TAR 和一个 Helm TGZ，不附带校验文件。镜像名不包含私有仓库前缀；对象存储镜像始终包含在发布附件中，插件默认关闭。
 
 ```bash
-docker load -i spark-control-center-1.5.2.tar
-docker load -i spark-control-center-backend-1.5.2.tar
-docker load -i spark-control-center-object-storage-1.5.2.tar
+docker load -i spark-control-center-1.5.3.tar
+docker load -i spark-control-center-backend-1.5.3.tar
+docker load -i spark-control-center-object-storage-1.5.3.tar
 ```
 
 ## Helm 部署
@@ -111,9 +123,9 @@ docker load -i spark-control-center-object-storage-1.5.2.tar
 Chart 默认 values 已是完整生产模板，启用真实 API 与 PostgreSQL 登录；对象存储和 OIDC 默认关闭。修改端点和已有 Secret 引用后，仅需一个 values 文件。Mock 模式需显式使用其专用示例：
 
 ```bash
-helm show values ./spark-control-center-1.5.2.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.3.tgz > values-production.local.yaml
 
-helm upgrade --install spark-console ./spark-control-center-1.5.2.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.5.3.tgz \
   --namespace spark-console \
   --create-namespace \
   -f values-production.local.yaml
@@ -131,6 +143,8 @@ helm upgrade --install spark-console ./spark-control-center-1.5.2.tgz \
 - 升级保留现有用户与项目的租户归属；历史租户未明确配置前保留原权限。[权限说明](docs/zh-CN/WORKFLOWS.md)。
 
 所有高权限操作都会由后端独立校验，前端隐藏按钮不作为授权依据。
+
+管理员不能绕过数据租户边界。对象存储授权属于目标用户的实际租户，管理员仅可委派自己拥有的连接/桶/前缀/操作范围。非工作流提交的作业继续按授权 Kubernetes 命名空间共享；Kubernetes 资源隔离应使用不同命名空间。
 
 ## 安全说明
 

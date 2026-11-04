@@ -2,6 +2,13 @@
 import http from "node:http";
 const applications = new Map();
 let submissions = 0;
+let revision = 1;
+const watchers = new Set();
+function changed(type, app) {
+  app.metadata.resourceVersion = String(++revision);
+  for (const stream of watchers)
+    stream.write(JSON.stringify({ type, object: app }) + "\n");
+}
 http
   .createServer(async (request, response) => {
     const url = new URL(request.url, "http://fixture");
@@ -13,8 +20,10 @@ http
     for await (const chunk of request) text += chunk;
     const body = text ? JSON.parse(text) : {};
     if (url.pathname === "/test/state") {
-      for (const app of applications.values())
+      for (const app of applications.values()) {
         app.status.applicationState.state = body.state;
+        changed("MODIFIED", app);
+      }
       send({ submissions, applications: [...applications.values()] });
       return;
     }
@@ -26,6 +35,7 @@ http
       const name = url.pathname.split("/sparkapplications/")[1];
       if (url.searchParams.get("watch") === "true") {
         response.writeHead(200, { "Content-Type": "application/json" });
+        watchers.add(response);
         response.write(
           JSON.stringify({
             type: "BOOKMARK",
@@ -33,14 +43,20 @@ http
           }) + "\n",
         );
         const timer = setInterval(() => response.write("\n"), 20000);
-        response.on("close", () => clearInterval(timer));
+        response.on("close", () => {
+          clearInterval(timer);
+          watchers.delete(response);
+        });
         return;
       }
       if (request.method === "GET") {
         send(
           name
             ? applications.get(name) || { message: "not found" }
-            : { items: [...applications.values()] },
+            : {
+                metadata: { resourceVersion: String(revision) },
+                items: [...applications.values()],
+              },
           name && !applications.has(name) ? 404 : 200,
         );
         return;
@@ -61,18 +77,45 @@ http
           }
           applications.set(app.metadata.name, app);
           submissions++;
+          changed("ADDED", app);
         }
         send(app, 201);
         return;
       }
       if (request.method === "PATCH") {
         const app = applications.get(name);
-        if (app) app.spec.restartPolicy = { type: "Never" };
+        if (app && Array.isArray(body)) {
+          for (const op of body) {
+            if (
+              op.op === "test" &&
+              op.path.startsWith("/metadata/") &&
+              app.metadata[op.path.split("/")[2]] !== op.value
+            ) {
+              send({ message: "precondition failed" }, 409);
+              return;
+            }
+            if (op.path === "/metadata/annotations")
+              app.metadata.annotations = op.value;
+            if (op.path === "/spec/restartPolicy")
+              app.spec.restartPolicy = op.value;
+          }
+        } else if (app) app.spec.restartPolicy = { type: "Never" };
+        if (app) changed("MODIFIED", app);
         send(app || {}, app ? 200 : 404);
         return;
       }
       if (request.method === "DELETE") {
+        const app = applications.get(name);
+        if (
+          app &&
+          body.preconditions?.uid &&
+          body.preconditions.uid !== app.metadata.uid
+        ) {
+          send({ message: "precondition failed" }, 409);
+          return;
+        }
         applications.delete(name);
+        if (app) changed("DELETED", app);
         send({});
         return;
       }
@@ -81,6 +124,7 @@ http
       send({
         items: [...applications.values()].map((app) => ({
           metadata: {
+            uid: `${app.metadata.uid}-driver`,
             name: `${app.metadata.name}-driver`,
             namespace: "spark",
             labels: {
@@ -97,7 +141,10 @@ http
     if (url.pathname.includes("/pods/") && request.method === "PATCH") {
       const podName = url.pathname.split("/pods/")[1];
       const app = applications.get(podName.replace(/-driver$/, ""));
-      if (app) app.status.applicationState.state = "FAILED";
+      if (app) {
+        app.status.applicationState.state = "FAILED";
+        changed("MODIFIED", app);
+      }
       send({});
       return;
     }

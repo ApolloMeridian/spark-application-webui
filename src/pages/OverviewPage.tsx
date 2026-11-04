@@ -14,14 +14,15 @@ import { runtimeConfig } from '../runtimeConfig';
 import { useApplicationEvents } from '../useApplicationEvents';
 
 function UsageCard({ title, used, requested, capacity, formatter, accent, metricsAvailable }: { title: string; used: number; requested: number; capacity: number; formatter: (n: number) => string; accent: string; metricsAvailable: boolean }) {
+	const {t}=useI18n();
   const percent = Math.round((requested / capacity) * 100);
-  return <Card className="usage-card"><div className="usage-title">{title}<ThunderboltOutlined /></div><div className="usage-primary">{metricsAvailable ? formatter(used) : '—'} <small>{metricsAvailable ? 'used' : 'Prometheus unavailable'}</small></div><div className="usage-secondary"><span>{formatter(requested)} requested</span><span>{formatter(capacity)} capacity</span></div><Progress percent={percent} showInfo={false} strokeColor={accent} trailColor="#edf1f6" /></Card>;
+  return <Card className="usage-card"><div className="usage-title">{title}<ThunderboltOutlined /></div><div className="usage-primary">{metricsAvailable ? formatter(used) : '—'} <small>{metricsAvailable ? t('resourceUsed') : t('metricsUnavailable')}</small></div><div className="usage-secondary"><span>{formatter(requested)} {t('resourceRequested')}</span><span>{formatter(capacity)} {t('resourceCapacity')}</span></div><Progress percent={percent} showInfo={false} strokeColor={accent} trailColor="#edf1f6" /></Card>;
 }
 
 export function OverviewPage() {
   const { t } = useI18n(); const navigate = useNavigate(); const [summary, setSummary] = useState<DashboardSummary>(); const [apps, setApps] = useState<SparkApplication[]>([]); const [error, setError] = useState(''); const [lastUpdated, setLastUpdated] = useState<Dayjs>();
   const [historyRange, setHistoryRange] = useState<[Dayjs, Dayjs]>(() => { const now = displayNow(); return [now.subtract(runtimeConfig.dashboard.defaultHistoryDays, 'day'), now]; });
-  const load = useCallback(async () => { setError(''); try { const [s, list] = await Promise.all([sparkService.getSummary({ from: historyRange[0].toISOString(), to: historyRange[1].toISOString() }), sparkService.listApplications()]); setSummary(s); setApps(list); setLastUpdated(displayNow()); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load'); } }, [historyRange]);
+  const load = useCallback(async () => { setError(''); try { const s = await sparkService.getSummary({ from: historyRange[0].toISOString(), to: historyRange[1].toISOString() }); setSummary(s); setApps(s.applications ?? await sparkService.listApplications()); setLastUpdated(displayNow()); } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load'); } }, [historyRange]);
   useEffect(() => { void load(); const timer = window.setInterval(() => void load(), runtimeConfig.dashboard.refreshIntervalSeconds * 1000); return () => window.clearInterval(timer); }, [load]);
   useApplicationEvents(() => { void load(); });
   if (error) return <Alert type="error" showIcon message={error} action={<Button onClick={load}>{t('retry')}</Button>} />;
@@ -45,12 +46,12 @@ export function OverviewPage() {
               { title: t('application'), dataIndex: 'name', render: (value, row) => <div><b>{value}</b><small className="cell-subtitle">{row.namespace}</small></div> },
               { title: t('status'), dataIndex: 'state', render: (state) => <StatusTag state={state} /> },
               { title: t('owner'), dataIndex: 'owner' },
-              { title: 'Reason', dataIndex: 'errorMessage', ellipsis: true },
+              { title: t('failureReason'), dataIndex: 'errorMessage', ellipsis: true },
             ]} />
           </Card>
         </Col>
-        <Col xs={24} xl={8}><Card className="panel-card health-card" title="Application health"><ReactECharts option={chartOption} style={{ height: 245 }} /><div className="donut-center"><b>{summary.total}</b><span>total</span></div></Card>
-          <Card className="panel-card scheduling-card" title={t('scheduling')}><div className="pool-row"><span><i className="pool-dot baseline" />Baseline pool</span><b>{summary.nodePools.baseline}</b></div><Progress percent={Math.round(summary.nodePools.baseline / Math.max(1, summary.nodePools.baseline + summary.nodePools.autoscale) * 100)} showInfo={false} strokeColor="#2868f0" /><div className="pool-row"><span><i className="pool-dot autoscale" />Autoscale pool</span><b>{summary.nodePools.autoscale}</b></div><Progress percent={Math.round(summary.nodePools.autoscale / Math.max(1, summary.nodePools.baseline + summary.nodePools.autoscale) * 100)} showInfo={false} strokeColor="#12a878" />{summary.nodePools.pending > 0 && <div className="pending-callout"><ClockCircleOutlined /><span><b>{summary.nodePools.pending} pods pending</b><small>Waiting for scheduling capacity</small></span></div>}</Card>
+        <Col xs={24} xl={8}><Card className="panel-card health-card" title={t('applicationHealth')}><ReactECharts option={chartOption} style={{ height: 245 }} /><div className="donut-center"><b>{summary.total}</b><span>{t('totalApplications')}</span></div></Card>
+          <Card className="panel-card scheduling-card" title={t('scheduling')}><div className="pool-row"><span><i className="pool-dot baseline" />{t('baselinePool')}</span><b>{summary.nodePools.baseline}</b></div><Progress percent={Math.round(summary.nodePools.baseline / Math.max(1, summary.nodePools.baseline + summary.nodePools.autoscale) * 100)} showInfo={false} strokeColor="#2868f0" /><div className="pool-row"><span><i className="pool-dot autoscale" />{t('autoscalePool')}</span><b>{summary.nodePools.autoscale}</b></div><Progress percent={Math.round(summary.nodePools.autoscale / Math.max(1, summary.nodePools.baseline + summary.nodePools.autoscale) * 100)} showInfo={false} strokeColor="#12a878" />{summary.nodePools.pending > 0 && <div className="pending-callout"><ClockCircleOutlined /><span><b>{summary.nodePools.pending} {t('podsPending')}</b><small>{t('waitingCapacity')}</small></span></div>}</Card>
         </Col>
       </Row>
     </>}

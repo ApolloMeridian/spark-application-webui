@@ -3,7 +3,7 @@
 ## Build and publish the UI image
 
 ```bash
-docker build -t spark-control-center:1.5.2 .
+docker build -t spark-control-center:1.5.3 .
 ```
 
 For an air-gapped build with a locally cached Nginx base image:
@@ -11,7 +11,7 @@ For an air-gapped build with a locally cached Nginx base image:
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.2 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.3 .
 ```
 
 The image listens on port `8080`, serves `/healthz`, runs as UID 101, and supports a read-only root filesystem. Helm replaces `/usr/share/nginx/html/config/config.js` at runtime, so one immutable image can be promoted through environments.
@@ -21,11 +21,12 @@ The image listens on port `8080`, serves `/healthz`, runs as UID 101, and suppor
 Use the repository root as Docker build context:
 
 ```bash
+export DOCKER_BUILDKIT=1
 docker build -f backend/Dockerfile \
-  -t spark-control-center-backend:1.5.2 .
+  -t spark-control-center-backend:1.5.3 .
 ```
 
-The backend runs as UID 65532 on port `8081`. On startup it connects to PostgreSQL and creates the audit/history tables plus `local_users`, `local_user_sessions`, and `application_settings`. The configured database user therefore needs table/index creation permission in `spark_console_db`.
+The backend runs as UID 65532 on port `8081`. Startup migrations maintain identity/sessions, tenant-scoped templates/alerts, audit/history, workflow/schedule/run/backfill state and alert coordination. The optional storage process maintains grants, operations and bootstrap records in the same identity database. The database user needs schema/table/index permissions; back up PostgreSQL before upgrading. See the complete [table inventory and API/environment reference](REFERENCE.md).
 
 ## Prometheus resolution for short Spark jobs
 
@@ -93,13 +94,13 @@ helm upgrade --install spark-console ./charts/spark-control-center \
   -f ./charts/spark-control-center/examples/values-production.yaml
 ```
 
-The production profile enables the backend, same-origin `/api` proxy, real Kubernetes/Prometheus data, PostgreSQL audit storage, and OIDC authentication. It does not require or bootstrap a local administrator. The first Keycloak user in `oidc.adminGroups` is automatically persisted as an administrator on login.
+The production template enables the backend, same-origin `/api` proxy and PostgreSQL local login. To use OIDC-only login, set `runtimeConfig.auth.mode=oidc`, enable/configure `oidc`, and supply an explicit `oidc.redirectURL`; no initial local administrator is required then. Members of `oidc.adminGroups` are synchronized as administrators on login.
 
 For an intentionally local-account deployment, set `runtimeConfig.auth.mode=local`, keep `oidc.enabled=false`, and configure `backend.auth.initialAdmin.existingSecret` or `backend.auth.initialAdmin.createSecret=true`. Only local mode requires an initial administrator password.
 
 ## Backend HTTP contract
 
-The `api.baseUrl` prefix is omitted below. JSON uses the TypeScript models in `src/types.ts`.
+The `api.baseUrl` prefix is omitted below. These are common endpoints; the source-checked [complete reference](REFERENCE.md) also covers templates, favorites, alerts, workflows, schedules, backfills, storage and Driver log windows. JSON uses the models in `src/types.ts`, `src/workflows.ts` and `src/objectStorage.ts`.
 
 | Method | Path | Response/purpose |
 | --- | --- | --- |
@@ -107,13 +108,13 @@ The `api.baseUrl` prefix is omitted below. JSON uses the TypeScript models in `s
 | `GET` | `/v1/applications` | Paged `ApplicationList`; accepts keyword/state/owner/namespace, page/pageSize and sorting |
 | `GET` | `/v1/stream` | Server-Sent Events stream backed by Kubernetes Watch; automatically reconnectable |
 | `GET` | `/v1/namespaces/{namespace}/applications/{name}` | Complete `SparkApplication` detail |
-| `POST` | `/v1/namespaces/{namespace}/applications/dry-run` | Admin only; Kubernetes server-side dry-run and normalized YAML preview from body `{ yaml }` |
-| `GET` | `/v1/namespaces/{namespace}/applications/{name}/prepare?mode=clone\|retry` | Admin only; return a sanitized manifest with a derived name |
-| `POST` | `/v1/namespaces/{namespace}/applications` | Admin only; validate and create a SparkApplication from body `{ yaml }` |
-| `POST` | `/v1/namespaces/{namespace}/applications/{name}/kill` | Admin only; terminate a `RUNNING` or `SUBMITTED` application while retaining its CR and failed Driver Pod; body `{ reason }` |
+| `POST` | `/v1/namespaces/{namespace}/applications/dry-run` | Requires submit permission; Kubernetes dry-run and normalized YAML preview from `{ yaml }` |
+| `GET` | `/v1/namespaces/{namespace}/applications/{name}/prepare?mode=clone\|retry` | Requires submit permission; sanitized manifest with a derived name |
+| `POST` | `/v1/namespaces/{namespace}/applications` | Requires submit permission; create from `{ yaml }` |
+| `POST` | `/v1/namespaces/{namespace}/applications/{name}/kill` | Requires kill permission; retain the CR/failed Driver; body `{ reason }` |
 | `GET` | `/v1/namespaces/{namespace}/applications/{name}/executors/{pod}/logs` | Loki-backed Executor logs; accepts RFC3339 `from`/`to`, `direction=forward|backward`, and `limit` |
 | `GET` | `/v1/namespaces/{namespace}/applications/{name}/spark-ui/{path...}` | Same-origin reverse proxy to the in-cluster Driver UI Service |
-| `DELETE` | `/v1/namespaces/{namespace}/applications/{name}` | Admin only; delete a terminal application; body `{ reason }` |
+| `DELETE` | `/v1/namespaces/{namespace}/applications/{name}` | Requires delete permission; delete a terminal application; body `{ reason }` |
 | `GET` | `/v1/audit` | Admin only; `OperationAudit[]` |
 | `POST` | `/v1/auth/login` | Local mode only: authenticate `{ username, password }` and set an HttpOnly session cookie |
 | `GET` | `/v1/auth/oidc/login` | OIDC mode: start Authorization Code + PKCE login |
@@ -124,11 +125,12 @@ The `api.baseUrl` prefix is omitted below. JSON uses the TypeScript models in `s
 | `GET/POST` | `/v1/users` | Admin only; list or create users |
 | `PATCH/DELETE` | `/v1/users/{id}` | Admin only; update, reset password, disable, or delete a user |
 | `GET` | `/healthz` | Backend health check |
+| `GET` | `/readyz` | Backend dependency readiness |
 | `GET` | `/metrics` | Optional Prometheus metrics |
 
-All `/v1` data endpoints require a valid database session. Viewer accounts are read-only; the backend independently enforces administrator access for submission, termination, deletion, audit, and user-management APIs. Every data and mutation route also enforces the authenticated user's namespace assignment. An empty namespace list means all Helm-configured namespaces for backward compatibility. Client-supplied operator names are ignored, and operation audit records use the authenticated username. Passwords are bcrypt-hashed, only SHA-256 hashes of random session tokens are stored, session cookies are HttpOnly/SameSite, and cross-origin state-changing requests are rejected. The last active administrator cannot be disabled, demoted, or deleted, and users cannot delete their own account.
+All `/v1` data endpoints require a valid database session. Viewer accounts start with minimum permissions; tenant policies may explicitly grant operational capabilities. User/tenant management and full audit require an administrator. Namespace, tenant and storage-prefix permissions are independent checks, not UI-only controls. An empty namespace list means all Helm-configured namespaces. Audit actors come from the session, never a request body. Passwords use bcrypt and session tokens are stored as SHA-256 hashes. See [hardening and upgrade requirements](HARDENING.md) for CSRF, login limits and tenant migration.
 
-Terminate TLS at the Ingress before using password login outside a trusted test network. The frontend proxy preserves the original `X-Forwarded-Proto`/host so the backend marks the session cookie `Secure` on HTTPS deployments.
+Terminate TLS at the Ingress. Configure `backend.publicURL` to the canonical external origin, or let the Chart derive it from the explicit OIDC callback / Ingress host and TLS. Backend code ignores client-supplied Forwarded headers. HTTPS public origins produce Secure cookies. OIDC requires an explicit callback URL matching the identity provider exactly.
 
 Kill/delete state guards are enforced by the backend as well as the UI. Kubernetes has no generic SparkApplication kill subresource. Both `RUNNING` and `SUBMITTED` applications can be terminated, including a Driver stuck in `ImagePullBackOff`. Kill first patches `spec.restartPolicy.type` to `Never`, then patches the Driver Pod with an expired `activeDeadlineSeconds`. Kubelet terminates the Driver container and retains the failed Pod so its status, events, and Kubernetes logs remain available. Correlated Executor Pods are force-deleted to stop compute. Delete later removes the terminal SparkApplication CR using foreground propagation, allowing owner-referenced Driver resources to be deleted with it. Exact reconciliation timing remains controlled by Spark Operator.
 
@@ -139,6 +141,8 @@ For a running application, the UI embeds Driver Spark UI through the backend pro
 ## Backend environment contract
 
 When `backend.enabled=true`, the chart injects:
+
+The list below is a quick overview, not an exhaustive contract. See the [complete environment reference](REFERENCE.md) for Kubernetes external access, database URL/pool settings, alerts, workflows and the storage process.
 
 - Kubernetes: `KUBERNETES_CLUSTER_NAME`, `WATCH_NAMESPACES` and a scoped ServiceAccount token.
 - Spark Operator: `SPARKAPPLICATION_API_VERSION`.
@@ -196,8 +200,16 @@ For rotated/deleted Driver logs, choose **Loki retained logs**, a time range and
 - A Prometheus failure leaves Kubernetes application data available with live metrics omitted. Kubernetes and PostgreSQL are readiness dependencies.
 - `/healthz` checks process liveness; `/readyz` verifies Kubernetes access and PostgreSQL connectivity.
 
-## Tenant permissions in 1.5.2
+## Tenant permissions in 1.5.3
 
 Production chart defaults use the real backend and PostgreSQL login, not Mock. Prepare the initial administrator password Secret and database Secret referenced in your single values file. To use OIDC-only login, set runtimeConfig.auth.mode=oidc, enable oidc, configure the provider/client Secret and callback; no initial local administrator Secret is then required. Storage remains disabled unless explicitly enabled.
 
 New admin/viewer accounts default to their corresponding built-in tenants. Existing user/project assignments are preserved. Configure tenant access in User management; the API and scheduler read policies from PostgreSQL. See [tenant permissions](WORKFLOWS.md#tenant-and-permission-boundaries) and [optional storage](OBJECT-STORAGE.md). All release assets use unprefixed image names: frontend/backend/storage TAR plus Helm TGZ, without a checksum file.
+
+## Application instances and termination in 1.5.3
+
+Application details use `/applications/<namespace>/<Kubernetes UID>`. Spark IDs may be absent before startup and can change on an Operator retry, so they are displayed as run information rather than used as the resource identity. Old name links resolve to the live or latest visible instance. Deleting a CR retains its observed PostgreSQL snapshot and same-name replacements appear separately. Only the paginated application browser includes archived instances; resource totals and scheduler reconciliation use live Kubernetes state.
+
+Historical Loki and Prometheus queries are restricted to the instance lifetime. An archived UID cannot stop/delete or proxy the Spark UI of a replacement. Kubernetes log requests for archived instances return an explicit unavailable response; use retained Loki logs or the saved diagnostic tail. Snapshot collection cannot recover applications it never observed, deleted log segments or expired metrics.
+
+Termination writes `spark-control-center.io/stop-requested-at` and `restartPolicy.type: Never` using UID/revision preconditions, then sets a verified Driver's active deadline and cleans its executors. Backend replicas recover outstanding stop requests and stop resubmitted Drivers for that UID. The console retains the CR and does not delete Drivers to terminate them. Older Spark Operators may independently remove the original Driver when a spec update invalidates the run; use persistent Loki logs. The [Operator controller](https://github.com/kubeflow/spark-operator/blob/v1beta2-1.3.8-3.1.1/pkg/controller/sparkapplication/controller.go) documents that spec-change behavior. While all backends are unavailable, a resubmission already in flight can run until recovery. Clone/retry removes the stop marker and creates a new resource; deleting/recreating a name does not carry a previous UID's stop request.

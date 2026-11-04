@@ -10,6 +10,7 @@ scripts
 vite.config.js
 vite.config.d.ts
 design.md
+project_audit_report.md
 README.md
 .tools
 release

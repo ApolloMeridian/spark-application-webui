@@ -76,8 +76,25 @@ describe('mock application service', () => {
   });
   it('deletes only terminal applications and records a DELETE audit', async () => {
     await sparkService.deleteApplication('spark-prod', 'can-merge-hourly', 'admin', 'cleanup');
-    await expect(sparkService.getApplication('spark-prod', 'can-merge-hourly')).rejects.toThrow('not found');
+    expect((await sparkService.getApplication('spark-prod', 'can-merge-hourly')).historical).toBe(true);
     expect((await sparkService.getAudit())[0]).toMatchObject({ operation: 'DELETE', result: 'SUCCESS', reason: 'cleanup' });
     await expect(sparkService.deleteApplication('spark-prod', 'parquet-to-iceberg', 'admin')).rejects.toThrow('terminal');
   });
+  it('retains deleted instance UID alongside a same-name replacement', async () => {
+    const old = await sparkService.getApplication('spark-prod', 'can-merge-hourly');
+    await sparkService.deleteApplication(old.namespace, old.id, 'admin');
+    const replacement = await sparkService.submitApplication(old.namespace, `apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: ${old.name}
+  namespace: ${old.namespace}
+spec:
+  image: spark:3.5
+`, 'admin');
+    expect(replacement.id).not.toBe(old.id);
+    expect((await sparkService.getApplication(old.namespace, old.id)).historical).toBe(true);
+    await expect(sparkService.killApplication(old.namespace, old.id, 'admin')).rejects.toThrow('archived');
+    expect((await sparkService.getApplication(old.namespace, replacement.id)).state).toBe('SUBMITTED');
+  });
+
 });
