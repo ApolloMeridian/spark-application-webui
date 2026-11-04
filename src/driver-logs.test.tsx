@@ -19,6 +19,7 @@ afterEach(() => {
 });
 
 it("queries early lines and keeps absolute line numbers through filtering and paging", async () => {
+  const user = userEvent.setup();
   localStorage.setItem("spark-console-locale", "en-US");
   const get = vi
     .spyOn(sparkService, "getDriverLogs")
@@ -43,31 +44,32 @@ it("queries early lines and keeps absolute line numbers through filtering and pa
     </I18nProvider>,
   );
   await screen.findByText("INFO latest-only");
-  await userEvent.click(screen.getByRole("combobox", { name: "Query mode" }));
-  await userEvent.click(screen.getByText("Line range", { exact: true }));
+  await user.click(screen.getByRole("combobox", { name: "Query mode" }));
+  await user.click(screen.getByText("Line range", { exact: true }));
   fireEvent.change(screen.getByRole("spinbutton", { name: "Start line" }), {
     target: { value: "6001" },
   });
   fireEvent.change(screen.getByRole("spinbutton", { name: "End line" }), {
     target: { value: "8000" },
   });
-  await userEvent.click(screen.getByRole("button", { name: /Query logs/ }));
+  await user.click(screen.getByRole("button", { name: /Query logs/ }));
   await screen.findByText("INFO line-6001");
-  await userEvent.type(
+  await user.type(
     screen.getByRole("textbox", { name: "Filter current logs" }),
     "ERROR",
   );
   expect(screen.getByText("6002", { exact: true })).toBeTruthy();
   expect(screen.queryByText("INFO line-6001")).toBeNull();
-  await userEvent.clear(
+  await user.clear(
     screen.getByRole("textbox", { name: "Filter current logs" }),
   );
-  await userEvent.click(screen.getByRole("button", { name: "Next range" }));
+  await user.click(screen.getByRole("button", { name: "Next range" }));
   await waitFor(() =>
     expect(get).toHaveBeenLastCalledWith(
-      expect.any(String),
-      expect.any(String),
+      seedApplications[0].namespace,
+      seedApplications[0].id,
       expect.objectContaining({ startLine: 8001, endLine: 10000 }),
     ),
   );
-});
+// Ant Design interaction/animation startup is slower on shared CI runners.
+}, 15000);
