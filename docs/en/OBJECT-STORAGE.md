@@ -1,20 +1,20 @@
-# Object storage plugin (1.5.3)
+# Object storage plugin (1.5.4)
 
 An optional, independently deployed stateless service, not an embedded MinIO Console. It is disabled by default, creates no plugin resources when disabled and requires no storage credentials.
 
 ## Build and deploy
 
 ```bash
-docker build -t spark-control-center:1.5.3 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.3 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.3 .
+docker build -t spark-control-center:1.5.4 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.4 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.4 .
 helm package charts/spark-control-center
 
 # First deployment only: export the production template; preserve existing environment values.
-helm show values ./spark-control-center-1.5.3.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.4.tgz > values-production.local.yaml
 # Adapt images, endpoints, bucket, authentication, database and bootstrap grants in that file.
 # Tag and push all three images to your own registry if needed.
-helm upgrade --install spark-console ./spark-control-center-1.5.3.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.5.4.tgz \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
 ```
@@ -109,7 +109,7 @@ npm install
 npm test
 npm run build
 node scripts/object-storage-local-test.mjs
-QA_VERSION=1.5.3 node scripts/container-object-storage-smoke.mjs
+QA_VERSION=1.5.4 node scripts/container-object-storage-smoke.mjs
 node scripts/object-storage-helm-test.mjs
 ```
 

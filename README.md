@@ -111,17 +111,17 @@ Build images without a registry prefix:
 
 ```bash
 export DOCKER_BUILDKIT=1
-docker build -t spark-control-center:1.5.3 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.3 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.3 .
+docker build -t spark-control-center:1.5.4 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.4 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.4 .
 ```
 
 [Releases](https://github.com/ApolloMeridian/spark-application-webui/releases) contain three image TAR archives and one Helm TGZ package. Images have no private registry prefix. The optional storage image is included even when the feature is disabled; no checksum file is generated.
 
 ```bash
-docker load -i spark-control-center-1.5.3.tar
-docker load -i spark-control-center-backend-1.5.3.tar
-docker load -i spark-control-center-object-storage-1.5.3.tar
+docker load -i spark-control-center-1.5.4.tar
+docker load -i spark-control-center-backend-1.5.4.tar
+docker load -i spark-control-center-object-storage-1.5.4.tar
 ```
 
 ## Helm deployment
@@ -129,9 +129,9 @@ docker load -i spark-control-center-object-storage-1.5.3.tar
 Chart defaults are a complete production template using the real API and PostgreSQL login. Configure endpoints and existing Secrets in one file. Object storage and OIDC are disabled by default; Mock is available only through its explicit example:
 
 ```bash
-helm show values ./spark-control-center-1.5.3.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.4.tgz > values-production.local.yaml
 
-helm upgrade --install spark-console ./spark-control-center-1.5.3.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.5.4.tgz \
   --namespace spark-console \
   --create-namespace \
   -f values-production.local.yaml

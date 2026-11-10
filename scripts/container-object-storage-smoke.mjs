@@ -357,6 +357,14 @@ try {
       list.items.some((x) => x.id === replacement.id && !x.historical)
     );
   });
+  const overview = await api("/dashboard/summary");
+  assert.deepEqual(overview.capacity, { cpu: 8, memoryGiB: 32 });
+  assert(overview.resourcePools.fixed.requested.cpu > 0);
+  assert.deepEqual(overview.resourcePools.elastic, {
+    requested: { cpu: 0, memoryGiB: 0 },
+    used: { cpu: 0, memoryGiB: 0 },
+    metricsAvailable: true,
+  });
   let info = await api("/object-storage/connections");
   assert.deepEqual(info.connections[0].roots.map((x) => x.bucket).sort(), [
     "secondary-artifacts",

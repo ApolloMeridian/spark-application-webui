@@ -3,7 +3,7 @@ import { seedApplications } from './mockData';
 import { apiUrl, runtimeConfig } from './runtimeConfig';
 import { sumResources } from './utils';
 import { cleanApplicationManifest, renderTemplateManifest } from './manifests';
-import type { DriverLogQuery, DriverLogWindow } from './types';
+import type { DriverLogQuery, DriverLogWindow, OverviewPoolUsage, PodResource } from './types';
 
 const APPS_KEY = 'spark-console-mock-applications';
 const AUDIT_KEY = 'spark-console-mock-audit';
@@ -67,19 +67,35 @@ export class MockSparkApplicationService implements SparkApplicationService {
   async getSummary(filters: ApplicationFilters = {}): Promise<DashboardSummary> {
     const apps = await this.listApplications(filters);
     const requested = { cpu: 0, memoryGiB: 0 }; const used = { cpu: 0, memoryGiB: 0 };
+    const pool = (): OverviewPoolUsage => ({ requested: { cpu: 0, memoryGiB: 0 }, used: { cpu: 0, memoryGiB: 0 }, metricsAvailable: true });
+    const resourcePools = { fixed: pool(), elastic: pool() };
+    const addScheduled = (node: string | undefined, nodePool: string | undefined, resource: PodResource) => {
+      if (!node) return;
+      const usage = nodePool === 'autoscale' ? resourcePools.elastic : resourcePools.fixed;
+      usage.requested.cpu += resource.request.cpu;
+      usage.requested.memoryGiB += resource.request.memoryGiB;
+      usage.used.cpu += resource.current?.cpu ?? 0;
+      usage.used.memoryGiB += resource.current?.memoryGiB ?? 0;
+    };
     const byState: DashboardSummary['byState'] = {}; let baseline = 0; let autoscale = 0; let pending = 0;
     apps.forEach((app) => {
       byState[app.state] = (byState[app.state] ?? 0) + 1;
       if (app.state !== 'RUNNING') return;
+      addScheduled(app.driverNode, app.driverNodePool, app.driver);
       const totals = sumResources(app); requested.cpu += totals.requested.cpu; requested.memoryGiB += totals.requested.memoryGiB;
       used.cpu += totals.used.cpu; used.memoryGiB += totals.used.memoryGiB;
-      app.executors.filter((executor) => ['RUNNING', 'PENDING'].includes(executor.state)).forEach((executor) => { if (!executor.node) pending += 1; else if (executor.nodePool === 'baseline') baseline += 1; else autoscale += 1; });
+      app.executors.filter((executor) => ['RUNNING', 'PENDING'].includes(executor.state)).forEach((executor) => {
+        addScheduled(executor.node, executor.nodePool, executor.resources);
+        if (!executor.node) pending += 1;
+        else if (executor.nodePool === 'baseline') baseline += 1;
+        else autoscale += 1;
+      });
     });
     const to = filters.to ? new Date(filters.to) : new Date();
     const from = filters.from ? new Date(filters.from) : new Date(to.getTime() - runtimeConfig.dashboard.defaultHistoryDays * 86400000);
     const submitted = apps.filter((app) => { const time = new Date(app.createdAt); return time >= from && time <= to; }).length;
     const failed = apps.filter((app) => ['FAILED', 'SUBMISSION_FAILED'].includes(app.state) && app.finishedAt && new Date(app.finishedAt) >= from && new Date(app.finishedAt) <= to).length;
-    return { total: apps.length, byState, requested, used, capacity: { cpu: 288, memoryGiB: 2458 }, metricsAvailable: true, nodePools: { baseline, autoscale, pending }, history: { submitted, failed, from: from.toISOString(), to: to.toISOString() } };
+    return { total: apps.length, byState, requested, used, capacity: { cpu: 288, memoryGiB: 2458 }, resourcePools, metricsAvailable: true, nodePools: { baseline, autoscale, pending }, history: { submitted, failed, from: from.toISOString(), to: to.toISOString() } };
   }
   async getAudit() { await wait(150); return readAudit().sort((a, b) => b.timestamp.localeCompare(a.timestamp)); }
   async submitApplication(namespace: string, yaml: string, operator: string) {

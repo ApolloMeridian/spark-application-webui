@@ -1,20 +1,20 @@
-# 对象存储插件（1.5.3）
+# 对象存储插件（1.5.4）
 
 这是可选的独立无状态服务，不是嵌入 MinIO Console。默认关闭，不创建插件资源，不要求存储凭证，不改变已有 Spark 作业/工作流能力。
 
 ## 构建与安装
 
 ```bash
-docker build -t spark-control-center:1.5.3 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.3 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.3 .
+docker build -t spark-control-center:1.5.4 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.4 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.4 .
 helm package charts/spark-control-center
 
 # 首次部署时创建单文件配置；已配置过的文件不要覆盖。
-helm show values ./spark-control-center-1.5.3.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.4.tgz > values-production.local.yaml
 # 修改此文件中的镜像仓库、Endpoint、bucket、认证、数据库和初始授权。
 # 根据内网实际仓库分别 docker tag / docker push 三个镜像。
-helm upgrade --install spark-console ./spark-control-center-1.5.3.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.5.4.tgz \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
 ```
@@ -115,7 +115,7 @@ npm install
 npm test
 npm run build
 node scripts/object-storage-local-test.mjs
-QA_VERSION=1.5.3 node scripts/container-object-storage-smoke.mjs
+QA_VERSION=1.5.4 node scripts/container-object-storage-smoke.mjs
 node scripts/object-storage-helm-test.mjs
 ```
 

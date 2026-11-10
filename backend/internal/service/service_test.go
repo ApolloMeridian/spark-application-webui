@@ -86,6 +86,7 @@ func (f *fakeKubernetes) TerminatePodByDeadline(_ context.Context, _, name strin
 	return nil
 }
 func (f *fakeKubernetes) ListPods(context.Context, string) ([]kube.Pod, error) { return f.pods, nil }
+func (f *fakeKubernetes) ListNodes(context.Context) ([]kube.Object, error)     { return nil, nil }
 func (f *fakeKubernetes) PodLog(context.Context, string, string, int) ([]string, error) {
 	return []string{"INFO ready"}, nil
 }
@@ -100,9 +101,6 @@ func (fakePrometheus) Usage(context.Context, string, []string) (map[string]metri
 }
 func (fakePrometheus) UsageRange(context.Context, string, []string, time.Time, time.Time) (map[string]metrics.PodUsage, []domain.MetricPoint, error) {
 	return map[string]metrics.PodUsage{}, []domain.MetricPoint{{Time: "2026-09-20T00:01:00Z", CPU: 0.5, MemoryGiB: 1}}, nil
-}
-func (fakePrometheus) Capacity(context.Context) (domain.ResourceAmount, error) {
-	return domain.ResourceAmount{CPU: 8, MemoryGiB: 32}, nil
 }
 
 type fakeLogSource struct {

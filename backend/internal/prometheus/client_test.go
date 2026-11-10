@@ -11,39 +11,21 @@ import (
 	"time"
 )
 
-func TestUsageAndCapacity(t *testing.T) {
+func TestUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		query := r.URL.Query().Get("query")
-		if strings.Contains(r.URL.Path, "query_range") {
-			values := [][]any{{float64(100), "0.5"}, {float64(160), "0.7"}}
-			if strings.Contains(query, "memory_working_set") {
-				values = [][]any{{float64(100), "1.5"}, {float64(160), "2.0"}}
-			}
-			response := map[string]any{
-				"status": "success",
-				"data": map[string]any{
-					"resultType": "matrix",
-					"result": []any{map[string]any{
-						"metric": map[string]string{"pod": "demo-driver"},
-						"values": values,
-					}},
-				},
-			}
-			_ = json.NewEncoder(w).Encode(response)
-			return
-		}
-		value := "16"
-		if strings.Contains(query, `resource="memory"`) {
-			value = "64"
+		values := [][]any{{float64(100), "0.5"}, {float64(160), "0.7"}}
+		if strings.Contains(query, "memory_working_set") {
+			values = [][]any{{float64(100), "1.5"}, {float64(160), "2.0"}}
 		}
 		response := map[string]any{
 			"status": "success",
 			"data": map[string]any{
-				"resultType": "vector",
+				"resultType": "matrix",
 				"result": []any{map[string]any{
-					"metric": map[string]string{},
-					"value":  []any{float64(160), value},
+					"metric": map[string]string{"pod": "demo-driver"},
+					"values": values,
 				}},
 			},
 		}
@@ -58,10 +40,6 @@ func TestUsageAndCapacity(t *testing.T) {
 	}
 	if usage["demo-driver"].Current.CPU != 0.7 || usage["demo-driver"].Peak.MemoryGiB != 2 || len(history) != 2 {
 		t.Fatalf("unexpected usage: %#v history=%#v", usage, history)
-	}
-	capacity, err := client.Capacity(context.Background())
-	if err != nil || capacity.CPU != 16 || capacity.MemoryGiB != 64 {
-		t.Fatalf("unexpected capacity: %#v err=%v", capacity, err)
 	}
 }
 

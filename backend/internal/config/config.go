@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -37,6 +38,10 @@ type Config struct {
 	MetricsLookback         time.Duration
 	MetricsQueryStep        time.Duration
 	MetricsCPURateWindow    time.Duration
+	OverviewPoolsEnabled    bool
+	OverviewDetectVirtual   bool
+	OverviewFixedLabels     map[string]string
+	OverviewElasticLabels   []map[string]string
 	HistoryDefaultDays      int
 	LokiURL                 string
 	LokiTimeout             time.Duration
@@ -100,6 +105,8 @@ func Load() (Config, error) {
 		MetricsLookback:         durationEnv("PROMETHEUS_LOOKBACK", time.Hour),
 		MetricsQueryStep:        durationEnv("PROMETHEUS_QUERY_STEP", 15*time.Second),
 		MetricsCPURateWindow:    durationEnv("PROMETHEUS_CPU_RATE_WINDOW", time.Minute),
+		OverviewPoolsEnabled:    boolEnv("OVERVIEW_RESOURCE_POOLS_ENABLED", true),
+		OverviewDetectVirtual:   boolEnv("OVERVIEW_AUTO_DETECT_VIRTUAL_NODES", true),
 		HistoryDefaultDays:      intEnv("HISTORY_DEFAULT_DAYS", 7),
 		LokiURL:                 strings.TrimRight(os.Getenv("LOKI_URL"), "/"),
 		LokiTimeout:             durationEnv("LOKI_QUERY_TIMEOUT", 15*time.Second),
@@ -133,6 +140,17 @@ func Load() (Config, error) {
 		AlertEvaluationInterval: durationEnv("ALERT_EVALUATION_INTERVAL", time.Minute),
 		AlertWebhookURL:         strings.TrimSpace(os.Getenv("ALERT_WEBHOOK_URL")),
 		AlertWebhookTimeout:     durationEnv("ALERT_WEBHOOK_TIMEOUT", 10*time.Second),
+	}
+	if err := json.Unmarshal([]byte(env("OVERVIEW_FIXED_NODE_LABELS", "{}")), &cfg.OverviewFixedLabels); err != nil {
+		return Config{}, fmt.Errorf("OVERVIEW_FIXED_NODE_LABELS must be a JSON object of label strings: %w", err)
+	}
+	if err := json.Unmarshal([]byte(env("OVERVIEW_ELASTIC_NODE_LABELS", "[]")), &cfg.OverviewElasticLabels); err != nil {
+		return Config{}, fmt.Errorf("OVERVIEW_ELASTIC_NODE_LABELS must be a JSON array of label objects: %w", err)
+	}
+	for _, labels := range cfg.OverviewElasticLabels {
+		if len(labels) == 0 {
+			return Config{}, fmt.Errorf("OVERVIEW_ELASTIC_NODE_LABELS entries must contain at least one label")
+		}
 	}
 	if len(cfg.Namespaces) == 0 {
 		return Config{}, fmt.Errorf("WATCH_NAMESPACES must contain at least one namespace")

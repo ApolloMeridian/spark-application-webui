@@ -408,6 +408,31 @@
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
       }
     },
+    "overview": {
+      "type": "object",
+      "properties": {
+        "resourcePools": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "autoDetectVirtualNodes": { "type": "boolean" },
+            "fixedMatchLabels": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "elasticMatchLabels": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "minProperties": 1,
+                "additionalProperties": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
     "backend": {
       "type": "object",
       "properties": {

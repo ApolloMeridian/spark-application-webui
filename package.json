@@ -1,7 +1,7 @@
 {
   "name": "spark-control-center",
   "private": true,
-  "version": "1.5.3",
+  "version": "1.5.4",
   "type": "module",
   "scripts": {
     "docs:check": "node scripts/check-documentation.mjs",

@@ -90,6 +90,8 @@ const group = (key, en) => {
     return en
       ? "Observability endpoint/query settings"
       : "观测服务地址与查询配置";
+  if (key.startsWith("OVERVIEW_"))
+    return en ? "Overview resource pool settings" : "总览资源池设置";
   if (key.startsWith("ALERT_"))
     return en
       ? "Evaluation interval or operator-managed webhook"

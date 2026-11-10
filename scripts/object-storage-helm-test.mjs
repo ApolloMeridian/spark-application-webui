@@ -65,6 +65,57 @@ const standaloneBackend = standaloneDocs.find(
   (x) => x.kind === "Deployment" && x.metadata.name.endsWith("-backend"),
 );
 assert(standaloneBackend);
+const overviewRole = standaloneDocs.find(
+  (x) =>
+    x.kind === "ClusterRole" && x.metadata.name.endsWith("-overview-nodes"),
+);
+assert.deepEqual(overviewRole?.rules, [
+  { apiGroups: [""], resources: ["nodes"], verbs: ["list"] },
+]);
+const overviewBinding = standaloneDocs.find(
+  (x) =>
+    x.kind === "ClusterRoleBinding" &&
+    x.roleRef.name === overviewRole.metadata.name,
+);
+assert.deepEqual(overviewBinding?.subjects, [
+  {
+    kind: "ServiceAccount",
+    name: standaloneBackend.spec.template.spec.serviceAccountName,
+    namespace: "spark-console",
+  },
+]);
+const customPools = manifests(
+  "--set",
+  "overview.resourcePools.autoDetectVirtualNodes=false",
+  "--set-json",
+  'overview.resourcePools.fixedMatchLabels={"capacity.example.org/pool":"fixed"}',
+  "--set-json",
+  'overview.resourcePools.elasticMatchLabels=[{"capacity.example.org/pool":"elastic"}]',
+);
+const poolEnv = customPools.find(
+  (x) => x.kind === "Deployment" && x.metadata.name.endsWith("-backend"),
+).spec.template.spec.containers[0].env;
+assert.equal(
+  poolEnv.find((e) => e.name === "OVERVIEW_AUTO_DETECT_VIRTUAL_NODES").value,
+  "false",
+);
+assert.deepEqual(
+  JSON.parse(
+    poolEnv.find((e) => e.name === "OVERVIEW_FIXED_NODE_LABELS").value,
+  ),
+  { "capacity.example.org/pool": "fixed" },
+);
+assert.deepEqual(
+  JSON.parse(
+    poolEnv.find((e) => e.name === "OVERVIEW_ELASTIC_NODE_LABELS").value,
+  ),
+  [{ "capacity.example.org/pool": "elastic" }],
+);
+assert(
+  !manifests("--set", "overview.resourcePools.enabled=false").some((x) =>
+    x.metadata.name.endsWith("-overview-nodes"),
+  ),
+);
 assert(
   !standaloneBackend.spec.template.spec.containers[0].env.some(
     (e) => e.name === "AUTH_INITIAL_ADMIN_PASSWORD",

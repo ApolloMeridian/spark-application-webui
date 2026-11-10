@@ -120,6 +120,32 @@ http
         return;
       }
     }
+    if (url.pathname === "/api/v1/nodes") {
+      send({
+        metadata: { resourceVersion: "1" },
+        items: [
+          {
+            metadata: { name: "worker-fixed" },
+            status: { allocatable: { cpu: "8", memory: "32Gi" } },
+          },
+          {
+            metadata: {
+              name: "tke-virtual",
+              labels: { "node.kubernetes.io/instance-type": "eklet" },
+            },
+            status: { allocatable: { cpu: "100k", memory: "100Ti" } },
+          },
+          {
+            metadata: {
+              name: "ack-virtual",
+              labels: { type: "virtual-kubelet" },
+            },
+            status: { allocatable: { cpu: "100k", memory: "100Ti" } },
+          },
+        ],
+      });
+      return;
+    }
     if (url.pathname.endsWith("/pods")) {
       send({
         items: [...applications.values()].map((app) => ({
@@ -132,7 +158,7 @@ http
               "sparkoperator.k8s.io/app-name": app.metadata.name,
             },
           },
-          spec: {},
+          spec: { nodeName: "worker-fixed" },
           status: { phase: "Running" },
         })),
       });

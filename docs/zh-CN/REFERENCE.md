@@ -157,6 +157,10 @@ TLS 代理后须配置规范外部 Origin：`PUBLIC_URL`（Helm `backend.publicU
 | `OIDC_SCOPES` | OIDC；要求固定回调，密钥仅保存在服务端 |
 | `OIDC_STATE_TTL` | OIDC；要求固定回调，密钥仅保存在服务端 |
 | `OIDC_USERNAME_CLAIM` | OIDC；要求固定回调，密钥仅保存在服务端 |
+| `OVERVIEW_AUTO_DETECT_VIRTUAL_NODES` | 总览资源池设置 |
+| `OVERVIEW_ELASTIC_NODE_LABELS` | 总览资源池设置 |
+| `OVERVIEW_FIXED_NODE_LABELS` | 总览资源池设置 |
+| `OVERVIEW_RESOURCE_POOLS_ENABLED` | 总览资源池设置 |
 | `PROMETHEUS_CPU_RATE_WINDOW` | 观测服务地址与查询配置 |
 | `PROMETHEUS_LOOKBACK` | 观测服务地址与查询配置 |
 | `PROMETHEUS_QUERY_STEP` | 观测服务地址与查询配置 |

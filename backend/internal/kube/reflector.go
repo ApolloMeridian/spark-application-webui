@@ -53,11 +53,15 @@ func (c *Client) reflectedApplications(ns string) ([]Object, bool) {
 	return result, true
 }
 func (c *Client) listApplicationSnapshot(ctx context.Context, ns string) ([]Object, string, error) {
+	return c.listSnapshot(ctx, c.sparkCollectionPath(ns))
+}
+
+func (c *Client) listSnapshot(ctx context.Context, path string) ([]Object, string, error) {
 	items := []Object{}
 	token, rv := "", ""
 	seen := map[string]bool{}
+	q := url.Values{"limit": {"500"}}
 	for {
-		q := url.Values{"limit": {"500"}}
 		if token != "" {
 			q.Set("continue", token)
 		}
@@ -68,7 +72,7 @@ func (c *Client) listApplicationSnapshot(ctx context.Context, ns string) ([]Obje
 				Continue        string `json:"continue"`
 			} `json:"metadata"`
 		}
-		if err := c.doJSON(ctx, http.MethodGet, c.sparkCollectionPath(ns)+"?"+q.Encode(), nil, &page); err != nil {
+		if err := c.doJSON(ctx, http.MethodGet, path+"?"+q.Encode(), nil, &page); err != nil {
 			return nil, "", err
 		}
 		if rv != "" && page.Metadata.ResourceVersion != rv {

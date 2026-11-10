@@ -6,8 +6,8 @@
 
 ```bash
 export DOCKER_BUILDKIT=1
-docker build -t spark-control-center:1.5.3 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.3 .
+docker build -t spark-control-center:1.5.4 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.4 .
 ```
 
 如已缓存 Nginx 基础镜像，可先生成前端产物再使用预构建 Dockerfile：
@@ -15,7 +15,7 @@ docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.3 .
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.3 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.4 .
 ```
 
 前端监听 `8080`，以 UID 101 运行，支持只读根文件系统，并提供 `/healthz`。Helm 在运行时挂载 `/usr/share/nginx/html/config/config.js`，无需为不同环境重建镜像。
@@ -35,7 +35,7 @@ helm upgrade --install spark-console ./charts/spark-control-center \
 真实部署先复制生产配置示例，再以私有配置覆盖环境参数：
 
 ```bash
-helm show values ./spark-control-center-1.5.3.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.4.tgz > values-production.local.yaml
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
@@ -102,7 +102,28 @@ kubectl -n prometheus get configmap prometheus-server \
   grep -n -E 'scrape_interval|job_name|cadvisor'
 ```
 
-CPU 使用 `container_cpu_usage_seconds_total`，内存使用 `container_memory_working_set_bytes`，集群容量使用 `kube_node_status_allocatable`。查询失败时保留 Kubernetes 作业信息，指标显示缺失而非假定为零。历史查询支持所选 RFC3339 时间范围，并根据 SparkApplication 状态保留历史 Pod 名称。
+CPU 使用 `container_cpu_usage_seconds_total`，内存使用 `container_memory_working_set_bytes`。查询失败时保留 Kubernetes 作业信息，缺少采样时显示“—”。历史查询支持所选 RFC3339 时间范围，并根据 SparkApplication 状态保留历史 Pod 名称。
+
+### 运行总览资源池
+
+固定池显示本池已调度 Spark Pod 的申请和使用量，以及固定节点的 Kubernetes `status.allocatable` 合计。进度条表示固定池的 Spark 请求占可分配容量的比例。弹性池显示本池已调度 Spark Pod 的申请和使用量，空闲时两者为 0。等待分配节点的 Pod 继续显示在调度分布中。
+
+默认通过 TKE 的 `node.kubernetes.io/instance-type=eklet`、ACK 的 `type=virtual-kubelet` 和已知虚拟节点污点识别弹性节点。GKE 弹性池可使用 `cloud.google.com/gke-nodepool` 匹配池名。以下配置适用于三种平台的自定义 Node 标签。
+
+```yaml
+overview:
+  resourcePools:
+    enabled: true
+    autoDetectVirtualNodes: false
+    fixedMatchLabels:
+      capacity.example.com/pool: fixed
+    elasticMatchLabels:
+      - capacity.example.com/pool: elastic
+```
+
+在节点池配置中设置相应的 **Kubernetes Node 标签**。同一规则内所有标签都要匹配，`elasticMatchLabels` 任意一项命中即可。弹性规则优先，`fixedMatchLabels: {}` 会把其余节点归入固定池。启用 `autoDetectVirtualNodes` 时，内置识别与自定义弹性规则同时生效。
+
+后端每 30 秒刷新节点清单。Chart 为后端 ServiceAccount 创建独立的 `nodes/list` 只读授权。如果 `rbac.create: false`，请在自管 RBAC 中授予该权限。节点清单不可用时，总览显示作业资源汇总。无需资源池数据的部署可以设置 `overview.resourcePools.enabled: false`。
 
 ## 配置边界与环境变量
 

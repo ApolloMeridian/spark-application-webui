@@ -38,7 +38,6 @@ type apiResponse struct {
 		ResultType string `json:"resultType"`
 		Result     []struct {
 			Metric map[string]string `json:"metric"`
-			Value  []any             `json:"value"`
 			Values [][]any           `json:"values"`
 		} `json:"result"`
 	} `json:"data"`
@@ -199,38 +198,6 @@ func (c *Client) queryRangeWithFallback(ctx context.Context, candidates []queryC
 		return rangeResult{}, nil
 	}
 	return rangeResult{podLabel: candidates[0].podLabel}, nil
-}
-
-func (c *Client) Capacity(ctx context.Context) (domain.ResourceAmount, error) {
-	queries := []string{
-		`sum(kube_node_status_allocatable{resource="cpu",unit="core"})`,
-		`sum(kube_node_status_allocatable{resource="memory",unit="byte"}) / 1073741824`,
-	}
-	var capacity domain.ResourceAmount
-	for index, query := range queries {
-		response, err := c.query(ctx, query)
-		if err != nil {
-			return domain.ResourceAmount{}, err
-		}
-		if len(response.Data.Result) == 0 {
-			continue
-		}
-		_, value, ok := parseSample(response.Data.Result[0].Value)
-		if !ok {
-			continue
-		}
-		if index == 0 {
-			capacity.CPU = value
-		} else {
-			capacity.MemoryGiB = value
-		}
-	}
-	return capacity, nil
-}
-
-func (c *Client) query(ctx context.Context, query string) (apiResponse, error) {
-	params := url.Values{"query": {query}}
-	return c.get(ctx, "/api/v1/query?"+params.Encode())
 }
 
 func (c *Client) queryRange(ctx context.Context, query string, start, end time.Time) (apiResponse, error) {

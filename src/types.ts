@@ -175,9 +175,16 @@ export interface DashboardSummary {
   requested: ResourceAmount;
   used: ResourceAmount;
   capacity: ResourceAmount;
+  resourcePools?: { fixed: OverviewPoolUsage; elastic: OverviewPoolUsage };
   metricsAvailable: boolean;
   nodePools: { baseline: number; autoscale: number; pending: number };
   history: { submitted: number; failed: number; from: string; to: string };
+}
+
+export interface OverviewPoolUsage {
+  requested: ResourceAmount;
+  used: ResourceAmount;
+  metricsAvailable: boolean;
 }
 
 export interface ApplicationFilters {

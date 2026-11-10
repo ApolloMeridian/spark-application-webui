@@ -75,6 +75,14 @@ spec:
               value: {{ join "," .Values.rbac.namespaces | quote }}
             - name: SPARKAPPLICATION_API_VERSION
               value: {{ .Values.backend.sparkApplicationAPIVersion | quote }}
+            - name: OVERVIEW_RESOURCE_POOLS_ENABLED
+              value: {{ .Values.overview.resourcePools.enabled | quote }}
+            - name: OVERVIEW_AUTO_DETECT_VIRTUAL_NODES
+              value: {{ .Values.overview.resourcePools.autoDetectVirtualNodes | quote }}
+            - name: OVERVIEW_FIXED_NODE_LABELS
+              value: {{ .Values.overview.resourcePools.fixedMatchLabels | toJson | quote }}
+            - name: OVERVIEW_ELASTIC_NODE_LABELS
+              value: {{ .Values.overview.resourcePools.elasticMatchLabels | toJson | quote }}
             - name: PROMETHEUS_URL
               value: {{ .Values.prometheus.url | quote }}
             - name: PROMETHEUS_QUERY_TIMEOUT

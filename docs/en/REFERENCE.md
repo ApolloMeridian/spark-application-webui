@@ -157,6 +157,10 @@ Set `PUBLIC_URL` (Helm `backend.publicURL`) to the canonical origin behind TLS p
 | `OIDC_SCOPES` | OIDC; explicit callback required, secrets server-side |
 | `OIDC_STATE_TTL` | OIDC; explicit callback required, secrets server-side |
 | `OIDC_USERNAME_CLAIM` | OIDC; explicit callback required, secrets server-side |
+| `OVERVIEW_AUTO_DETECT_VIRTUAL_NODES` | Overview resource pool settings |
+| `OVERVIEW_ELASTIC_NODE_LABELS` | Overview resource pool settings |
+| `OVERVIEW_FIXED_NODE_LABELS` | Overview resource pool settings |
+| `OVERVIEW_RESOURCE_POOLS_ENABLED` | Overview resource pool settings |
 | `PROMETHEUS_CPU_RATE_WINDOW` | Observability endpoint/query settings |
 | `PROMETHEUS_LOOKBACK` | Observability endpoint/query settings |
 | `PROMETHEUS_QUERY_STEP` | Observability endpoint/query settings |

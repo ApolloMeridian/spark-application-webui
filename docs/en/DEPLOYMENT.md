@@ -3,7 +3,7 @@
 ## Build and publish the UI image
 
 ```bash
-docker build -t spark-control-center:1.5.3 .
+docker build -t spark-control-center:1.5.4 .
 ```
 
 For an air-gapped build with a locally cached Nginx base image:
@@ -11,7 +11,7 @@ For an air-gapped build with a locally cached Nginx base image:
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.3 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.4 .
 ```
 
 The image listens on port `8080`, serves `/healthz`, runs as UID 101, and supports a read-only root filesystem. Helm replaces `/usr/share/nginx/html/config/config.js` at runtime, so one immutable image can be promoted through environments.
@@ -23,7 +23,7 @@ Use the repository root as Docker build context:
 ```bash
 export DOCKER_BUILDKIT=1
 docker build -f backend/Dockerfile \
-  -t spark-control-center-backend:1.5.3 .
+  -t spark-control-center-backend:1.5.4 .
 ```
 
 The backend runs as UID 65532 on port `8081`. Startup migrations maintain identity/sessions, tenant-scoped templates/alerts, audit/history, workflow/schedule/run/backfill state and alert coordination. The optional storage process maintains grants, operations and bootstrap records in the same identity database. The database user needs schema/table/index permissions; back up PostgreSQL before upgrading. See the complete [table inventory and API/environment reference](REFERENCE.md).
@@ -195,10 +195,31 @@ For rotated/deleted Driver logs, choose **Loki retained logs**, a time range and
 - SparkApplications are read directly from Kubernetes in `rbac.namespaces`; Pods, Driver logs, and core/v1 Events are correlated to each application.
 - A Kubernetes Watch per configured namespace feeds a same-origin SSE stream. The UI refreshes affected views immediately and retains periodic polling for watch reconnection or proxy timeout recovery.
 - PostgreSQL snapshots preserve deleted application details, generated lifecycle events, and rule-based diagnosis for common image-pull, scheduling, mount, OOM, lost-executor, and RBAC failures.
-- CPU uses `container_cpu_usage_seconds_total`; memory uses `container_memory_working_set_bytes`; cluster capacity uses `kube_node_status_allocatable`.
+- CPU usage comes from `container_cpu_usage_seconds_total`. Memory usage comes from `container_memory_working_set_bytes`.
 - Executor logs use Loki `query_range`, remain available after Executor Pod deletion, and can be ordered oldest-first or newest-first for a selected time range.
 - A Prometheus failure leaves Kubernetes application data available with live metrics omitted. Kubernetes and PostgreSQL are readiness dependencies.
 - `/healthz` checks process liveness; `/readyz` verifies Kubernetes access and PostgreSQL connectivity.
+
+### Overview resource pools
+
+The fixed pool shows requests and usage from scheduled Spark Pods on fixed nodes. Its capacity is the sum of those nodes' Kubernetes `status.allocatable`. The progress bar shows the share of that capacity requested by Spark Pods in the fixed pool. The elastic pool shows requests and usage from its scheduled Spark Pods. Both values are zero when the pool has no Spark Pods. Unscheduled Pods appear in the scheduling panel.
+
+The backend recognizes TKE supernodes by `node.kubernetes.io/instance-type=eklet` and ACK virtual nodes by `type=virtual-kubelet` or known virtual-node taints. For GKE, use `cloud.google.com/gke-nodepool` to match an autoscaling pool by name. Kubernetes Node labels can classify pools across all three platforms.
+
+```yaml
+overview:
+  resourcePools:
+    enabled: true
+    autoDetectVirtualNodes: false
+    fixedMatchLabels:
+      capacity.example.com/pool: fixed
+    elasticMatchLabels:
+      - capacity.example.com/pool: elastic
+```
+
+Apply the labels in each node pool's Kubernetes node configuration. Each rule requires all its labels to match. Any rule in `elasticMatchLabels` can match. Elastic rules take precedence. An empty `fixedMatchLabels: {}` places the remaining nodes in the fixed pool. Enable `autoDetectVirtualNodes` to combine the built-in detection with custom elastic rules.
+
+The backend refreshes the node inventory every 30 seconds. The chart grants its ServiceAccount cluster-scoped `nodes/list` access through a dedicated role and binding. Grant that permission in your managed RBAC when using `rbac.create: false`. The overview displays aggregate application usage when the node inventory is unavailable. Set `overview.resourcePools.enabled: false` to disable pool reporting.
 
 ## Tenant permissions in 1.5.3
 

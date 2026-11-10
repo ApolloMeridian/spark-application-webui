@@ -136,6 +136,7 @@ type SparkApplication struct {
 	SubmissionID       string                  `json:"submissionId"`
 	DriverPod          string                  `json:"driverPod"`
 	DriverNode         string                  `json:"driverNode,omitempty"`
+	DriverPhase        string                  `json:"-"`
 	DriverNodePool     string                  `json:"driverNodePool,omitempty"`
 	Driver             PodResource             `json:"driver"`
 	Executors          []ExecutorPod           `json:"executors"`
@@ -151,19 +152,31 @@ type SparkApplication struct {
 }
 
 type DashboardSummary struct {
-	Applications     []SparkApplication `json:"applications"`
-	Total            int                `json:"total"`
-	ByState          map[string]int     `json:"byState"`
-	Requested        ResourceAmount     `json:"requested"`
-	Used             ResourceAmount     `json:"used"`
-	Capacity         ResourceAmount     `json:"capacity"`
-	MetricsAvailable bool               `json:"metricsAvailable"`
+	Applications     []SparkApplication     `json:"applications"`
+	Total            int                    `json:"total"`
+	ByState          map[string]int         `json:"byState"`
+	Requested        ResourceAmount         `json:"requested"`
+	Used             ResourceAmount         `json:"used"`
+	Capacity         ResourceAmount         `json:"capacity"`
+	ResourcePools    *OverviewResourcePools `json:"resourcePools,omitempty"`
+	MetricsAvailable bool                   `json:"metricsAvailable"`
 	NodePools        struct {
 		Baseline  int `json:"baseline"`
 		Autoscale int `json:"autoscale"`
 		Pending   int `json:"pending"`
 	} `json:"nodePools"`
 	History HistorySummary `json:"history"`
+}
+
+type OverviewResourcePools struct {
+	Fixed   OverviewPoolUsage `json:"fixed"`
+	Elastic OverviewPoolUsage `json:"elastic"`
+}
+
+type OverviewPoolUsage struct {
+	Requested        ResourceAmount `json:"requested"`
+	Used             ResourceAmount `json:"used"`
+	MetricsAvailable bool           `json:"metricsAvailable"`
 }
 
 type HistorySummary struct {

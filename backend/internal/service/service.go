@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"sigs.k8s.io/yaml"
@@ -37,6 +38,7 @@ type Kubernetes interface {
 	ForceDeletePod(context.Context, string, string) error
 	TerminatePodByDeadline(context.Context, string, string) error
 	ListPods(context.Context, string) ([]kube.Pod, error)
+	ListNodes(context.Context) ([]kube.Object, error)
 	PodLog(context.Context, string, string, int) ([]string, error)
 	ListEvents(context.Context, string) ([]domain.KubernetesEvent, error)
 }
@@ -44,7 +46,6 @@ type Kubernetes interface {
 type Prometheus interface {
 	Usage(context.Context, string, []string) (map[string]metrics.PodUsage, []domain.MetricPoint, error)
 	UsageRange(context.Context, string, []string, time.Time, time.Time) (map[string]metrics.PodUsage, []domain.MetricPoint, error)
-	Capacity(context.Context) (domain.ResourceAmount, error)
 }
 
 const consoleOwnerAnnotation = "spark-control-center.io/submitted-by"
@@ -66,6 +67,7 @@ type Service struct {
 	listCache     map[string]*applicationCache
 	webhookClient *http.Client
 	webhookOnce   sync.Once
+	overviewNodes atomic.Pointer[overviewNodeSnapshot]
 }
 
 func New(cfg config.Config, kubernetes Kubernetes, prometheus Prometheus, audits store.AuditStore, logger *slog.Logger, logSources ...LogSource) *Service {
@@ -79,6 +81,9 @@ func New(cfg config.Config, kubernetes Kubernetes, prometheus Prometheus, audits
 func (s *Service) StartWatch(ctx context.Context) {
 	go s.collectHistory(ctx)
 	go s.reconcileStops(ctx)
+	if s.config.OverviewPoolsEnabled {
+		go s.collectOverviewNodes(ctx)
+	}
 	for _, namespace := range s.config.Namespaces {
 		namespace := namespace
 		go func() {
@@ -483,18 +488,10 @@ func (s *Service) SummaryForNamespaces(ctx context.Context, from, to time.Time, 
 		}
 	}
 	summary.MetricsAvailable = expectedMetricPods == 0 || observedMetricPods > 0
-	capacity, metricsErr := s.prometheus.Capacity(ctx)
-	if metricsErr != nil {
-		s.logger.Warn("Prometheus capacity query failed; using requested resources as chart denominator", "error", metricsErr)
-		capacity = summary.Requested
+	if nodes := s.overviewNodes.Load(); nodes != nil {
+		summary.Capacity = nodes.fixedCapacity
+		summary.ResourcePools = nodes.summarize(apps)
 	}
-	if capacity.CPU <= 0 {
-		capacity.CPU = max(summary.Requested.CPU, 1)
-	}
-	if capacity.MemoryGiB <= 0 {
-		capacity.MemoryGiB = max(summary.Requested.MemoryGiB, 1)
-	}
-	summary.Capacity = capacity
 	history := domain.HistorySummary{From: from.UTC().Format(time.RFC3339), To: to.UTC().Format(time.RFC3339)}
 	var historyErr error
 	if len(namespaces) == 0 || len(selectedNamespaces) > 0 {
@@ -869,6 +866,7 @@ func (s *Service) mapApplication(object kube.Object, pods []kube.Pod, usage map[
 			app.Driver = resource
 			app.DriverPod = pod.Name
 			app.DriverNode = pod.Node
+			app.DriverPhase = pod.Phase
 			app.DriverNodePool = pod.NodePool
 			continue
 		}

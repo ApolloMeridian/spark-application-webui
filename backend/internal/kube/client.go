@@ -206,6 +206,11 @@ func (c *Client) TerminatePodByDeadline(ctx context.Context, namespace, name str
 	return err
 }
 
+func (c *Client) ListNodes(ctx context.Context) ([]Object, error) {
+	items, _, err := c.listSnapshot(ctx, "/api/v1/nodes")
+	return items, err
+}
+
 func (c *Client) ListPods(ctx context.Context, namespace string) ([]Pod, error) {
 	if err := c.ensureNamespace(namespace); err != nil {
 		return nil, err
@@ -404,7 +409,7 @@ func ParseCPU(quantity string) float64 {
 	units := []struct {
 		suffix string
 		factor float64
-	}{{"n", 1e-9}, {"u", 1e-6}, {"m", 1e-3}}
+	}{{"n", 1e-9}, {"u", 1e-6}, {"m", 1e-3}, {"k", 1e3}, {"M", 1e6}, {"G", 1e9}, {"T", 1e12}, {"P", 1e15}, {"E", 1e18}}
 	for _, unit := range units {
 		if strings.HasSuffix(quantity, unit.suffix) {
 			value, _ := strconv.ParseFloat(strings.TrimSuffix(quantity, unit.suffix), 64)
@@ -422,7 +427,7 @@ func ParseMemoryGiB(quantity string) float64 {
 		bytes  float64
 	}{
 		{"Ei", 1 << 60}, {"Pi", 1 << 50}, {"Ti", 1 << 40}, {"Gi", 1 << 30}, {"Mi", 1 << 20}, {"Ki", 1 << 10},
-		{"E", 1e18}, {"P", 1e15}, {"T", 1e12}, {"G", 1e9}, {"M", 1e6}, {"K", 1e3},
+		{"E", 1e18}, {"P", 1e15}, {"T", 1e12}, {"G", 1e9}, {"M", 1e6}, {"K", 1e3}, {"k", 1e3},
 	}
 	for _, unit := range units {
 		if strings.HasSuffix(quantity, unit.suffix) {

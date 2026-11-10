@@ -6,17 +6,36 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useI18n } from '../i18n';
 import { sparkService } from '../service';
-import type { DashboardSummary, SparkApplication } from '../types';
+import type { DashboardSummary, OverviewPoolUsage, ResourceAmount, SparkApplication } from '../types';
 import { displayNow, formatCpu, formatMemory, formatTimestamp, stateColor } from '../utils';
 import { PageHeader } from '../components/PageHeader';
 import { StatusTag } from '../components/StatusTag';
 import { runtimeConfig } from '../runtimeConfig';
 import { useApplicationEvents } from '../useApplicationEvents';
 
-function UsageCard({ title, used, requested, capacity, formatter, accent, metricsAvailable }: { title: string; used: number; requested: number; capacity: number; formatter: (n: number) => string; accent: string; metricsAvailable: boolean }) {
-	const {t}=useI18n();
-  const percent = Math.round((requested / capacity) * 100);
-  return <Card className="usage-card"><div className="usage-title">{title}<ThunderboltOutlined /></div><div className="usage-primary">{metricsAvailable ? formatter(used) : '—'} <small>{metricsAvailable ? t('resourceUsed') : t('metricsUnavailable')}</small></div><div className="usage-secondary"><span>{formatter(requested)} {t('resourceRequested')}</span><span>{formatter(capacity)} {t('resourceCapacity')}</span></div><Progress percent={percent} showInfo={false} strokeColor={accent} trailColor="#edf1f6" /></Card>;
+function UsageCard({ title, used, requested, capacity, formatter, accent, metricsAvailable }: { title: string; used: number; requested: number; capacity?: number; formatter: (n: number) => string; accent: string; metricsAvailable: boolean }) {
+  const { t } = useI18n();
+  const percent = capacity && capacity > 0 ? Math.round((requested / capacity) * 100) : undefined;
+  return <Card className="usage-card">
+    <div className="usage-title">{title}<ThunderboltOutlined /></div>
+    <div className="usage-primary">{metricsAvailable ? formatter(used) : '—'} <small>{metricsAvailable ? t('resourceUsed') : t('metricsUnavailable')}</small></div>
+    <div className="usage-secondary">
+      <span>{formatter(requested)} {t('resourceRequested')}</span>
+      {capacity !== undefined && <span>{formatter(capacity)} {t('resourceCapacity')}</span>}
+    </div>
+    {percent !== undefined && <Progress percent={percent} showInfo={false} strokeColor={accent} trailColor="#edf1f6" />}
+  </Card>;
+}
+
+function PoolCards({ title, usage, capacity }: { title: string; usage: OverviewPoolUsage; capacity?: ResourceAmount }) {
+  const { t } = useI18n();
+  return <section aria-label={title} style={{ marginBottom: 16 }}>
+    <Typography.Title level={5}>{title}</Typography.Title>
+    <Row gutter={[16, 16]}>
+      <Col xs={24} md={12}><UsageCard title={t('cpu')} used={usage.used.cpu} requested={usage.requested.cpu} capacity={capacity?.cpu} formatter={formatCpu} accent="#2868f0" metricsAvailable={usage.metricsAvailable} /></Col>
+      <Col xs={24} md={12}><UsageCard title={t('memory')} used={usage.used.memoryGiB} requested={usage.requested.memoryGiB} capacity={capacity?.memoryGiB} formatter={formatMemory} accent="#7a58e8" metricsAvailable={usage.metricsAvailable} /></Col>
+    </Row>
+  </section>;
 }
 
 export function OverviewPage() {
@@ -40,7 +59,11 @@ export function OverviewPage() {
         ].map(([key, label, value, color]) => <Col xs={12} lg={8} xl={4} key={key as string}><Card className="stat-card" onClick={() => key === 'HISTORY_FAILED' ? navigate('/applications?state=FAILED') : key !== 'HISTORY' && navigate(`/applications?state=${key}`)}><div className="stat-accent" style={{ background: color as string }} /><Statistic title={<Space size={6}>{String(key).startsWith('HISTORY') && <HistoryOutlined />}{label}</Space>} value={value as number} suffix={!String(key).startsWith('HISTORY') ? <ArrowRightOutlined /> : undefined} /></Card></Col>)}
       </Row>
       <Row gutter={[16, 16]} className="dashboard-row">
-        <Col xs={24} xl={16}><Row gutter={[16, 16]}><Col xs={24} md={12}><UsageCard title={t('cpu')} used={summary.used.cpu} requested={summary.requested.cpu} capacity={summary.capacity.cpu} formatter={formatCpu} accent="#2868f0" metricsAvailable={summary.metricsAvailable} /></Col><Col xs={24} md={12}><UsageCard title={t('memory')} used={summary.used.memoryGiB} requested={summary.requested.memoryGiB} capacity={summary.capacity.memoryGiB} formatter={formatMemory} accent="#7a58e8" metricsAvailable={summary.metricsAvailable} /></Col></Row>
+        <Col xs={24} xl={16}>
+          {summary.resourcePools ? <>
+            <PoolCards title={t('fixedResourcePool')} usage={summary.resourcePools.fixed} capacity={summary.capacity} />
+            <PoolCards title={t('elasticResourcePool')} usage={summary.resourcePools.elastic} />
+          </> : <PoolCards title={t('applicationResources')} usage={summary} capacity={summary.capacity.cpu > 0 || summary.capacity.memoryGiB > 0 ? summary.capacity : undefined} />}
           <Card className="panel-card" title={<Space><ExclamationCircleOutlined className="danger-text" />{t('recentFailures')}</Space>} extra={<Button type="link" onClick={() => navigate('/applications?state=FAILED')}>{t('applications')} <ArrowRightOutlined /></Button>}>
             <Table size="small" pagination={false} rowKey="id" dataSource={failures} onRow={(record) => ({ onClick: () => navigate(`/applications/${record.namespace}/${record.name}`) })} columns={[
               { title: t('application'), dataIndex: 'name', render: (value, row) => <div><b>{value}</b><small className="cell-subtitle">{row.namespace}</small></div> },
