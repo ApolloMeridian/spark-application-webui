@@ -41,7 +41,7 @@ export function ApplicationsPage() {
     { title: t('action'), key: 'action', width: 130, fixed: 'right', render: (_, row) => <Space><Tooltip title={t('details')}><Button size="small" type="text" icon={<EyeOutlined />} onClick={() => navigate(`/applications/${encodeURIComponent(row.namespace)}/${encodeURIComponent(row.id)}`)} /></Tooltip>{runtimeConfig.features.kill && !row.historical && isKillableState(row.state) && <Button aria-label="kill" size="small" danger type="text" disabled={!canKill(session ?? 'viewer')} icon={<StopOutlined />} onClick={() => setTarget({ application: row, operation: 'kill' })} />}{runtimeConfig.features.kill && (row.historical || isTerminalState(row.state)) && (
       <Tooltip title={row.historical ? t('purgeHistory') : t('delete')}>
         <span><Button aria-label={row.historical ? t('purgeHistory') : 'delete'} size="small" danger type="text"
-          disabled={row.historical ? session?.role !== 'admin' : !canDelete(session ?? 'viewer')}
+          disabled={!canDelete(session ?? 'viewer') || (row.historical && session?.role !== 'admin')}
           icon={<DeleteOutlined />} onClick={() => setTarget({ application: row, operation: 'delete' })} /></span>
       </Tooltip>
     )}</Space> },

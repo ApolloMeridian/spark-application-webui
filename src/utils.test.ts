@@ -10,9 +10,11 @@ describe('formatters and permissions', () => {
     expect(formatMemory(undefined)).toBe('—');
   });
   it('maps every application state to a color', () => {
-    expect(Object.keys(stateColor)).toHaveLength(9);
+    expect(Object.keys(stateColor)).toHaveLength(10);
     expect(stateColor.RUNNING).toBe('#12a878');
     expect(stateColor.SUBMISSION_FAILED).toBeTruthy();
+    expect(stateColor.DELETED).toBeTruthy();
+    expect(isTerminalState('DELETED')).toBe(true);
   });
   it('enforces kill permissions', () => {
     expect(canKill('viewer')).toBe(false);
