@@ -127,12 +127,16 @@ func (s *PostgresStore) QueryLiveApplications(ctx context.Context, q domain.Appl
 	}
 	// Keep archived UIDs visible alongside same-name replacements. Never include
 	// archived resources in live resource totals or scheduler observations.
-	cte := `WITH a AS (
- SELECT namespace,application_name,application_id,tenant_id,owner_name,state,created_at,finished_at,payload,false AS historical FROM live_applications
+	cte := `WITH archived AS (
+ SELECT h.*, CASE WHEN h.state IN ('COMPLETED','FAILED','SUBMISSION_FAILED','KILLED') THEN h.state ELSE 'DELETED' END AS archived_state
+ FROM spark_application_history h WHERE h.snapshot<>'{}'::jsonb AND NOT EXISTS(SELECT 1 FROM live_applications l WHERE l.application_id=h.application_id AND l.namespace=h.namespace)
+ ), a AS (
+ SELECT l.namespace,l.application_name,l.application_id,l.tenant_id,l.owner_name,l.state,l.created_at,l.finished_at,l.payload,false AS historical
+ FROM live_applications l WHERE NOT EXISTS(SELECT 1 FROM spark_application_history h WHERE h.application_id=l.application_id AND h.purged_at IS NOT NULL)
  UNION ALL
- SELECT h.namespace,h.application_name,h.application_id,h.tenant_id,h.owner_name,h.state,h.snapshot->>'createdAt',COALESCE(h.snapshot->>'finishedAt',''),
- (h.snapshot-'logs'-'events'-'metrics'-'yaml') || jsonb_build_object('historical',true,'sparkUiAvailable',false,'lastObservedAt',h.last_seen_at,'state',h.state,'logs','[]'::jsonb,'events','[]'::jsonb,'metrics','[]'::jsonb,'yaml',''),true
- FROM spark_application_history h WHERE h.snapshot<>'{}'::jsonb AND NOT EXISTS(SELECT 1 FROM live_applications l WHERE l.application_id=h.application_id AND l.namespace=h.namespace)) `
+ SELECT h.namespace,h.application_name,h.application_id,h.tenant_id,h.owner_name,h.archived_state,h.snapshot->>'createdAt',COALESCE(h.snapshot->>'finishedAt',''),
+ (h.snapshot-'logs'-'events'-'metrics'-'yaml') || jsonb_build_object('historical',true,'sparkUiAvailable',false,'lastObservedAt',h.last_seen_at,'state',h.archived_state,'logs','[]'::jsonb,'events','[]'::jsonb,'metrics','[]'::jsonb,'yaml',''),true
+ FROM archived h) `
 	where := ` FROM a WHERE namespace=ANY($1) AND ($2='' OR tenant_id='' OR tenant_id=$2) AND (historical OR NOT EXISTS(SELECT 1 FROM workflow_resources r WHERE r.namespace=a.namespace AND r.application_name=a.application_name AND $2<>'' AND r.tenant_id<>$2)) AND ($3='' OR state=$3) AND ($4='' OR owner_name=$4) AND ($5='' OR strpos(lower(application_name||' '||namespace||' '||owner_name),lower($5))>0) AND (NOT $6 OR EXISTS(SELECT 1 FROM application_favorites f WHERE f.user_id=$7 AND f.namespace=a.namespace AND f.application_name IN (a.application_id,a.application_name)))`
 	args := []any{ns, domain.TenantScope(ctx), q.State, q.Owner, q.Keyword, q.Favorite, q.UserID}
 	if err = tx.QueryRow(ctx, cte+"SELECT count(*)"+where, args...).Scan(&result.Total); err != nil {

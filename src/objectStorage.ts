@@ -154,6 +154,21 @@ export class StorageError extends Error {
     super(code);
   }
 }
+export type StorageSort = "name" | "size" | "modified";
+export interface StoragePageQuery {
+  page: number;
+  limit: number;
+  search: string;
+  sort?: StorageSort;
+  direction?: "asc" | "desc";
+  refresh?: boolean;
+}
+export interface StoragePage {
+  objects: StorageObject[];
+  total: number;
+  page: number;
+}
+
 const query = (t: StorageTarget) =>
   new URLSearchParams(t as unknown as Record<string, string>);
 async function request<T>(
@@ -186,10 +201,32 @@ async function request<T>(
 }
 const apiService = {
   info: () => request<StorageInfo>("/connections"),
-  list: (t: StorageTarget, cursor = "", search = "") =>
+  list: (
+    t: StorageTarget,
+    cursor = "",
+    search = "",
+    limit = 100,
+    signal?: AbortSignal,
+  ) =>
     request<{ objects: StorageObject[]; next: string; scanned?: number }>(
-      `/objects?${query(t)}&cursor=${encodeURIComponent(cursor)}&search=${encodeURIComponent(search)}`,
+      `/objects?${query(t)}&cursor=${encodeURIComponent(cursor)}&search=${encodeURIComponent(search)}&limit=${limit}`,
+      {},
+      signal,
     ),
+  listPage: (
+    t: StorageTarget,
+    options: StoragePageQuery,
+    signal?: AbortSignal,
+  ) => {
+    const params = query(t);
+    params.set("page", String(options.page));
+    params.set("limit", String(options.limit));
+    params.set("search", options.search);
+    if (options.sort) params.set("sort", options.sort);
+    if (options.direction) params.set("direction", options.direction);
+    if (options.refresh) params.set("refresh", "true");
+    return request<StoragePage>(`/objects?${params}`, {}, signal);
+  },
   text: (t: StorageTarget) => request<StorageText>(`/text?${query(t)}`),
   create: (t: StorageTarget, content: string) =>
     request<StorageObject>(`/text?${query(t)}`, {
@@ -452,6 +489,35 @@ const mockService: typeof apiService = {
             .includes(search.trim().toLowerCase()),
       ),
       next: "",
+    };
+  },
+  listPage: async (t, options) => {
+    const { objects } = await mockService.list(t, "", options.search);
+    const direction = options.direction === "desc" ? -1 : 1;
+    const byName = (a: StorageObject, b: StorageObject) =>
+      a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+    if (options.sort === "name") {
+      objects.sort((a, b) => direction * byName(a, b));
+    } else if (options.sort) {
+      objects.sort((a, b) => {
+        if (a.directory !== b.directory) return a.directory ? 1 : -1;
+        const order =
+          options.sort === "size"
+            ? a.size - b.size
+            : (a.modified || "").localeCompare(b.modified || "");
+        return order ? direction * order : byName(a, b);
+      });
+    }
+    const total = objects.length;
+    const page = Math.min(
+      options.page,
+      Math.max(1, Math.ceil(total / options.limit)),
+    );
+    const start = (page - 1) * options.limit;
+    return {
+      objects: objects.slice(start, start + options.limit),
+      total,
+      page,
     };
   },
   text: async (t) => {

@@ -156,6 +156,18 @@ export class MockSparkApplicationService implements SparkApplicationService {
     app.historical = true; app.sparkUiAvailable = false; app.lastObservedAt = new Date().toISOString();
     localStorage.setItem(APPS_KEY, JSON.stringify(apps)); localStorage.setItem(AUDIT_KEY, JSON.stringify([audit, ...readAudit()])); return audit;
   }
+  async purgeApplicationHistory(namespace: string, id: string, operator: string, reason?: string) {
+    const apps = readApps();
+    const app = apps.find((item) => item.namespace === namespace && item.id === id);
+    if (!app?.historical) throw new Error('Archived application not found');
+    const audit: OperationAudit = {
+      id: `op-${Date.now()}`, applicationName: app.name, namespace, operator, operation: 'PURGE_HISTORY',
+      reason, timestamp: new Date().toISOString(), result: 'SUCCESS', message: 'Archived SparkApplication snapshot removed (mock)',
+    };
+    localStorage.setItem(APPS_KEY, JSON.stringify(apps.filter((item) => item !== app)));
+    localStorage.setItem(AUDIT_KEY, JSON.stringify([audit, ...readAudit()]));
+    return audit;
+  }
   async reset() { await wait(120); localStorage.setItem(APPS_KEY, JSON.stringify(cloneSeed())); localStorage.removeItem(AUDIT_KEY); }
 }
 
@@ -230,6 +242,11 @@ export class ApiSparkApplicationService implements SparkApplicationService {
   deleteApplication(namespace: string, name: string, operator: string, reason?: string) {
     return this.request<OperationAudit>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications/${encodeURIComponent(name)}`, {
       method: 'DELETE', body: JSON.stringify({ reason, requestedBy: operator }),
+    });
+  }
+  purgeApplicationHistory(namespace: string, id: string, _operator: string, reason?: string) {
+    return this.request<OperationAudit>(`/v1/namespaces/${encodeURIComponent(namespace)}/applications/${encodeURIComponent(id)}/history`, {
+      method: 'DELETE', body: JSON.stringify({ reason }),
     });
   }
   reset() { return this.request<void>('/v1/demo/reset', { method: 'POST' }); }

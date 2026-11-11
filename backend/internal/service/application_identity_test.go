@@ -47,6 +47,11 @@ func TestArchivedUIDNeverReadsOrMutatesSameNameReplacement(t *testing.T) {
 	if k.restartDisabled || k.driverTerminated || k.deleted {
 		t.Fatal("replacement was modified")
 	}
+	st.archived.State = "RUNNING"
+	archived, err := svc.GetApplication(context.Background(), "spark", "old-uid")
+	if err != nil || !archived.Historical || archived.State != "DELETED" || archived.SparkUIAvailable {
+		t.Fatal(archived, err)
+	}
 	from, to := historicalRange(old, time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC))
 	if from.Format(time.RFC3339) != old.CreatedAt || to.Format(time.RFC3339) != old.FinishedAt {
 		t.Fatal(from, to)

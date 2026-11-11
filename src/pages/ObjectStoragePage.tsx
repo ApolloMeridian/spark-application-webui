@@ -5,6 +5,7 @@ import {
   FileTextOutlined,
   FileOutlined,
   FolderOutlined,
+  LinkOutlined,
   ReloadOutlined,
   FileAddOutlined,
   FolderAddOutlined,
@@ -21,6 +22,7 @@ import {
   Empty,
   Form,
   Input,
+  Pagination,
   Modal,
   Popconfirm,
   Progress,
@@ -32,6 +34,7 @@ import {
   Tag,
   Typography,
 } from "antd";
+import type { TableProps } from "antd";
 import {
   lazy,
   Suspense,
@@ -58,6 +61,7 @@ import {
   type StorageInfo,
   type StorageObject,
   type StorageOperation,
+  type StorageSort,
   type StorageTarget,
 } from "../objectStorage";
 const StorageTextEditor = lazy(() => import("../components/StorageTextEditor"));
@@ -128,12 +132,18 @@ export default function ObjectStoragePage() {
   const previewRevision = useRef(0);
   const [prefix, setPrefix] = useState("");
   const [objects, setObjects] = useState<StorageObject[]>([]);
-  const [next, setNext] = useState("");
+  const [total, setTotal] = useState<number>();
+  const [hasNext, setHasNext] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
-  const [scanned, setScanned] = useState(0);
-  const [cursors, setCursors] = useState<string[]>([""]);
-  const [page, setPage] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [sort, setSort] = useState<{
+    field: StorageSort;
+    order: "ascend" | "descend";
+  }>();
+  const cursorListing = useRef<{ query: string; cursors: string[] }>();
+  const listRequest = useRef<AbortController>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [tab, setTab] = useState("files");
@@ -254,74 +264,141 @@ export default function ObjectStoragePage() {
       setPrefix("");
       setObjects([]);
     }
-    setPage(0);
-    setCursors([""]);
+    setPage(1);
+    setTotal(undefined);
     setPreview(undefined);
     setCopy(undefined);
     previewRevision.current++;
   }, [selected]);
-  const refreshList = useCallback(async () => {
-    if (!selected) return;
-    const r = JSON.parse(selected) as {
-      connection: string;
-      bucket: string;
-      prefix: string;
-    };
-    if (!prefix.startsWith(r.prefix)) return;
-    const rev = ++listRevision.current;
-    setBusy(true);
-    setError("");
-    try {
-      let out = await service.list(
-        { connection: r.connection, bucket: r.bucket, key: prefix },
-        cursors[page] || "",
-        search,
-      );
-      let scannedCount = out.scanned ?? out.objects.length;
-      const seen = new Set<string>();
-      while (search && !out.objects.length && out.next) {
-        if (rev !== listRevision.current) return;
-        if (seen.has(out.next)) throw new Error("invalid_cursor");
-        seen.add(out.next);
-        setScanned(scannedCount);
-        out = await service.list(
-          { connection: r.connection, bucket: r.bucket, key: prefix },
-          out.next,
+  const refreshList = useCallback(
+    async (refresh = false) => {
+      if (!selected || selectedRef.current !== selected) return;
+      const r = JSON.parse(selected) as {
+        connection: string;
+        bucket: string;
+        prefix: string;
+      };
+      if (!prefix.startsWith(r.prefix)) return;
+      listRequest.current?.abort();
+      const controller = new AbortController();
+      listRequest.current = controller;
+      const rev = ++listRevision.current;
+      const current = () =>
+        rev === listRevision.current && !controller.signal.aborted;
+      const listTarget = {
+        connection: r.connection,
+        bucket: r.bucket,
+        key: prefix,
+      };
+      const query = JSON.stringify([selected, prefix, search, pageSize]);
+      const fallback =
+        !refresh && cursorListing.current?.query === query
+          ? cursorListing.current
+          : undefined;
+      setBusy(true);
+      setError("");
+      try {
+        if (!fallback) {
+          try {
+            const result = await service.listPage(
+              listTarget,
+              {
+                page,
+                limit: pageSize,
+                search,
+                sort: sort?.field,
+                direction: sort
+                  ? sort.order === "ascend"
+                    ? "asc"
+                    : "desc"
+                  : undefined,
+                refresh,
+              },
+              controller.signal,
+            );
+            if (!current()) return;
+            if (typeof result.total === "number") {
+              cursorListing.current = undefined;
+              setTotal(result.total);
+              setHasNext(false);
+              setObjects(result.objects);
+              if (result.page !== page) setPage(result.page);
+              if (result.objects.length)
+                setDraftFolders((items) =>
+                  materializeDraftFolders(items, prefix),
+                );
+              return;
+            }
+          } catch (e) {
+            if (!(e instanceof Error) || e.message !== "directory_too_large")
+              throw e;
+          }
+        }
+        // Keep delimiter-based browsing available when an exact listing exceeds
+        // the directory scan budget. In that case only visited pages have cursors.
+        const cursors = fallback?.cursors ?? [""];
+        const cursorPage = Math.min(page, cursors.length);
+        let out = await service.list(
+          listTarget,
+          cursors[cursorPage - 1],
           search,
+          pageSize,
+          controller.signal,
         );
-        scannedCount += out.scanned ?? out.objects.length;
+        const seen = new Set<string>();
+        while (search && !out.objects.length && out.next) {
+          if (!current()) return;
+          if (seen.has(out.next)) throw new Error("invalid_cursor");
+          seen.add(out.next);
+          out = await service.list(
+            listTarget,
+            out.next,
+            search,
+            pageSize,
+            controller.signal,
+          );
+        }
+        if (current()) {
+          const next = cursors.slice(0, cursorPage);
+          if (out.next) next.push(out.next);
+          cursorListing.current = { query, cursors: next };
+          setTotal(undefined);
+          setHasNext(Boolean(out.next));
+          if (cursorPage !== page) setPage(cursorPage);
+          setObjects(out.objects);
+          if (out.objects.length)
+            setDraftFolders((items) => materializeDraftFolders(items, prefix));
+        }
+      } catch (e) {
+        if (current()) {
+          setObjects([]);
+          setTotal(undefined);
+          setHasNext(false);
+          setError(e instanceof Error ? e.message : "storage_unavailable");
+        }
+      } finally {
+        if (current()) setBusy(false);
       }
-      if (rev === listRevision.current) {
-        setObjects(out.objects);
-        setNext(out.next);
-        setScanned(scannedCount);
-        if (out.objects.length)
-          setDraftFolders((items) => materializeDraftFolders(items, prefix));
-      }
-    } catch (e) {
-      if (rev === listRevision.current) {
-        setObjects([]);
-        setError(e instanceof Error ? e.message : "storage_unavailable");
-      }
-    } finally {
-      if (rev === listRevision.current) setBusy(false);
-    }
-  }, [service, selected, prefix, page, cursors, search]);
+    },
+    [service, selected, prefix, page, pageSize, search, sort],
+  );
   useEffect(() => {
     void refreshList();
     return () => {
       listRevision.current++;
+      listRequest.current?.abort();
     };
   }, [refreshList]);
   const navigate = (value: string) => {
+    if (value === prefix && !search && page === 1) return;
     listRevision.current++;
     setSearch("");
     setSearchInput("");
     setObjects([]);
-    setNext("");
+    setTotal(undefined);
+    setHasNext(false);
     setPrefix(value);
-    setPage(0);
-    setCursors([""]);
+    setPage(1);
     setPreview(undefined);
     previewRevision.current++;
   };
@@ -344,7 +421,7 @@ export default function ObjectStoragePage() {
     try {
       await fn();
       void message.success(text("操作成功", "Operation completed"));
-      await refreshList();
+      await refreshList(true);
     } catch (e) {
       void message.error(report(e));
     } finally {
@@ -376,7 +453,7 @@ export default function ObjectStoragePage() {
       setUploadOpen(false);
       setFile(undefined);
       void message.success(text("上传完成", "Upload completed"));
-      await refreshList();
+      await refreshList(true);
     } catch (e) {
       void message.error(
         controller.signal.aborted
@@ -439,7 +516,32 @@ export default function ObjectStoragePage() {
     objects,
     (key) => allowed("list", key) && allowed("upload", key),
   );
-  const visibleObjects = [...(search ? [] : pendingRows), ...objects];
+  const visibleObjects = [
+    ...(search || page !== 1 ? [] : pendingRows),
+    ...objects,
+  ];
+  const copyPath = async (key: string) => {
+    try {
+      await navigator.clipboard.writeText(`${root?.bucket}/${key}`);
+      void message.success(text("路径已复制", "Path copied"));
+    } catch {
+      void message.error(text("复制失败", "Copy failed"));
+    }
+  };
+  const sortObjects: TableProps<StorageObject>["onChange"] = (
+    _,
+    __,
+    sorter,
+  ) => {
+    const value = Array.isArray(sorter) ? sorter[0] : sorter;
+    setSort(
+      value?.order
+        ? { field: value.columnKey as StorageSort, order: value.order }
+        : undefined,
+    );
+    setPage(1);
+  };
+  const canSort = total !== undefined || !cursorListing.current;
   const currentDraft = draftFolders.includes(prefix);
   return (
     <div className="object-storage-page">
@@ -467,7 +569,7 @@ export default function ObjectStoragePage() {
           showIcon
           message={report(new Error(error))}
           action={
-            <Button onClick={() => void load().then(refreshList)}>
+            <Button onClick={() => void load().then(() => refreshList(true))}>
               {text("重试", "Retry")}
             </Button>
           }
@@ -503,7 +605,7 @@ export default function ObjectStoragePage() {
                     <Button
                       icon={<ReloadOutlined />}
                       disabled={!root}
-                      onClick={() => void refreshList()}
+                      onClick={() => void refreshList(true)}
                     />
                     <Button
                       icon={<CopyOutlined />}
@@ -593,50 +695,21 @@ export default function ObjectStoragePage() {
                   )}
                   <Input.Search
                     aria-label={text("搜索当前目录", "Search current prefix")}
-                    placeholder={text(
-                      "搜索当前目录的文件与文件夹（不展开子目录）",
-                      "Search files and folders in this directory only",
-                    )}
+                    placeholder={text("搜索", "Search")}
                     value={searchInput}
                     maxLength={256}
                     allowClear
                     enterButton={text("搜索", "Search")}
-                    disabled={!root || busy}
+                    disabled={!root}
                     onChange={(e) => setSearchInput(e.target.value)}
                     onSearch={(value) => {
-                      listRevision.current++;
-                      setSearch(value.trim());
-                      setScanned(0);
-                      setPage(0);
-                      setCursors([""]);
-                      setObjects([]);
-                      setNext("");
+                      const term = value.trim();
+                      if (term === search && page === 1) return;
+                      setSearch(term);
+                      setPage(1);
                     }}
                     style={{ maxWidth: 680, marginBottom: 16 }}
                   />
-                  {search && (
-                    <Alert
-                      type="info"
-                      showIcon
-                      style={{ marginBottom: 16 }}
-                      message={text(
-                        `仅匹配当前目录名称（不区分大小写），不展开子目录或读取文件内容。已扫描 ${scanned} 项，匹配 ${objects.length} 项。${next ? "下一页继续检索。" : busy ? "正在检索…" : "检索完成。"}`,
-                        `Case-insensitive names in this directory only; no subfolder traversal or content reads. Scanned ${scanned}, matched ${objects.length}. ${next ? "Next searches further." : busy ? "Searching…" : "Search complete."}`,
-                      )}
-                      action={
-                        busy ? (
-                          <Button
-                            onClick={() => {
-                              listRevision.current++;
-                              setBusy(false);
-                            }}
-                          >
-                            {text("取消检索", "Cancel search")}
-                          </Button>
-                        ) : undefined
-                      }
-                    />
-                  )}
                   {!root && !busy ? (
                     <Empty
                       description={text(
@@ -652,10 +725,17 @@ export default function ObjectStoragePage() {
                       dataSource={visibleObjects}
                       pagination={false}
                       scroll={{ x: 900 }}
+                      onChange={sortObjects}
                       columns={[
                         {
                           title: text("名称", "Name"),
                           dataIndex: "key",
+                          key: "name",
+                          sorter: canSort,
+                          sortOrder:
+                            sort?.field === "name" && canSort
+                              ? sort.order
+                              : null,
                           width: 390,
                           render: (_: string, o: StorageObject) => (
                             <Space>
@@ -698,12 +778,24 @@ export default function ObjectStoragePage() {
                         },
                         {
                           title: text("大小", "Size"),
+                          key: "size",
+                          sorter: canSort,
+                          sortOrder:
+                            sort?.field === "size" && canSort
+                              ? sort.order
+                              : null,
                           width: 110,
                           render: (_: unknown, o: StorageObject) =>
                             o.directory ? "—" : formatStorageSize(o.size),
                         },
                         {
                           title: text("修改时间", "Modified"),
+                          key: "modified",
+                          sorter: canSort,
+                          sortOrder:
+                            sort?.field === "modified" && canSort
+                              ? sort.order
+                              : null,
                           width: 200,
                           render: (_: unknown, o: StorageObject) =>
                             o.directory ? "—" : formatTimestamp(o.modified),
@@ -720,20 +812,7 @@ export default function ObjectStoragePage() {
                                     "Copy folder path",
                                   )}
                                   icon={<CopyOutlined />}
-                                  onClick={() => {
-                                    void navigator.clipboard
-                                      .writeText(`${root?.bucket}/${o.key}`)
-                                      .then(() =>
-                                        message.success(
-                                          text("路径已复制", "Path copied"),
-                                        ),
-                                      )
-                                      .catch(() =>
-                                        message.error(
-                                          text("复制失败", "Copy failed"),
-                                        ),
-                                      );
-                                  }}
+                                  onClick={() => void copyPath(o.key)}
                                 />
                                 {pendingRows.some(
                                   (draft) => draft.key === o.key,
@@ -802,32 +881,87 @@ export default function ObjectStoragePage() {
                                     disabled={!allowed("delete", o.key)}
                                   />
                                 </Popconfirm>
+                                <Button
+                                  aria-label={text(
+                                    "复制文件路径",
+                                    "Copy file path",
+                                  )}
+                                  title={text("复制文件路径", "Copy file path")}
+                                  icon={<LinkOutlined />}
+                                  onClick={() => void copyPath(o.key)}
+                                />
                               </Space>
                             ),
                         },
                       ]}
                     />
                   )}
-                  <Space style={{ marginTop: 16 }}>
-                    <Button
-                      disabled={page === 0 || busy}
-                      onClick={() => setPage(page - 1)}
-                    >
-                      {text("上一页", "Previous")}
-                    </Button>
-                    <span>
-                      {text("第", "Page ")} {page + 1} {text("页", "")}
-                    </span>
-                    <Button
-                      disabled={!next || busy}
-                      onClick={() => {
-                        setCursors([...cursors.slice(0, page + 1), next]);
-                        setPage(page + 1);
+                  {root && total !== undefined && (
+                    <Pagination
+                      align="center"
+                      style={{ marginTop: 16, flexWrap: "wrap" }}
+                      current={page}
+                      total={total}
+                      pageSize={pageSize}
+                      pageSizeOptions={[10, 20, 50, 100]}
+                      showSizeChanger
+                      showQuickJumper
+                      showTotal={(count) =>
+                        text(`总条目为：${count}`, `Total items: ${count}`)
+                      }
+                      disabled={busy}
+                      onChange={(nextPage, nextSize) => {
+                        setPage(nextSize === pageSize ? nextPage : 1);
+                        setPageSize(nextSize);
                       }}
-                    >
-                      {text("下一页", "Next")}
-                    </Button>
-                  </Space>
+                    />
+                  )}
+                  {root &&
+                    total === undefined &&
+                    cursorListing.current &&
+                    !error && (
+                      <Space
+                        wrap
+                        style={{
+                          display: "flex",
+                          justifyContent: "center",
+                          marginTop: 16,
+                        }}
+                      >
+                        <Typography.Text type="secondary">
+                          {text(
+                            "目录较大，按顺序浏览",
+                            "Sequential browsing for this large directory",
+                          )}
+                        </Typography.Text>
+                        <Button
+                          disabled={page === 1 || busy}
+                          onClick={() => setPage(page - 1)}
+                        >
+                          {text("上一页", "Previous")}
+                        </Button>
+                        <Typography.Text strong>{page}</Typography.Text>
+                        <Button
+                          disabled={!hasNext || busy}
+                          onClick={() => setPage(page + 1)}
+                        >
+                          {text("下一页", "Next")}
+                        </Button>
+                        <Select
+                          aria-label={text("每页条数", "Items per page")}
+                          value={pageSize}
+                          options={[10, 20, 50, 100].map((value) => ({
+                            value,
+                            label: text(`${value} / 页`, `${value} / page`),
+                          }))}
+                          disabled={busy}
+                          onChange={(value) => {
+                            setPageSize(value);
+                            setPage(1);
+                          }}
+                        />
+                      </Space>
+                    )}
                 </>
               ),
             },

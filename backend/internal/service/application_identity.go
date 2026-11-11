@@ -41,15 +41,13 @@ func (s *Service) resolveApplication(ctx context.Context, ns, ref string) (kube.
 		return nil, nil, err
 	}
 	if saved != nil && (HTTPStatus(err) == 404 || kube.String(object, "metadata", "uid") != saved.ID) {
-		saved.Historical = true
-		saved.SparkUIAvailable = false
+		markArchived(saved)
 		return nil, saved, nil
 	}
 	if err != nil {
 		app, e := s.audits.GetApplicationSnapshot(ctx, ns, name)
 		if e == nil {
-			app.Historical = true
-			app.SparkUIAvailable = false
+			markArchived(&app)
 			return nil, &app, nil
 		}
 		if !errors.Is(e, store.ErrSnapshotNotFound) {
@@ -69,6 +67,40 @@ func (s *Service) resolveApplication(ctx context.Context, ns, ref string) (kube.
 		}
 	}
 	return object, nil, nil
+}
+
+func markArchived(app *domain.SparkApplication) {
+	app.Historical = true
+	app.SparkUIAvailable = false
+	if !terminalState(app.State) {
+		app.State = "DELETED"
+		app.Lifecycle = buildLifecycle(*app)
+	}
+}
+
+func (s *Service) PurgeApplicationHistory(ctx context.Context, namespace, id, operator, reason string) (domain.OperationAudit, error) {
+	object, snapshot, err := s.resolveApplication(ctx, namespace, "uid:"+id)
+	if err != nil {
+		return domain.OperationAudit{}, err
+	}
+	if object != nil || snapshot == nil {
+		return domain.OperationAudit{}, &kube.APIError{StatusCode: 409, Message: "only archived application instances can be removed"}
+	}
+	history, ok := s.audits.(interface {
+		PurgeApplicationSnapshot(context.Context, string, domain.OperationAudit) error
+	})
+	if !ok {
+		return domain.OperationAudit{}, &kube.APIError{StatusCode: 503, Message: "application history is unavailable"}
+	}
+	audit := domain.NewOperationAudit(newID(), namespace, snapshot.Name, operator, "PURGE_HISTORY", reason, "SUCCESS", "Archived SparkApplication snapshot removed: "+snapshot.ID)
+	audit.TenantID = domain.TenantScope(ctx)
+	if err := history.PurgeApplicationSnapshot(ctx, snapshot.ID, audit); err != nil {
+		if errors.Is(err, store.ErrSnapshotNotFound) {
+			return domain.OperationAudit{}, &kube.APIError{StatusCode: 404, Message: "archived application instance not found"}
+		}
+		return domain.OperationAudit{}, err
+	}
+	return audit, nil
 }
 
 func archivedWriteError() error {

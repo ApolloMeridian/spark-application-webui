@@ -33,7 +33,27 @@ func (s *Server) sparkUIPreflight(w http.ResponseWriter, r *http.Request) {
 // reopen the same page with a fresh read-only ticket, without reading frame DOM.
 func sparkUIBootstrap(data []byte, prefix string) []byte {
 	root, _ := json.Marshal(prefix)
-	script := `<script>(function(){const root=` + string(root) + `;const path=location.pathname.startsWith(root+'/')?location.pathname.slice(root.length+1):'';parent.postMessage({type:'spark-ui-location',path:path+location.search+location.hash},'*');})();</script>`
+	// Spark uses localStorage for view preferences. Reading the native getter
+	// throws in an opaque sandbox and can interrupt jQuery before ajaxStop.
+	// Supply per-document preferences without exposing any console storage.
+	script := `<script>(function(){
+  for (const name of ['localStorage', 'sessionStorage']) {
+    try { void window[name]; } catch {
+      const values = new Map();
+      Object.defineProperty(window, name, { value: {
+        getItem(key) { return values.get(String(key)) ?? null; },
+        setItem(key, value) { values.set(String(key), String(value)); },
+        removeItem(key) { values.delete(String(key)); },
+        clear() { values.clear(); },
+        key(index) { return Array.from(values.keys())[index] ?? null; },
+        get length() { return values.size; }
+      }});
+    }
+  }
+  const root = ` + string(root) + `;
+  const path = location.pathname.startsWith(root + '/') ? location.pathname.slice(root.length + 1) : '';
+  parent.postMessage({type:'spark-ui-location',path:path+location.search+location.hash},'*');
+})();</script>`
 	if i := bytes.Index(bytes.ToLower(data), []byte("<head>")); i >= 0 {
 		return append(append(append([]byte{}, data[:i+6]...), []byte(script)...), data[i+6:]...)
 	}

@@ -3,7 +3,7 @@
 ## Build and publish the UI image
 
 ```bash
-docker build -t spark-control-center:1.5.4 .
+docker build -t spark-control-center:1.5.5 .
 ```
 
 For an air-gapped build with a locally cached Nginx base image:
@@ -11,7 +11,7 @@ For an air-gapped build with a locally cached Nginx base image:
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.4 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.5 .
 ```
 
 The image listens on port `8080`, serves `/healthz`, runs as UID 101, and supports a read-only root filesystem. Helm replaces `/usr/share/nginx/html/config/config.js` at runtime, so one immutable image can be promoted through environments.
@@ -23,7 +23,7 @@ Use the repository root as Docker build context:
 ```bash
 export DOCKER_BUILDKIT=1
 docker build -f backend/Dockerfile \
-  -t spark-control-center-backend:1.5.4 .
+  -t spark-control-center-backend:1.5.5 .
 ```
 
 The backend runs as UID 65532 on port `8081`. Startup migrations maintain identity/sessions, tenant-scoped templates/alerts, audit/history, workflow/schedule/run/backfill state and alert coordination. The optional storage process maintains grants, operations and bootstrap records in the same identity database. The database user needs schema/table/index permissions; back up PostgreSQL before upgrading. See the complete [table inventory and API/environment reference](REFERENCE.md).
@@ -230,6 +230,8 @@ New admin/viewer accounts default to their corresponding built-in tenants. Exist
 ## Application instances and termination in 1.5.3
 
 Application details use `/applications/<namespace>/<Kubernetes UID>`. Spark IDs may be absent before startup and can change on an Operator retry, so they are displayed as run information rather than used as the resource identity. Old name links resolve to the live or latest visible instance. Deleting a CR retains its observed PostgreSQL snapshot and same-name replacements appear separately. Only the paginated application browser includes archived instances; resource totals and scheduler reconciliation use live Kubernetes state.
+
+An application removed from Kubernetes while active appears as `DELETED` in history. Archived applications with an observed terminal state retain that state. Administrators can clear the snapshot for a specific UID from the list or details. Clearing the record removes its entry from historical statistics and creates an audit entry.
 
 Historical Loki and Prometheus queries are restricted to the instance lifetime. An archived UID cannot stop/delete or proxy the Spark UI of a replacement. Kubernetes log requests for archived instances return an explicit unavailable response; use retained Loki logs or the saved diagnostic tail. Snapshot collection cannot recover applications it never observed, deleted log segments or expired metrics.
 

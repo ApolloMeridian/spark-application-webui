@@ -443,10 +443,9 @@ try {
     await page
       .getByRole("button", { name: "config.yaml", exact: true })
       .click();
-    assert(
-      await page
-        .getByRole("button", { name: "Replace · Ctrl+H", exact: true })
-        .isDisabled(),
+    assert.equal(
+      await page.getByRole("button", { name: "Replace · Ctrl+H", exact: true }).count(),
+      0,
     );
     assert(
       await page

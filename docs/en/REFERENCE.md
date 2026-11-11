@@ -37,6 +37,7 @@ JSON models: `src/types.ts`, `src/workflows.ts`, `src/objectStorage.ts` and `bac
 | GET | `/v1/namespaces/{namespace}/applications/{name}/driver/logs` |
 | GET | `/v1/namespaces/{namespace}/applications/{name}/executors/{pod}/logs` |
 | PUT | `/v1/namespaces/{namespace}/applications/{name}/favorite` |
+| DELETE | `/v1/namespaces/{namespace}/applications/{name}/history` |
 | POST | `/v1/namespaces/{namespace}/applications/{name}/kill` |
 | GET | `/v1/namespaces/{namespace}/applications/{name}/metrics` |
 | GET | `/v1/namespaces/{namespace}/applications/{name}/prepare` |

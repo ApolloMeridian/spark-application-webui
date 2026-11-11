@@ -1,20 +1,20 @@
-# 对象存储插件（1.5.4）
+# 对象存储插件（1.5.5）
 
 这是可选的独立无状态服务，不是嵌入 MinIO Console。默认关闭，不创建插件资源，不要求存储凭证，不改变已有 Spark 作业/工作流能力。
 
 ## 构建与安装
 
 ```bash
-docker build -t spark-control-center:1.5.4 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.4 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.4 .
+docker build -t spark-control-center:1.5.5 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.5 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.5 .
 helm package charts/spark-control-center
 
 # 首次部署时创建单文件配置；已配置过的文件不要覆盖。
-helm show values ./spark-control-center-1.5.4.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.5.tgz > values-production.local.yaml
 # 修改此文件中的镜像仓库、Endpoint、bucket、认证、数据库和初始授权。
 # 根据内网实际仓库分别 docker tag / docker push 三个镜像。
-helm upgrade --install spark-console ./spark-control-center-1.5.4.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.5.5.tgz \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
 ```
@@ -76,7 +76,9 @@ kubectl -n spark-console create configmap spark-console-storage-wif \
 
 ### 当前目录搜索
 
-在当前授权 Prefix 这一层按名称搜索文件与文件夹，不区分大小写。子目录只作为目录项返回，不递归展开；S3/MinIO 与 GCS 均使用 `/` delimiter 分页列举元数据。插件限制单次扫描量，浏览器自动越过没有匹配项的批次，直到找到匹配或到达目录末尾；通过“下一页”继续查看匹配项，长时间搜索可取消。不下载文件内容，不为只读检索增加审计记录。清空搜索恢复浏览，切换目录重置查询；游标仍绑定用户、租户、授权、Prefix 和检索条件。目录工具栏与文件夹行提供“复制目录路径”，格式为 `bucket/prefix/`。
+在当前授权 Prefix 这一层按名称搜索文件与文件夹，匹配时忽略大小写。S3/MinIO 与 GCS 使用 `/` delimiter 将子目录作为目录项返回。列表显示匹配条目数，支持跨页按名称、大小、修改时间排序。点击表头可切换升序、降序和默认顺序。每页可选 10、20、50 或 100 项，在跳转框输入页码后按回车直达。清空搜索即可恢复浏览。目录工具栏与文件夹行可复制 `bucket/prefix/`，文件行可复制 `bucket/prefix/object`。
+
+数字分页使用短时缓存的目录元数据。超出扫描预算的目录切换为顺序浏览，游标绑定用户、租户、授权、Prefix 和搜索条件。只读搜索使用对象元数据。
 
 ### 临时文件夹
 
@@ -86,7 +88,7 @@ kubectl -n spark-console create configmap spark-console-storage-wif \
 
 变更用户租户不会把原租户授权自动迁移到新租户，须重新核对并配置授权；用户已停用或变更租户后，管理员仍可撤销旧授权。Helm 初始授权仅在配置租户内首次匹配账户时应用，撤销结果不会因重启而覆盖。初始授权的周期同步与用户选择器相互独立；创建账户或修改租户权限后刷新“目录权限”即可，无需等待初始授权同步。
 
-页面只展示授权入口，目录来自 object key 的 `/` 前缀，不等同于本地目录。每页 100 条，分页游标绑定身份、目录与当前授权。点路径段、反斜杠、控制字符和超过 1024 字节的键不支持；中文、空格与百分号按原始 key 处理。撤权作用于后续请求；已经开始的传输不承诺瞬间中断。
+页面展示已授权入口，默认每页 10 项。目录由 object key 的 `/` 前缀表示。点路径段、反斜杠、控制字符和超过 1024 字节的键不支持。中文、空格与百分号按原始 key 处理。撤权作用于后续请求。
 
 `objectStorage.limits.textMaxBytes` 控制可编辑大小和有界预览，默认 1048576 字节，可配置为 1024～8388608 字节。最多读取上限+1 字节，截断时保留完整 UTF-8 字符。超过上限的文本以截断只读方式打开，提示完整文件大小，剩余内容下载到本地查看。后端同样拒绝保存超限源文件；调高上限需同步评估内存和并发，大量 JSON 转义的保存请求可能需要接近文本上限六倍加额外头部的 Nginx/Ingress body 配额。拒绝二进制、NUL、压缩自动展开；HTML/SVG/Markdown 不渲染、不执行脚本。
 
@@ -115,7 +117,7 @@ npm install
 npm test
 npm run build
 node scripts/object-storage-local-test.mjs
-QA_VERSION=1.5.4 node scripts/container-object-storage-smoke.mjs
+QA_VERSION=1.5.5 node scripts/container-object-storage-smoke.mjs
 node scripts/object-storage-helm-test.mjs
 ```
 

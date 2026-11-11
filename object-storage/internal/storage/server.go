@@ -33,6 +33,7 @@ type Server struct {
 	Logger        *slog.Logger
 	slots         chan struct{}
 	requestsSlots chan struct{}
+	directories   directoryCache
 	nodeID        string
 	Requests      atomic.Uint64
 	Denied        atomic.Uint64
@@ -44,7 +45,7 @@ type principal struct {
 }
 
 func NewServer(c Config, store *Store, key []byte, providers map[string]Provider, logger *slog.Logger) *Server {
-	return &Server{Config: c, Store: store, Key: key, Providers: providers, Logger: logger, slots: make(chan struct{}, c.Concurrent), requestsSlots: make(chan struct{}, c.Concurrent*4), nodeID: newID()}
+	return &Server{Config: c, Store: store, Key: key, Providers: providers, Logger: logger, slots: make(chan struct{}, c.Concurrent), requestsSlots: make(chan struct{}, c.Concurrent*4), directories: newDirectoryCache(), nodeID: newID()}
 }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -298,6 +299,11 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		s.respond(w, nil, e)
 		return
 	}
+	if r.URL.Query().Has("page") {
+		out, err := s.numberedPage(r, p, directoryKey{c, b, k}, search)
+		s.respond(w, out, err)
+		return
+	}
 	u := who(r)
 	cursor := ""
 	if value := r.URL.Query().Get("cursor"); value != "" {
@@ -333,8 +339,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		for _, o := range out.Objects {
-			relative := strings.TrimSuffix(strings.TrimPrefix(o.Key, k), "/")
-			if !ValidKey(o.Key) || !strings.HasPrefix(o.Key, k) || strings.Contains(relative, "/") {
+			if !immediateObject(o, k) {
 				s.respond(w, nil, fail(502, "invalid_provider_response"))
 				return
 			}

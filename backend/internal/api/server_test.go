@@ -60,6 +60,9 @@ func (fakeService) KillApplication(context.Context, string, string, string, stri
 func (fakeService) DeleteApplication(context.Context, string, string, string, string) (domain.OperationAudit, error) {
 	return domain.OperationAudit{Operation: "DELETE", Result: "SUCCESS"}, nil
 }
+func (fakeService) PurgeApplicationHistory(context.Context, string, string, string, string) (domain.OperationAudit, error) {
+	return domain.OperationAudit{Operation: "PURGE_HISTORY", Result: "SUCCESS"}, nil
+}
 func (fakeService) ListAudit(context.Context) ([]domain.OperationAudit, error) {
 	return []domain.OperationAudit{}, nil
 }
@@ -176,6 +179,25 @@ func TestLocalSession(t *testing.T) {
 	serveAuthenticated(handler, cookie, recorder, httptest.NewRequest(http.MethodGet, "/v1/auth/me", nil))
 	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"username":"alice"`)) {
 		t.Fatalf("unexpected response: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPurgeApplicationHistoryRequiresAdministrator(t *testing.T) {
+	for _, test := range []struct {
+		role   domain.UserRole
+		status int
+	}{
+		{domain.RoleAdmin, http.StatusOK},
+		{domain.RoleViewer, http.StatusForbidden},
+	} {
+		handler, cookie := authenticatedHandler(t, test.role)
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodDelete, "/v1/namespaces/spark/applications/old-uid/history", strings.NewReader(`{"reason":"cleanup"}`))
+		r.Header.Set("Content-Type", "application/json")
+		serveAuthenticated(handler, cookie, w, r)
+		if w.Code != test.status {
+			t.Fatalf("%s: %d %s", test.role, w.Code, w.Body.String())
+		}
 	}
 }
 

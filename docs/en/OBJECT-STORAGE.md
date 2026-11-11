@@ -1,20 +1,20 @@
-# Object storage plugin (1.5.4)
+# Object storage plugin (1.5.5)
 
 An optional, independently deployed stateless service, not an embedded MinIO Console. It is disabled by default, creates no plugin resources when disabled and requires no storage credentials.
 
 ## Build and deploy
 
 ```bash
-docker build -t spark-control-center:1.5.4 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.4 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.4 .
+docker build -t spark-control-center:1.5.5 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.5 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.5 .
 helm package charts/spark-control-center
 
 # First deployment only: export the production template; preserve existing environment values.
-helm show values ./spark-control-center-1.5.4.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.5.tgz > values-production.local.yaml
 # Adapt images, endpoints, bucket, authentication, database and bootstrap grants in that file.
 # Tag and push all three images to your own registry if needed.
-helm upgrade --install spark-console ./spark-control-center-1.5.4.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.5.5.tgz \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
 ```
@@ -70,7 +70,9 @@ Replace project numbers, pool/provider and audiences. For impersonation use the 
 
 ### Search within a prefix
 
-Search file and folder names in the current authorized prefix, case-insensitively. Child directories are returned as directory entries and are never traversed. The plugin uses the provider's `/` delimiter for both S3/MinIO and GCS. It scans bounded metadata batches and the browser automatically continues past empty batches until it finds matches or reaches the end. Use **Next** for further matches and **Cancel search** to stop a long search. No file contents are downloaded and read-only searches add no audit rows. Clear the search to return to browsing; changing directories resets it. Cursors remain bound to the user, tenant, grants, prefix and query. The directory toolbar and folder rows offer **Copy folder path**, producing `bucket/prefix/`.
+Search file and folder names in the current authorized prefix, case-insensitively. S3/MinIO and GCS list child directories as entries through the `/` delimiter. The browser shows the number of matching entries and supports sorting by name, size or modification time across pages. Click a column header to cycle through ascending, descending and default order. Choose 10, 20, 50 or 100 entries per page and press Enter in the jump field to open a page. Clear the search to return to browsing. The toolbar and folder rows copy `bucket/prefix/`, and each file row copies `bucket/prefix/object`.
+
+Numbered pages use a short-lived metadata listing. Directories that exceed the scan budget switch to sequential browsing. Those requests use cursors bound to the user, tenant, grants, prefix and search. Read-only searches use object metadata.
 
 ### Draft folders
 
@@ -80,7 +82,7 @@ Administrators manage user grants in Object storage → Prefix permissions. The 
 
 Tenant changes do not carry grants to the new tenant. Review and grant access for the new tenant explicitly; obsolete grants can be revoked even after the recipient is disabled or moved. Bootstrap grants remain one-time grants for their configured tenant, with revoked grants preserved across restarts. The periodic bootstrap reconciliation is separate from the user selector; refresh Prefix permissions after creating an account or changing tenant permissions rather than waiting for reconciliation.
 
-Only authorized roots are shown. Directories are object-key prefixes, not filesystem directories. Pages contain up to 100 entries by default; cursors are bound to identity, directory and current grants. Dot path segments, backslashes, control characters and keys above 1024 bytes are rejected. Unicode, spaces and percent signs retain their raw key semantics. Revocation affects new requests, not necessarily streams already in progress.
+The browser shows authorized roots and uses 10 entries per page by default. Object-key prefixes represent directories. Dot path segments, backslashes, control characters and keys above 1024 bytes are rejected. Unicode, spaces and percent signs retain their raw key semantics. Revocation applies to subsequent requests.
 
 `objectStorage.limits.textMaxBytes` controls the editable size and bounded preview (default 1048576 bytes, configurable from 1024 to 8388608). The server reads at most limit+1 bytes and trims an incomplete trailing UTF-8 character. Larger text files open as truncated read-only previews showing the full object size; download the remainder to view locally. Saving an oversized source is rejected by the server too. Increasing the limit requires memory/concurrency tuning; heavily JSON-escaped saves may need up to six times the text limit plus headers in the Nginx/Ingress body allowance. Binary, NUL and automatic decompression are rejected. HTML/SVG/Markdown are never rendered as executable content.
 
@@ -109,7 +111,7 @@ npm install
 npm test
 npm run build
 node scripts/object-storage-local-test.mjs
-QA_VERSION=1.5.4 node scripts/container-object-storage-smoke.mjs
+QA_VERSION=1.5.5 node scripts/container-object-storage-smoke.mjs
 node scripts/object-storage-helm-test.mjs
 ```
 

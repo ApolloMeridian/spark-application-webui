@@ -6,8 +6,8 @@
 
 ```bash
 export DOCKER_BUILDKIT=1
-docker build -t spark-control-center:1.5.4 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.4 .
+docker build -t spark-control-center:1.5.5 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.5 .
 ```
 
 如已缓存 Nginx 基础镜像，可先生成前端产物再使用预构建 Dockerfile：
@@ -15,7 +15,7 @@ docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.4 .
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.4 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.5 .
 ```
 
 前端监听 `8080`，以 UID 101 运行，支持只读根文件系统，并提供 `/healthz`。Helm 在运行时挂载 `/usr/share/nginx/html/config/config.js`，无需为不同环境重建镜像。
@@ -35,7 +35,7 @@ helm upgrade --install spark-console ./charts/spark-control-center \
 真实部署先复制生产配置示例，再以私有配置覆盖环境参数：
 
 ```bash
-helm show values ./spark-control-center-1.5.4.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.5.5.tgz > values-production.local.yaml
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml
@@ -210,6 +210,8 @@ Chart 默认使用真实后端与 PostgreSQL 登录，不再默认 Mock。在单
 ## 1.5.3 作业实例与终止操作
 
 详情地址采用 `/applications/<namespace>/<Kubernetes UID>`。Spark ID 在启动前可能为空，Operator 重试时也可能变化，因此作为运行信息展示，不用作资源身份。旧名称链接会解析到当前或最新可见实例。CR 删除后保留已观测的 PostgreSQL 快照；删除后重建的同名资源在列表中分别显示。只有分页作业浏览器包含历史实例，总览资源统计及调度器仍使用 Kubernetes 实时状态。
+
+从 Kubernetes 删除时仍处于非终态的作业，归档后显示为 `DELETED`。已观测到的终态照常显示。管理员可在列表或详情中清除指定 UID 的历史快照。清除操作从历史统计中移除该记录，并写入操作审计。
 
 历史 Loki 和 Prometheus 查询限制在该实例的生命周期内。旧 UID 不能终止、删除或代理同名新实例的 Spark UI。已归档实例的 Kubernetes 日志请求会明确提示不可用，可选 Loki 或已保存的诊断尾部。采集器无法补回从未观测过的资源、已经轮转的日志或已过期指标。
 

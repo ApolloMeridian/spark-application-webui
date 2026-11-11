@@ -42,6 +42,7 @@ type ApplicationService interface {
 	SummaryForNamespaces(context.Context, time.Time, time.Time, []string) (domain.DashboardSummary, error)
 	KillApplication(context.Context, string, string, string, string) (domain.OperationAudit, error)
 	DeleteApplication(context.Context, string, string, string, string) (domain.OperationAudit, error)
+	PurgeApplicationHistory(context.Context, string, string, string, string) (domain.OperationAudit, error)
 	ListAudit(context.Context) ([]domain.OperationAudit, error)
 	Subscribe(context.Context, []string) <-chan domain.ApplicationChange
 }
@@ -115,6 +116,7 @@ func New(cfg config.Config, applicationService ApplicationService, authService *
 	mux.HandleFunc("GET /v1/namespaces/{namespace}/applications/{name}/driver/logs", server.driverLogs)
 	mux.HandleFunc("POST /v1/namespaces/{namespace}/applications/{name}/kill", server.killApplication)
 	mux.HandleFunc("DELETE /v1/namespaces/{namespace}/applications/{name}", server.deleteApplication)
+	mux.HandleFunc("DELETE /v1/namespaces/{namespace}/applications/{name}/history", server.purgeApplicationHistory)
 	mux.HandleFunc("GET /v1/audit", server.listAudit)
 	mux.HandleFunc("GET /v1/templates", server.listTemplates)
 	mux.HandleFunc("POST /v1/templates", server.saveTemplate)
@@ -758,6 +760,25 @@ func (s *Server) deleteApplication(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	audit, err := s.service.DeleteApplication(r.Context(), r.PathValue("namespace"), r.PathValue("name"), principal.Username, reason)
+	if err != nil {
+		s.writeServiceError(w, err)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, audit)
+}
+
+func (s *Server) purgeApplicationHistory(w http.ResponseWriter, r *http.Request) {
+	principal := currentUser(r)
+	namespace := r.PathValue("namespace")
+	if !s.requireAdmin(w, principal) || !s.requireNamespace(w, principal, namespace) {
+		return
+	}
+	reason, err := decodeOperationReason(w, r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	audit, err := s.service.PurgeApplicationHistory(r.Context(), namespace, r.PathValue("name"), principal.Username, reason)
 	if err != nil {
 		s.writeServiceError(w, err)
 		return

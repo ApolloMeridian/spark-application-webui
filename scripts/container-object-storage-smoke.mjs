@@ -365,6 +365,15 @@ try {
     used: { cpu: 0, memoryGiB: 0 },
     metricsAvailable: true,
   });
+  const purge = await api(
+    `/namespaces/spark/applications/${logApp.id}/history`,
+    "DELETE",
+    JSON.stringify({ reason: "archive cleanup regression" }),
+  );
+  assert.equal(purge.operation, "PURGE_HISTORY");
+  const afterPurge = await api("/applications?page=1&pageSize=20");
+  assert(!afterPurge.items.some((x) => x.id === logApp.id));
+  assert(afterPurge.items.some((x) => x.id === replacement.id && !x.historical));
   let info = await api("/object-storage/connections");
   assert.deepEqual(info.connections[0].roots.map((x) => x.bucket).sort(), [
     "secondary-artifacts",
@@ -484,6 +493,17 @@ try {
     matchedKeys.push(...searchPage.objects.map((x) => x.key));
   }
   assert.deepEqual(matchedKeys, ["team/a/nested/search-target.txt"]);
+  const directory = await api(
+    `/object-storage/objects${obj("team/a/")}&page=1&limit=10&sort=name&direction=desc`,
+  );
+  assert.equal(directory.total, directory.objects.length);
+  assert(directory.objects.some((x) => x.directory && x.key === "team/a/nested/"));
+  const names = directory.objects.map((x) => x.key);
+  assert.deepEqual(names, [...names].sort().reverse());
+  const filtered = await api(
+    `/object-storage/objects${obj("team/a/")}&page=1&limit=10&search=SEARCH-TARGET`,
+  );
+  assert.equal(filtered.total, 0);
   const hugeSize = 40 << 20;
   const huge = await api(
     `/object-storage/uploads${obj("team/a/large.txt")}`,

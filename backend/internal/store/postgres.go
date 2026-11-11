@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS operation_audit (
 		`CREATE INDEX IF NOT EXISTS spark_application_history_finished_at_idx ON spark_application_history (finished_at DESC)`,
 		`ALTER TABLE spark_application_history ADD COLUMN IF NOT EXISTS snapshot jsonb NOT NULL DEFAULT '{}'::jsonb`,
 		`ALTER TABLE spark_application_history ADD COLUMN IF NOT EXISTS diagnosis jsonb NOT NULL DEFAULT '[]'::jsonb`,
+		`ALTER TABLE spark_application_history ADD COLUMN IF NOT EXISTS purged_at timestamptz`,
 		`CREATE TABLE IF NOT EXISTS local_users (
   id text PRIMARY KEY,
   username text NOT NULL,
@@ -262,11 +263,17 @@ CREATE TABLE IF NOT EXISTS operation_audit (
 }
 
 func (s *PostgresStore) Insert(ctx context.Context, audit domain.OperationAudit) error {
+	return insertOperationAudit(ctx, s.pool, audit)
+}
+
+func insertOperationAudit(ctx context.Context, db interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, audit domain.OperationAudit) error {
 	when, err := time.Parse(time.RFC3339Nano, audit.Timestamp)
 	if err != nil {
 		return fmt.Errorf("parse audit timestamp: %w", err)
 	}
-	_, err = s.pool.Exec(ctx, `
+	_, err = db.Exec(ctx, `
 INSERT INTO operation_audit
   (id, application_name, namespace, operator_name, operation, reason, occurred_at, result, message,tenant_id)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
@@ -355,7 +362,8 @@ ON CONFLICT (application_id) DO UPDATE SET
     WHEN jsonb_array_length(EXCLUDED.diagnosis) > 0 THEN EXCLUDED.diagnosis
     ELSE spark_application_history.diagnosis
   END,
-  last_seen_at=now()`,
+  last_seen_at=now()
+WHERE spark_application_history.purged_at IS NULL`,
 			app.ID, app.Cluster, app.Namespace, app.Name, app.Owner, app.State, createdAt,
 			optionalTime(app.StartedAt), optionalTime(app.FinishedAt), snapshot, diagnosis, app.WorkflowTaskID)
 		if err != nil {
@@ -379,7 +387,7 @@ SELECT
       AND COALESCE(finished_at, last_seen_at) <= $2
       AND (COALESCE(cardinality($3::text[]),0)=0 OR namespace=ANY($3))
   )
-FROM spark_application_history h WHERE ($4='' OR h.tenant_id='' OR h.tenant_id=$4)`, from, to, namespaces, domain.TenantScope(ctx)).Scan(&result.Submitted, &result.Failed)
+FROM spark_application_history h WHERE h.purged_at IS NULL AND ($4='' OR h.tenant_id='' OR h.tenant_id=$4)`, from, to, namespaces, domain.TenantScope(ctx)).Scan(&result.Submitted, &result.Failed)
 	if err != nil {
 		return domain.HistorySummary{}, fmt.Errorf("query application history summary: %w", err)
 	}

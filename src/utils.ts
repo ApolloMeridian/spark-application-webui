@@ -36,6 +36,7 @@ export const stateColor: Record<ApplicationState, string> = {
   FAILING: '#ef781f',
   UNKNOWN: '#7d8799',
   KILLED: '#697386',
+  DELETED: '#697386',
 };
 
 export function formatCpu(value?: number): string {
@@ -99,5 +100,5 @@ export function permittedNamespaces(configured: string[], assigned?: string[]): 
 }
 
 export function isTerminalState(state: ApplicationState): boolean {
-  return ['COMPLETED', 'FAILED', 'SUBMISSION_FAILED', 'KILLED'].includes(state);
+  return ['COMPLETED', 'FAILED', 'SUBMISSION_FAILED', 'KILLED', 'DELETED'].includes(state);
 }

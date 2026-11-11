@@ -1191,7 +1191,7 @@ func executorPresentationState(applicationState, rawExecutorState string) string
 }
 
 func terminalState(state string) bool {
-	return state == "COMPLETED" || state == "FAILED" || state == "SUBMISSION_FAILED" || state == "KILLED"
+	return state == "COMPLETED" || state == "FAILED" || state == "SUBMISSION_FAILED" || state == "KILLED" || state == "DELETED"
 }
 
 func currentHistorySummary(applications []domain.SparkApplication, from, to time.Time) domain.HistorySummary {

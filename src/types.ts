@@ -7,7 +7,8 @@ export type ApplicationState =
   | 'SUBMITTED'
   | 'FAILING'
   | 'UNKNOWN'
-  | 'KILLED';
+  | 'KILLED'
+  | 'DELETED';
 
 export type UserRole = 'viewer' | 'admin';
 export type Locale = 'zh-CN' | 'en-US';
@@ -246,5 +247,6 @@ export interface SparkApplicationService {
   getAudit(): Promise<OperationAudit[]>;
   killApplication(namespace: string, name: string, operator: string, reason?: string): Promise<OperationAudit>;
   deleteApplication(namespace: string, name: string, operator: string, reason?: string): Promise<OperationAudit>;
+  purgeApplicationHistory(namespace: string, id: string, operator: string, reason?: string): Promise<OperationAudit>;
   reset(): Promise<void>;
 }

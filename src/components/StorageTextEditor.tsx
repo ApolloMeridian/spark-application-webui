@@ -120,28 +120,11 @@ export default function StorageTextEditor({
       ariaLabel: en ? "File content" : "文件内容",
     });
   }, [readOnly, en]);
-  // Keep the model as the source of truth while this file is open, preserving
-  // undo and auto-close state. A different filename creates a fresh model.
-  const action = (id: string) => {
-    const editor = instance.current;
-    editor?.focus();
-    void editor?.getAction(id)?.run();
-  };
   return (
     <div>
       <Space wrap style={{ marginBottom: 8 }}>
         <Tag>{language}</Tag>
         {readOnly && <Tag color="orange">{en ? "Read-only" : "只读"}</Tag>}
-        <Button size="small" onClick={() => action("actions.find")}>
-          {en ? "Find · Ctrl+F" : "搜索 · Ctrl+F"}
-        </Button>
-        <Button
-          size="small"
-          disabled={readOnly}
-          onClick={() => action("editor.action.startFindReplaceAction")}
-        >
-          {en ? "Replace · Ctrl+H" : "替换 · Ctrl+H"}
-        </Button>
       </Space>
       <div
         ref={host}
