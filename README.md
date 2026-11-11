@@ -92,7 +92,7 @@ npm test
 npm run build
 ```
 
-Backend validation requires Go 1.26.10 or later:
+Backend validation requires Go 1.26.11 or later:
 
 ```bash
 cd backend

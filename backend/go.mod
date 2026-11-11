@@ -1,6 +1,6 @@
 module spark-control-center/backend
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/coreos/go-oidc/v3 v3.17.0

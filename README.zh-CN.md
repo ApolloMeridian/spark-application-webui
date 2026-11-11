@@ -86,7 +86,7 @@ npm test
 npm run build
 ```
 
-后端验证需要 Go 1.26.10 或更新版本：
+后端验证需要 Go 1.26.11 或更新版本：
 
 ```bash
 cd backend

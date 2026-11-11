@@ -16,7 +16,7 @@
 
 ## 已落实的安全边界
 
-- 两个 Go 组件要求 Go 1.26.10，Docker 使用对应的受支持补丁版本。前端最低修复版本包括 DOMPurify 3.4.17、Vite 6.4.4 和 Vitest 5.0.3，CI 遇到 High/Critical npm 漏洞将失败。依赖检查是当前漏洞库的快照，不保证未来没有新披露问题。
+- 两个 Go 组件要求 Go 1.26.11，Docker 使用对应的受支持补丁版本。前端最低修复版本包括 DOMPurify 3.4.17、Vite 6.4.4 和 Vitest 5.0.3，CI 遇到 High/Critical npm 漏洞将失败。依赖检查是当前漏洞库的快照，不保证未来没有新披露问题。
 - 活跃 Pod 使用所有者 UID、精确应用标签或从已验证 Driver 获取的精确 `spark-app-selector` 关联，无标签时仅允许精确 Driver 名称回退；冲突归属优先，作业名重叠不再关联他人 Executor。Kill 同样只选择已验证 Driver，不直接信任状态字段；无法核实时返回 409，不终止 Pod 或修改重启策略。
 - Spark UI 视为不可信作业内容，iframe 与响应 CSP 均移除同源权限，直接打开代理也受沙箱限制。转发前移除控制台 Cookie/Authorization，不接受上游 Cookie/CSP/CORS 放宽限制。路径前缀来自校验后的配置。仅只读代理允许隔离页面通过 `Origin: null` AJAX 使用范围受限的路径票据，不依赖控制台 Cookie；控制台 API 不开放 null 源读取或写入。
 - 模板/规则/告警增加租户列并在 SQL 过滤。汇总、历史、指纹排除其他租户成功绑定的工作流资源；失败/未派发任务不再抢占资源名。外部非工作流作业仍按授权命名空间共享；严格资源隔离应划分 Kubernetes 命名空间，工作流建议启用名称后缀。

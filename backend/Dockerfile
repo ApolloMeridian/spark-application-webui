@@ -1,4 +1,4 @@
-ARG GO_IMAGE=golang:1.26.10-alpine
+ARG GO_IMAGE=golang:1.26.11-alpine
 ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot
 
 FROM ${GO_IMAGE} AS build
