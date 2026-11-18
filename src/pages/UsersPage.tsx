@@ -410,7 +410,7 @@ export function UsersPage() {
               render: (_, row: Tenant) => (
                 <Button
                   size="small"
-                  disabled={row.id === "admin"}
+                  disabled={row.id === "admin" && !runtimeConfig.features.sql}
                   onClick={() =>
                     setEditingTenant({
                       ...row,
@@ -418,7 +418,9 @@ export function UsersPage() {
                     })
                   }
                 >
-                  {t("editUser")}
+                  {row.id === "admin" && runtimeConfig.features.sql
+                    ? en ? "SQL access" : "SQL 权限"
+                    : t("editUser")}
                 </Button>
               ),
             },
@@ -458,6 +460,7 @@ export function UsersPage() {
         <Input
           maxLength={100}
           value={editingTenant?.name}
+          disabled={editingTenant?.id === "admin"}
           placeholder={en ? "Tenant name" : "租户名称"}
           onChange={(e) =>
             setEditingTenant({ ...editingTenant, name: e.target.value })
@@ -470,6 +473,7 @@ export function UsersPage() {
         </Typography.Paragraph>
         <TenantPermissionEditor
           en={en}
+          sqlOnly={editingTenant?.id === "admin"}
           value={editingTenant?.permissions || minimalPermissions}
           onChange={(permissions) =>
             setEditingTenant({ ...editingTenant, permissions })
@@ -482,10 +486,12 @@ export function UsersPage() {
 
 function TenantPermissionEditor({
   en,
+  sqlOnly,
   value,
   onChange,
 }: {
   en: boolean;
+  sqlOnly: boolean;
   value: TenantPermissions;
   onChange: (value: TenantPermissions) => void;
 }) {
@@ -501,8 +507,8 @@ function TenantPermissionEditor({
         value={!value[read] ? "none" : value[write] ? "write" : "read"}
         options={[
           { value: "none", label: en ? "No access" : "不可访问" },
-          { value: "read", label: en ? "Read only" : "只读" },
-          { value: "write", label: en ? "Read and manage" : "查看与管理" },
+          { value: "read", label: read === "sqlQuery" ? en ? "Run queries" : "执行查询" : en ? "Read only" : "只读" },
+          { value: "write", label: read === "sqlQuery" ? en ? "Run queries and manage grants" : "执行查询与管理授权" : en ? "Read and manage" : "查看与管理" },
         ]}
         onChange={(level) =>
           change({ [read]: level !== "none", [write]: level === "write" })
@@ -510,6 +516,12 @@ function TenantPermissionEditor({
       />
     </Form.Item>
   );
+  const sqlAccess = runtimeConfig.features.sql && access(
+    "sqlQuery",
+    "sqlManage",
+    en ? "SQL workspace and table grants (administrator)" : "SQL 工作台与表授权（管理员）",
+  );
+  if (sqlOnly) return <Form layout="vertical">{sqlAccess}</Form>;
   return (
     <Form layout="vertical">
       <Form.Item
@@ -553,11 +565,7 @@ function TenantPermissionEditor({
         "alertsWrite",
         en ? "Alert center and rules" : "告警中心与规则",
       )}
-      {runtimeConfig.features.sql && access(
-        "sqlQuery",
-        "sqlManage",
-        en ? "SQL workspace and table grants (administrator)" : "SQL 工作台与表授权（管理员）",
-      )}
+      {sqlAccess}
       {(["submit", "kill", "delete", "objectStorage"] as const).map((key) => (
         <Form.Item
           key={key}

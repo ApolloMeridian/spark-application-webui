@@ -10,6 +10,32 @@ import (
 	"time"
 )
 
+func TestAdminTenantSQLPolicyPreservesBuiltInPermissions(t *testing.T) {
+	s, user, _, _ := fixture(t)
+	ctx := context.Background()
+	saved, err := s.SaveTenant(ctx, user, domain.Tenant{
+		ID: "admin", Name: "replacement",
+		Permissions: &domain.TenantPermissions{SQLQuery: true, SQLManage: true},
+	})
+	if err != nil || saved.Permissions == nil {
+		t.Fatal(saved, err)
+	}
+	if saved.Name != "admin" || !saved.Permissions.Submit || !saved.Permissions.AllNamespaces ||
+		!saved.Permissions.SQLQuery || !saved.Permissions.SQLManage {
+		t.Fatal("built-in administrator policy or SQL opt-in was lost", saved)
+	}
+	saved, err = s.SaveTenant(ctx, user, domain.Tenant{
+		ID: "admin", Permissions: &domain.TenantPermissions{SQLManage: true},
+	})
+	if err != nil || saved.Permissions.SQLQuery || saved.Permissions.SQLManage {
+		t.Fatal("SQL management remained enabled after disabling SQL access", saved, err)
+	}
+	user.Role = domain.RoleViewer
+	if _, err = s.SaveTenant(ctx, user, saved); err != localauth.ErrForbidden {
+		t.Fatal("viewer modified the built-in SQL policy", err)
+	}
+}
+
 func TestSharedNamespaceTemplatesRulesAlertsAndHistoryAreTenantScoped(t *testing.T) {
 	s, user, _, _ := fixture(t)
 	a := domain.WithTenant(context.Background(), user.TenantID)

@@ -146,6 +146,9 @@ func (s *Service) SaveTenant(ctx context.Context, user domain.User, x domain.Ten
 	if user.Disabled || user.Role != domain.RoleAdmin {
 		return x, localauth.ErrForbidden
 	}
+	if x.ID == "admin" {
+		return s.saveAdminSQLPolicy(ctx, user, x)
+	}
 	x.Name = strings.TrimSpace(x.Name)
 	if x.Name == "" || len(x.Name) > 100 {
 		return x, invalid("tenant name is required (max 100 characters)")
@@ -177,15 +180,38 @@ func (s *Service) SaveTenant(ctx context.Context, user domain.User, x domain.Ten
 			if x.ID == "default" && x.Name != "default" {
 				return invalid("default tenant cannot be renamed")
 			}
-			if x.ID == "admin" {
-				return invalid("the built-in admin tenant cannot be modified")
-			}
 			if err := tx.QueryRow(ctx, `UPDATE tenants SET name=$2,permissions=$3 WHERE id=$1 RETURNING created_at`, x.ID, x.Name, raw).Scan(&at); err != nil {
 				return err
 			}
 		}
 		x.CreatedAt = stamp(at)
 		return auditTx(ctx, tx, user.Username, "TENANT_SAVE", x.ID, x.Name+" permissions="+string(raw))
+	})
+	return x, err
+}
+
+func (s *Service) saveAdminSQLPolicy(ctx context.Context, user domain.User, x domain.Tenant) (domain.Tenant, error) {
+	if x.Permissions == nil {
+		return x, invalid("SQL permissions are required for the built-in admin tenant")
+	}
+	query := x.Permissions.SQLQuery
+	manage := query && x.Permissions.SQLManage
+	err := s.transaction(ctx, func(tx pgx.Tx) error {
+		var raw []byte
+		var at time.Time
+		err := tx.QueryRow(ctx, `UPDATE tenants
+			SET permissions=permissions || jsonb_build_object('sqlQuery',$1::boolean,'sqlManage',$2::boolean)
+			WHERE id='admin' RETURNING name,permissions,created_at`, query, manage).Scan(&x.Name, &raw, &at)
+		if err != nil {
+			return err
+		}
+		x.Permissions = nil
+		if err := json.Unmarshal(raw, &x.Permissions); err != nil {
+			return err
+		}
+		x.CreatedAt = stamp(at)
+		return auditTx(ctx, tx, user.Username, "SQL_TENANT_POLICY", x.ID,
+			fmt.Sprintf("sqlQuery=%t sqlManage=%t", query, manage))
 	})
 	return x, err
 }

@@ -91,7 +91,7 @@ Example profile structure. Read the immutable console user ID and tenant ID from
 }
 ```
 
-Enable SQL access on the user's tenant. Only administrators in a tenant with SQL grant management can grant SELECT. Provision the minimum Polaris role first, then grant access to the fully qualified table through the workspace. Grants apply to the current table identity and the user's tenant. Revoking a console grant invalidates existing results and cancels affected work. Change the underlying Polaris permission separately when access should also be removed outside the console.
+Enable SQL access in **User management → Tenant management**. Use **SQL access** for the built-in `admin` tenant. Only administrators in a tenant with SQL grant management can grant SELECT. Provision the minimum Polaris role first, then grant access to the fully qualified table through the workspace. Grants apply to the current table identity and the user's tenant. Revoking a console grant invalidates existing results and cancels affected work. Change the underlying Polaris permission separately when access should also be removed outside the console.
 
 ## Query limits and engine tuning
 
