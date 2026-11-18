@@ -87,6 +87,17 @@ JSON 模型见 `src/types.ts`、`src/workflows.ts`、`src/objectStorage.ts` 与 
 | GET | `/v1/projects/{project}/workflows/{id}/versions` |
 | DELETE | `/v1/projects/{project}/workflows/{id}/versions/{version}` |
 | POST | `/v1/projects/{project}/workflows/{id}/versions/{version}/restore` |
+| DELETE | `/v1/sql/grants` |
+| GET | `/v1/sql/grants` |
+| PUT | `/v1/sql/grants` |
+| GET | `/v1/sql/queries` |
+| POST | `/v1/sql/queries` |
+| GET | `/v1/sql/queries/{id}` |
+| POST | `/v1/sql/queries/{id}/cancel` |
+| GET | `/v1/sql/queries/{id}/download` |
+| GET | `/v1/sql/queries/{id}/pages/{page}` |
+| GET | `/v1/sql/table` |
+| GET | `/v1/sql/tables` |
 | GET | `/v1/stream` |
 | GET | `/v1/templates` |
 | POST | `/v1/templates` |
@@ -169,6 +180,9 @@ TLS 代理后须配置规范外部 Origin：`PUBLIC_URL`（Helm `backend.publicU
 | `PROMETHEUS_URL` | 观测服务地址与查询配置 |
 | `PUBLIC_URL` | 运行配置；详见配置源码与 Helm values |
 | `SPARKAPPLICATION_API_VERSION` | Kubernetes 连接/命名空间范围；集群内使用 ServiceAccount |
+| `SQL_ENABLED` | 选配 SQL 网关，见 SQL.md |
+| `SQL_SIGNING_KEY` | 选配 SQL 网关，见 SQL.md |
+| `SQL_URL` | 选配 SQL 网关，见 SQL.md |
 | `WATCH_NAMESPACES` | Kubernetes 连接/命名空间范围；集群内使用 ServiceAccount |
 | `WORKFLOWS_ENABLED` | 工作流调度器、时区与并发限制 |
 | `WORKFLOW_MAX_ACTIVE_RUNS` | 工作流调度器、时区与并发限制 |
@@ -212,6 +226,8 @@ TLS 代理后须配置规范外部 Origin：`PUBLIC_URL`（Helm `backend.publicU
 - `application_template_versions`
 - `application_templates`
 - `authentication_rate_windows`
+- `console_sql_grants`
+- `console_sql_queries`
 - `live_applications`
 - `local_user_sessions`
 - `local_users`

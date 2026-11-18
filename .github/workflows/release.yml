@@ -29,7 +29,8 @@ jobs:
       - name: Test and build frontend
         run: |
           npm ci
-          npm audit --audit-level=high
+          npm audit --omit=dev --audit-level=high
+          npm run audit:build
           npm test
           npm run build
           npm run docs:check
@@ -52,8 +53,10 @@ jobs:
       - name: Test Go backend and storage integrations
         run: node scripts/object-storage-local-test.mjs
 
-      - name: Validate optional storage Helm configuration
-        run: node scripts/object-storage-helm-test.mjs
+      - name: Validate optional plugin Helm configuration
+        run: |
+          node scripts/object-storage-helm-test.mjs
+          helm lint charts/spark-control-center -f charts/spark-control-center/examples/values-production.yaml -f charts/spark-control-center/examples/values-sql-minio.yaml
 
       - name: Validate release version
         shell: bash
@@ -66,9 +69,12 @@ jobs:
           docker build -f Dockerfile.prebuilt -t "spark-control-center:${{ steps.version.outputs.value }}" .
           docker build -f backend/Dockerfile -t "spark-control-center-backend:${{ steps.version.outputs.value }}" .
           docker build -f object-storage/Dockerfile -t "spark-control-center-object-storage:${{ steps.version.outputs.value }}" .
+          docker build -f sql-gateway/Dockerfile -t "spark-control-center-sql:${{ steps.version.outputs.value }}" .
 
-      - name: Smoke-test optional storage containers
-        run: QA_VERSION="${{ steps.version.outputs.value }}" node scripts/container-object-storage-smoke.mjs
+      - name: Smoke-test optional plugin containers
+        run: |
+          QA_VERSION="${{ steps.version.outputs.value }}" node scripts/container-object-storage-smoke.mjs
+          QA_VERSION="${{ steps.version.outputs.value }}" node scripts/container-sql-smoke.mjs
 
       - name: Package release assets
         shell: bash
@@ -77,9 +83,10 @@ jobs:
           docker save -o "release/spark-control-center-${{ steps.version.outputs.value }}.tar" "spark-control-center:${{ steps.version.outputs.value }}"
           docker save -o "release/spark-control-center-backend-${{ steps.version.outputs.value }}.tar" "spark-control-center-backend:${{ steps.version.outputs.value }}"
           docker save -o "release/spark-control-center-object-storage-${{ steps.version.outputs.value }}.tar" "spark-control-center-object-storage:${{ steps.version.outputs.value }}"
+          docker save -o "release/spark-control-center-sql-${{ steps.version.outputs.value }}.tar" "spark-control-center-sql:${{ steps.version.outputs.value }}"
           helm package charts/spark-control-center --destination release
-          # Publish the three independent image archives and Helm package; no checksum asset.
-          test "$(find release -maxdepth 1 -type f | wc -l)" -eq 4
+          # Publish the four independent image archives and Helm package; no checksum asset.
+          test "$(find release -maxdepth 1 -type f | wc -l)" -eq 5
 
       - name: Create or update GitHub Release
         env:

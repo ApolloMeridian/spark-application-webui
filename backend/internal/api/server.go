@@ -138,6 +138,7 @@ func New(cfg config.Config, applicationService ApplicationService, authService *
 	mux.HandleFunc("GET /v1/diagnostics/fingerprints", server.listFingerprints)
 	server.registerWorkflows(mux)
 	mux.HandleFunc("/v1/object-storage/{path...}", server.objectStorageProxy)
+	mux.HandleFunc("/v1/sql/{path...}", server.sqlProxy)
 	return server.middleware(server.sameOrigin(server.authenticate(server.auditMutations(mux))))
 }
 

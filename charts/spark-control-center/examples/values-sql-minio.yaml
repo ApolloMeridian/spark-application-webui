@@ -1,0 +1,17 @@
+# Example for an isolated intranet test cluster. Create the referenced
+# Secrets and private result bucket before enabling the SQL gateway.
+sql:
+  enabled: true
+  kyuubi:
+    url: http://kyuubi-sql.spark-sql.svc.cluster.local:10099
+  catalog:
+    url: http://polaris.polaris.svc.cluster.local:8181/api/catalog
+    realm: POLARIS
+    warehouse: example_catalog
+  results:
+    endpoint: http://minio.storage.svc.cluster.local:9000
+    region: us-east-1
+    bucket: spark-query-results
+    pathStyle: true
+  tls:
+    allowHTTP: true

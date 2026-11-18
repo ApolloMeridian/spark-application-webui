@@ -1,10 +1,11 @@
 {
   "name": "spark-control-center",
   "private": true,
-  "version": "1.5.5",
+  "version": "1.6.0",
   "type": "module",
   "scripts": {
     "docs:check": "node scripts/check-documentation.mjs",
+    "audit:build": "node scripts/check-npm-audit.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest run",

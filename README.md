@@ -7,6 +7,7 @@ Spark Control Center is a web console for operating Apache Spark applications on
 ## Highlights
 
 - Optional independent S3/MinIO/GCS WIF object-storage service: prefix grants, resumable transfers, conditional writes, virtual folders, recursive path search and Monaco text editing.
+- Optional SQL workspace for Kyuubi Spark SQL and Polaris Iceberg tables. Browse granted schemas, run read-only queries under a dedicated identity, and page through stored results or download CSV. [SQL deployment](docs/en/SQL.md).
 - Persist and aggregate failure diagnostics/fingerprints; keep alerts and templates tenant-scoped even when Kubernetes namespaces are shared.
 
 - Discover SparkApplications across configured namespaces, with status, owner, lifecycle timestamps, and resource usage.
@@ -54,6 +55,10 @@ See the [UI tour](docs/en/UI.md) for application, log, submission, alert and exe
 | --- | --- |
 | ![Object storage](docs/images/object-storage-1440.png) | ![Text editor](docs/images/object-storage-editor-1440.png) |
 
+### SQL workspace
+
+![SQL workspace with a Polaris table and query results](docs/images/sql-workspace-1440.png)
+
 ## Documentation
 
 - [Deployment and configuration](docs/en/DEPLOYMENT.md): containers, Helm, authentication, RBAC and observability.
@@ -69,6 +74,7 @@ See the [UI tour](docs/en/UI.md) for application, log, submission, alert and exe
 - **Frontend:** React, TypeScript, Vite, Ant Design, ECharts
 - **Backend:** Go HTTP service with a PostgreSQL-backed workflow scheduler
 - **Object storage:** optional stateless Go service on port 8082, reached through the backend's HMAC-signed gateway; S3/MinIO or GCS WIF credentials remain server-side
+- **SQL workspace:** optional Go gateway with a Spark Catalyst parser, authenticated Kyuubi REST, Polaris Iceberg REST, PostgreSQL grants and a private S3-compatible results bucket
 - **Integrations:** Kubernetes Spark Operator API, Prometheus, Loki, PostgreSQL, optional OIDC
 - **Deployment:** non-root container images, Nginx same-origin API proxy, Helm and scoped RBAC
 
@@ -111,27 +117,29 @@ Build images without a registry prefix:
 
 ```bash
 export DOCKER_BUILDKIT=1
-docker build -t spark-control-center:1.5.5 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.5 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.5 .
+docker build -t spark-control-center:1.6.0 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.6.0 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.6.0 .
+docker build -f sql-gateway/Dockerfile -t spark-control-center-sql:1.6.0 .
 ```
 
-[Releases](https://github.com/ApolloMeridian/spark-application-webui/releases) contain three image TAR archives and one Helm TGZ package. Images have no private registry prefix. The optional storage image is included even when the feature is disabled; no checksum file is generated.
+[Releases](https://github.com/ApolloMeridian/spark-application-webui/releases) from 1.6.0 contain four image TAR archives and one Helm TGZ package. Image tags use unqualified repository names. The chart defaults both plugin deployments to disabled.
 
 ```bash
-docker load -i spark-control-center-1.5.5.tar
-docker load -i spark-control-center-backend-1.5.5.tar
-docker load -i spark-control-center-object-storage-1.5.5.tar
+docker load -i spark-control-center-1.6.0.tar
+docker load -i spark-control-center-backend-1.6.0.tar
+docker load -i spark-control-center-object-storage-1.6.0.tar
+docker load -i spark-control-center-sql-1.6.0.tar
 ```
 
 ## Helm deployment
 
-Chart defaults are a complete production template using the real API and PostgreSQL login. Configure endpoints and existing Secrets in one file. Object storage and OIDC are disabled by default; Mock is available only through its explicit example:
+Chart defaults use the real API and PostgreSQL login. Configure endpoints and existing Secrets in one file. Object storage, SQL and OIDC are opt-in. Use the dedicated example for mock mode.
 
 ```bash
-helm show values ./spark-control-center-1.5.5.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.6.0.tgz > values-production.local.yaml
 
-helm upgrade --install spark-console ./spark-control-center-1.5.5.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.6.0.tgz \
   --namespace spark-console \
   --create-namespace \
   -f values-production.local.yaml

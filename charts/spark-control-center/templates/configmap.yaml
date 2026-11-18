@@ -36,7 +36,7 @@ data:
       },
       dashboard: {{ .Values.runtimeConfig.dashboard | toJson }},
       historyServer: {{ .Values.runtimeConfig.historyServer | toJson }},
-      features: {{ merge (dict "objectStorage" .Values.objectStorage.enabled "workflows" (and .Values.backend.enabled .Values.workflows.enabled)) .Values.runtimeConfig.features | toJson }}
+      features: {{ merge (dict "objectStorage" .Values.objectStorage.enabled "sql" .Values.sql.enabled "workflows" (and .Values.backend.enabled .Values.workflows.enabled)) .Values.runtimeConfig.features | toJson }}
     };
   default.conf: |
     server {

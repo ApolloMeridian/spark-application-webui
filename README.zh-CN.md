@@ -48,6 +48,10 @@ Spark Control Center 是面向 Kubernetes 上 Apache Spark 作业的运维控制
 
 更多作业、日志、提交、告警和执行历史界面见[界面导览](docs/zh-CN/UI.md)。
 
+### SQL 工作台
+
+![Polaris 表结构与 SQL 查询结果](docs/images/sql-workspace-1440.png)
+
 ## 使用文档
 
 - [部署与配置](docs/zh-CN/DEPLOYMENT.md)：容器、Helm、认证、RBAC 与观测服务。
@@ -55,6 +59,7 @@ Spark Control Center 是面向 Kubernetes 上 Apache Spark 作业的运维控制
 - [工作流与调度](docs/zh-CN/WORKFLOWS.md)：租户、任务依赖、Cron、补数和持久化。
 - [安全策略](docs/zh-CN/SECURITY.md)：漏洞报告与部署责任。
 - [对象存储](docs/zh-CN/OBJECT-STORAGE.md)：可选 S3/MinIO、GCS WIF 插件、目录权限与本地验证。
+- [SQL 工作台](docs/zh-CN/SQL.md)：Kyuubi、Polaris、MinIO、表授权与查询参数。
 - [API 与环境变量参考](docs/zh-CN/REFERENCE.md)：与源码自动核对的路由、变量和数据库清单。
 - [安全加固说明](docs/zh-CN/HARDENING.md)：1.5.3 变更、升级要求与部署边界。
 
@@ -105,27 +110,29 @@ npm run docs:check
 
 ```bash
 export DOCKER_BUILDKIT=1
-docker build -t spark-control-center:1.5.5 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.5 .
-docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.5.5 .
+docker build -t spark-control-center:1.6.0 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.6.0 .
+docker build -f object-storage/Dockerfile -t spark-control-center-object-storage:1.6.0 .
+docker build -f sql-gateway/Dockerfile -t spark-control-center-sql:1.6.0 .
 ```
 
-[Releases](https://github.com/ApolloMeridian/spark-application-webui/releases) 包含三个镜像 TAR 和一个 Helm TGZ，不附带校验文件。镜像名不包含私有仓库前缀；对象存储镜像始终包含在发布附件中，插件默认关闭。
+[Releases](https://github.com/ApolloMeridian/spark-application-webui/releases) 从 1.6.0 起包含四个镜像 TAR 和一个 Helm TGZ，镜像标签使用独立仓库名。对象存储与 SQL 网关默认关闭。
 
 ```bash
-docker load -i spark-control-center-1.5.5.tar
-docker load -i spark-control-center-backend-1.5.5.tar
-docker load -i spark-control-center-object-storage-1.5.5.tar
+docker load -i spark-control-center-1.6.0.tar
+docker load -i spark-control-center-backend-1.6.0.tar
+docker load -i spark-control-center-object-storage-1.6.0.tar
+docker load -i spark-control-center-sql-1.6.0.tar
 ```
 
 ## Helm 部署
 
-Chart 默认 values 已是完整生产模板，启用真实 API 与 PostgreSQL 登录；对象存储和 OIDC 默认关闭。修改端点和已有 Secret 引用后，仅需一个 values 文件。Mock 模式需显式使用其专用示例：
+Chart 默认使用真实 API 与 PostgreSQL 登录。对象存储、SQL 工作台和 OIDC 按需启用。端点和已有 Secret 引用集中在一个 values 文件，Mock 模式使用专用示例。
 
 ```bash
-helm show values ./spark-control-center-1.5.5.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.6.0.tgz > values-production.local.yaml
 
-helm upgrade --install spark-console ./spark-control-center-1.5.5.tgz \
+helm upgrade --install spark-console ./spark-control-center-1.6.0.tgz \
   --namespace spark-console \
   --create-namespace \
   -f values-production.local.yaml

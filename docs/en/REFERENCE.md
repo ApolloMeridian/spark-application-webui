@@ -87,6 +87,17 @@ JSON models: `src/types.ts`, `src/workflows.ts`, `src/objectStorage.ts` and `bac
 | GET | `/v1/projects/{project}/workflows/{id}/versions` |
 | DELETE | `/v1/projects/{project}/workflows/{id}/versions/{version}` |
 | POST | `/v1/projects/{project}/workflows/{id}/versions/{version}/restore` |
+| DELETE | `/v1/sql/grants` |
+| GET | `/v1/sql/grants` |
+| PUT | `/v1/sql/grants` |
+| GET | `/v1/sql/queries` |
+| POST | `/v1/sql/queries` |
+| GET | `/v1/sql/queries/{id}` |
+| POST | `/v1/sql/queries/{id}/cancel` |
+| GET | `/v1/sql/queries/{id}/download` |
+| GET | `/v1/sql/queries/{id}/pages/{page}` |
+| GET | `/v1/sql/table` |
+| GET | `/v1/sql/tables` |
 | GET | `/v1/stream` |
 | GET | `/v1/templates` |
 | POST | `/v1/templates` |
@@ -169,6 +180,9 @@ Set `PUBLIC_URL` (Helm `backend.publicURL`) to the canonical origin behind TLS p
 | `PROMETHEUS_URL` | Observability endpoint/query settings |
 | `PUBLIC_URL` | Runtime setting; see configuration source and Helm values |
 | `SPARKAPPLICATION_API_VERSION` | Kubernetes connection/namespace scope; ServiceAccount in cluster |
+| `SQL_ENABLED` | Optional SQL gateway; see SQL.md |
+| `SQL_SIGNING_KEY` | Optional SQL gateway; see SQL.md |
+| `SQL_URL` | Optional SQL gateway; see SQL.md |
 | `WATCH_NAMESPACES` | Kubernetes connection/namespace scope; ServiceAccount in cluster |
 | `WORKFLOWS_ENABLED` | Workflow scheduler, timezone and concurrency |
 | `WORKFLOW_MAX_ACTIVE_RUNS` | Workflow scheduler, timezone and concurrency |
@@ -212,6 +226,8 @@ Startup migrations require schema/table/index privileges. Back up PostgreSQL bef
 - `application_template_versions`
 - `application_templates`
 - `authentication_rate_windows`
+- `console_sql_grants`
+- `console_sql_queries`
 - `live_applications`
 - `local_user_sessions`
 - `local_users`

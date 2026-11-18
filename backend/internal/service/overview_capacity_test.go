@@ -85,6 +85,69 @@ func TestOverviewPoolsUseScheduledPodsAndFixedAllocatable(t *testing.T) {
 	}
 }
 
+func TestOverviewIncludesExecutorsWhenSparkNameDiffersFromResourceName(t *testing.T) {
+	const (
+		appName  = "kafka-hp-jvm-agg-2"
+		executor = "driverhphourtoday-attempt-exec-1"
+		nodeName = "eklet-subnet"
+	)
+	app := runningObject()
+	app["metadata"].(map[string]any)["name"] = appName
+	status := app["status"].(map[string]any)
+	status["driverInfo"] = map[string]any{"podName": appName + "-driver"}
+	status["executorState"] = map[string]any{executor: "RUNNING"}
+
+	pods := []kube.Pod{
+		{
+			Name: appName + "-driver", Role: "driver", Phase: "RUNNING", Node: "worker",
+			ApplicationUID: "uid-1",
+			Labels:         map[string]string{"spark-app-name": "driverhphourtoday", "spark-app-selector": "spark-current"},
+		},
+		{
+			Name: executor, Role: "executor", Phase: "RUNNING", Node: nodeName,
+			Labels:   map[string]string{"spark-app-name": "driverhphourtoday", "spark-app-selector": "spark-current"},
+			NodePool: "baseline",
+			Request:  domain.ResourceAmount{CPU: 2, MemoryGiB: 6},
+		},
+		{
+			Name: "another-attempt-exec-1", Role: "executor", Phase: "RUNNING", Node: nodeName,
+			Labels:  map[string]string{"spark-app-name": "driverhphourtoday", "spark-app-selector": "spark-other"},
+			Request: domain.ResourceAmount{CPU: 32, MemoryGiB: 64},
+		},
+	}
+	cfg := config.Config{
+		Namespaces:            []string{"spark"},
+		OverviewElasticLabels: []map[string]string{{"node.kubernetes.io/instance-type": "eklet"}},
+	}
+	usage := domain.ResourceAmount{CPU: 1.25, MemoryGiB: 3}
+	prom := overviewPrometheus{executor: {Current: usage}}
+	svc := New(cfg, &fakeKubernetes{object: app, pods: pods}, prom, &fakeStore{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc.overviewNodes.Store(classifyOverviewNodes([]kube.Object{{
+		"metadata": map[string]any{"name": nodeName, "labels": map[string]any{"node.kubernetes.io/instance-type": "eklet"}},
+	}}, cfg))
+
+	ctx := context.Background()
+	detail, err := svc.GetApplication(ctx, "spark", appName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Executors) != 1 || detail.Executors[0].Node != nodeName || detail.Executors[0].NodePool != "autoscale" {
+		t.Fatalf("expected only the current executor on %s: %+v", nodeName, detail.Executors)
+	}
+	now := time.Now()
+	summary, err := svc.Summary(ctx, now.Add(-time.Hour), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := domain.OverviewPoolUsage{Requested: pods[1].Request, Used: usage, MetricsAvailable: true}
+	if summary.ResourcePools == nil {
+		t.Fatal("resource pools missing")
+	}
+	if got := summary.ResourcePools.Elastic; got != want {
+		t.Fatalf("elastic usage = %+v, want %+v", got, want)
+	}
+}
+
 type overviewPrometheus map[string]metrics.PodUsage
 
 func (p overviewPrometheus) Usage(context.Context, string, []string) (map[string]metrics.PodUsage, []domain.MetricPoint, error) {

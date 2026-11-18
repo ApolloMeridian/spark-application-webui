@@ -6,8 +6,8 @@
 
 ```bash
 export DOCKER_BUILDKIT=1
-docker build -t spark-control-center:1.5.5 .
-docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.5 .
+docker build -t spark-control-center:1.6.0 .
+docker build -f backend/Dockerfile -t spark-control-center-backend:1.6.0 .
 ```
 
 如已缓存 Nginx 基础镜像，可先生成前端产物再使用预构建 Dockerfile：
@@ -15,7 +15,7 @@ docker build -f backend/Dockerfile -t spark-control-center-backend:1.5.5 .
 ```bash
 npm ci
 npm run build
-docker build -f Dockerfile.prebuilt -t spark-control-center:1.5.5 .
+docker build -f Dockerfile.prebuilt -t spark-control-center:1.6.0 .
 ```
 
 前端监听 `8080`，以 UID 101 运行，支持只读根文件系统，并提供 `/healthz`。Helm 在运行时挂载 `/usr/share/nginx/html/config/config.js`，无需为不同环境重建镜像。
@@ -35,7 +35,7 @@ helm upgrade --install spark-console ./charts/spark-control-center \
 真实部署先复制生产配置示例，再以私有配置覆盖环境参数：
 
 ```bash
-helm show values ./spark-control-center-1.5.5.tgz > values-production.local.yaml
+helm show values ./spark-control-center-1.6.0.tgz > values-production.local.yaml
 helm upgrade --install spark-console ./charts/spark-control-center \
   --namespace spark-console --create-namespace \
   -f values-production.local.yaml

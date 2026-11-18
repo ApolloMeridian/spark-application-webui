@@ -21,7 +21,12 @@ const pluginRoutes = [
     /"((?:GET|POST|PUT|PATCH|DELETE|OPTIONS) \/v1\/[^"\n]+)"/g,
   ),
 ].map((x) => x[1].replace(" /v1/", " /v1/object-storage/"));
-const allRoutes = [...new Set([...routes, ...pluginRoutes])].sort(
+const sqlRoutes = [
+  ...read("object-storage/internal/sqlquery/server.go").matchAll(
+    /"((?:GET|POST|PUT|PATCH|DELETE) \/v1\/[^"\n]+)"/g,
+  ),
+].map((x) => x[1].replace(" /v1/", " /v1/sql/"));
+const allRoutes = [...new Set([...routes, ...pluginRoutes, ...sqlRoutes])].sort(
   (a, b) =>
     a.split(" ")[1].localeCompare(b.split(" ")[1]) || a.localeCompare(b),
 );
@@ -58,6 +63,7 @@ const tables = [
       "backend/internal/store/auth_budget.go",
       "object-storage/internal/storage/store.go",
       "object-storage/internal/storage/limits.go",
+      "object-storage/internal/sqlquery/server.go",
     ].flatMap((p) =>
       [...read(p).matchAll(/CREATE TABLE IF NOT EXISTS ([a-z_]+)/g)].map(
         (x) => x[1],
@@ -86,6 +92,8 @@ const group = (key, en) => {
     return en
       ? "Optional authenticated storage gateway"
       : "选配对象存储签名网关";
+  if (key.startsWith("SQL_"))
+    return en ? "Optional SQL gateway; see SQL.md" : "选配 SQL 网关，见 SQL.md";
   if (key.startsWith("PROMETHEUS_") || key.startsWith("LOKI_"))
     return en
       ? "Observability endpoint/query settings"

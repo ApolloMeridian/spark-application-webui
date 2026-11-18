@@ -17,6 +17,9 @@ type Config struct {
 	ObjectStorageEnabled    bool
 	ObjectStorageURL        string
 	ObjectStorageSigningKey string
+	SQLEnabled              bool
+	SQLURL                  string
+	SQLSigningKey           string
 	WorkflowsEnabled        bool
 	SchedulerEnabled        bool
 	SchedulerInterval       time.Duration
@@ -84,6 +87,9 @@ func Load() (Config, error) {
 		ObjectStorageEnabled:    boolEnv("OBJECT_STORAGE_ENABLED", false),
 		ObjectStorageURL:        strings.TrimRight(os.Getenv("OBJECT_STORAGE_URL"), "/"),
 		ObjectStorageSigningKey: os.Getenv("OBJECT_STORAGE_SIGNING_KEY"),
+		SQLEnabled:              boolEnv("SQL_ENABLED", false),
+		SQLURL:                  strings.TrimRight(os.Getenv("SQL_URL"), "/"),
+		SQLSigningKey:           os.Getenv("SQL_SIGNING_KEY"),
 		WorkflowsEnabled:        boolEnv("WORKFLOWS_ENABLED", true),
 		SchedulerEnabled:        boolEnv("WORKFLOW_SCHEDULER_ENABLED", true),
 		SchedulerInterval:       durationEnv("WORKFLOW_SCHEDULER_INTERVAL", 5*time.Second),
@@ -168,6 +174,12 @@ func Load() (Config, error) {
 		u, err := url.Parse(cfg.ObjectStorageURL)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" || len(cfg.ObjectStorageSigningKey) < 32 {
 			return Config{}, fmt.Errorf("object storage requires an http(s) service URL and a signing key of at least 32 bytes")
+		}
+	}
+	if cfg.SQLEnabled {
+		u, err := url.Parse(cfg.SQLURL)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" || len(cfg.SQLSigningKey) < 32 {
+			return Config{}, fmt.Errorf("SQL requires an http(s) service URL and a signing key of at least 32 bytes")
 		}
 	}
 	if cfg.SchedulerInterval < time.Second {

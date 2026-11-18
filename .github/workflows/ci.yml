@@ -26,7 +26,9 @@ jobs:
         run: npm ci
 
       - name: Audit dependency vulnerabilities
-        run: npm audit --audit-level=high
+        run: |
+          npm audit --omit=dev --audit-level=high
+          npm run audit:build
 
       - name: Test frontend
         run: npm test
@@ -59,6 +61,8 @@ jobs:
           docker build -f Dockerfile.prebuilt -t "spark-control-center:${version}" .
           docker build -f backend/Dockerfile -t "spark-control-center-backend:${version}" .
           docker build -f object-storage/Dockerfile -t "spark-control-center-object-storage:${version}" .
+          docker build -f sql-gateway/Dockerfile -t "spark-control-center-sql:${version}" .
+          QA_VERSION="${version}" node scripts/container-sql-smoke.mjs
           QA_VERSION="${version}" node scripts/container-object-storage-smoke.mjs
 
       - name: Set up Helm
@@ -69,6 +73,7 @@ jobs:
           node scripts/object-storage-helm-test.mjs
           helm lint charts/spark-control-center
           helm lint charts/spark-control-center -f charts/spark-control-center/examples/values-production.yaml
+          helm lint charts/spark-control-center -f charts/spark-control-center/examples/values-production.yaml -f charts/spark-control-center/examples/values-sql-minio.yaml
           for storage in s3 gke wif; do
             helm lint charts/spark-control-center -f charts/spark-control-center/examples/values-production.yaml -f "charts/spark-control-center/examples/values-object-storage-${storage}.yaml"
           done

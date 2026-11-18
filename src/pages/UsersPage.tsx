@@ -492,8 +492,8 @@ function TenantPermissionEditor({
   const change = (patch: Partial<TenantPermissions>) =>
     onChange({ ...value, ...patch });
   const access = (
-    read: "templatesRead" | "workflowsRead" | "alertsRead",
-    write: "templatesWrite" | "workflowsWrite" | "alertsWrite",
+    read: "templatesRead" | "workflowsRead" | "alertsRead" | "sqlQuery",
+    write: "templatesWrite" | "workflowsWrite" | "alertsWrite" | "sqlManage",
     label: string,
   ) => (
     <Form.Item label={label}>
@@ -552,6 +552,11 @@ function TenantPermissionEditor({
         "alertsRead",
         "alertsWrite",
         en ? "Alert center and rules" : "告警中心与规则",
+      )}
+      {runtimeConfig.features.sql && access(
+        "sqlQuery",
+        "sqlManage",
+        en ? "SQL workspace and table grants (administrator)" : "SQL 工作台与表授权（管理员）",
       )}
       {(["submit", "kill", "delete", "objectStorage"] as const).map((key) => (
         <Form.Item

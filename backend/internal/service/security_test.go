@@ -40,7 +40,9 @@ func TestNativeExecutorSelectorComesFromValidatedDriver(t *testing.T) {
 		{Name: "driver", Role: "driver", ApplicationUID: "uid-1", Labels: map[string]string{"spark-app-selector": "native-app-id"}},
 		{Name: "native-exec", Role: "executor", Labels: map[string]string{"spark-app-selector": "native-app-id"}},
 		{Name: "other-exec", Role: "executor", Labels: map[string]string{"spark-app-selector": "other-id"}},
+		{Name: "same-native-name", Role: "executor", Labels: map[string]string{"spark-app-name": "demo", "spark-app-selector": "other-id"}},
 		{Name: "conflicting-exec", Role: "executor", ApplicationUID: "foreign", Labels: map[string]string{"spark-app-selector": "native-app-id"}},
+		{Name: "conflicting-cr-label", Role: "executor", Labels: map[string]string{"sparkoperator.k8s.io/app-name": "foreign", "spark-app-selector": "native-app-id"}},
 	}
 	result := relatedPods(app, pods)
 	if len(result) != 2 || result[1].Name != "native-exec" {

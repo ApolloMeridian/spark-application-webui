@@ -1,0 +1,177 @@
+{{- if .Values.sql.enabled }}
+{{- if not (and .Values.backend.enabled .Values.apiProxy.enabled (eq .Values.runtimeConfig.dataMode "api") (not .Values.apiProxy.upstream)) }}
+{{- fail "sql requires the chart backend, default apiProxy upstream and runtimeConfig.dataMode=api" }}
+{{- end }}
+{{- $sql := .Values.sql }}
+{{- $name := printf "%s-sql" (include "spark-control-center.fullname" .) }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "spark-control-center.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "spark-control-center.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sql
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: sql
+  ports:
+    - name: http
+      port: 8083
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "spark-control-center.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: sql
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: sql
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: sql
+          image: "{{ $sql.image.repository }}:{{ $sql.image.tag }}"
+          imagePullPolicy: {{ $sql.image.pullPolicy }}
+          securityContext:
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+            readOnlyRootFilesystem: true
+          ports:
+            - { name: http, containerPort: 8083 }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+          env:
+            - name: SQL_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "sql.internalAuth.existingSecret is required" $sql.internalAuth.existingSecret | quote }}
+                  key: {{ $sql.internalAuth.key | quote }}
+            - name: SQL_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "sql.database.existingSecret is required" $sql.database.existingSecret | quote }}
+                  key: {{ $sql.database.key | quote }}
+            - name: SQL_PROFILES_FILE
+              value: /etc/spark-console/sql/profiles.json
+            - name: SQL_KYUUBI_URL
+              value: {{ required "sql.kyuubi.url is required" $sql.kyuubi.url | quote }}
+            - name: SQL_POLARIS_URL
+              value: {{ required "sql.catalog.url is required" $sql.catalog.url | quote }}
+            - name: SQL_POLARIS_REALM
+              value: {{ $sql.catalog.realm | quote }}
+            - name: SQL_POLARIS_WAREHOUSE
+              value: {{ required "sql.catalog.warehouse is required" $sql.catalog.warehouse | quote }}
+            - name: SQL_RESULT_ENDPOINT
+              value: {{ required "sql.results.endpoint is required" $sql.results.endpoint | quote }}
+            - name: SQL_RESULT_REGION
+              value: {{ $sql.results.region | quote }}
+            - name: SQL_RESULT_BUCKET
+              value: {{ required "sql.results.bucket is required" $sql.results.bucket | quote }}
+            - name: SQL_RESULT_PATH_STYLE
+              value: {{ $sql.results.pathStyle | quote }}
+            - name: SQL_RESULT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "sql.results.credentialsSecret is required" $sql.results.credentialsSecret | quote }}
+                  key: {{ $sql.results.accessKeyKey | quote }}
+            - name: SQL_RESULT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $sql.results.credentialsSecret | quote }}
+                  key: {{ $sql.results.secretKeyKey | quote }}
+            - name: SQL_MAX_ROWS
+              value: {{ $sql.limits.maxRows | quote }}
+            - name: SQL_MAX_BYTES
+              value: {{ $sql.limits.maxBytes | quote }}
+            - name: SQL_WORKERS
+              value: {{ $sql.limits.workers | quote }}
+            - name: SQL_QUERY_TIMEOUT
+              value: {{ $sql.limits.queryTimeout | quote }}
+            - name: SQL_RESULT_TTL
+              value: {{ $sql.limits.resultTTL | quote }}
+            - name: SQL_ALLOW_HTTP
+              value: {{ $sql.tls.allowHTTP | quote }}
+            {{- if $sql.tls.caConfigMap }}
+            - name: SQL_CA_FILE
+              value: /etc/spark-console/ca/ca.crt
+            {{- end }}
+          resources:
+            {{- toYaml $sql.resources | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: identities, mountPath: /etc/spark-console/sql, readOnly: true }
+            {{- if $sql.tls.caConfigMap }}
+            - { name: ca, mountPath: /etc/spark-console/ca, readOnly: true }
+            {{- end }}
+      volumes:
+        - name: tmp
+          emptyDir: { sizeLimit: 32Mi }
+        - name: identities
+          secret:
+            secretName: {{ required "sql.identities.existingSecret is required" $sql.identities.existingSecret | quote }}
+            items:
+              - { key: {{ $sql.identities.key | quote }}, path: profiles.json }
+        {{- if $sql.tls.caConfigMap }}
+        - name: ca
+          configMap:
+            name: {{ $sql.tls.caConfigMap | quote }}
+            items:
+              - { key: {{ $sql.tls.caKey | quote }}, path: ca.crt }
+        {{- end }}
+{{- if $sql.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: sql
+  policyTypes: [Ingress{{ if $sql.networkPolicy.egress }}, Egress{{ end }}]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "spark-control-center.backendSelectorLabels" . | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8083 }
+  {{- with $sql.networkPolicy.egress }}
+  egress:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

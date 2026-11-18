@@ -67,6 +67,17 @@ spec:
                   name: {{ .Values.objectStorage.internalAuth.existingSecret | quote }}
                   key: {{ .Values.objectStorage.internalAuth.signingKeyKey | quote }}
             {{- end }}
+            {{- if .Values.sql.enabled }}
+            - name: SQL_ENABLED
+              value: "true"
+            - name: SQL_URL
+              value: "http://{{ include "spark-control-center.fullname" . }}-sql:8083"
+            - name: SQL_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sql.internalAuth.existingSecret | quote }}
+                  key: {{ .Values.sql.internalAuth.key | quote }}
+            {{- end }}
             - name: HTTP_ADDR
               value: ":{{ .Values.backend.service.port }}"
             - name: KUBERNETES_CLUSTER_NAME

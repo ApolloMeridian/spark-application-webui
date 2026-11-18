@@ -1,6 +1,6 @@
 image:
   repository: registry.example.com/platform/spark-control-center
-  tag: "1.5.5"
+  tag: "1.6.0"
 
 backend:
   enabled: false

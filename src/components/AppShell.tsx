@@ -1,4 +1,5 @@
 import { hasPermission } from '../permissions';
+import { DatabaseOutlined } from '@ant-design/icons';
 import { HistoryOutlined, ScheduleOutlined, PartitionOutlined, AlertOutlined, AppstoreOutlined, AuditOutlined, CloudServerOutlined, DeploymentUnitOutlined, FileAddOutlined, GlobalOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SnippetsOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons';
 import { Avatar, Button, Dropdown, Layout, Menu, Select, Space, Tag, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
@@ -17,10 +18,11 @@ export function AppShell() {
   const { session, logout, setRole } = useAuth(); const { t, locale, setLocale } = useI18n();
   const visibleNamespaces = session?.namespaces?.length ? runtimeConfig.cluster.namespaces.filter((value) => session.namespaces.includes(value)) : runtimeConfig.cluster.namespaces;
   useEffect(() => { const onResize = () => window.innerWidth < 960 && setCollapsed(true); window.addEventListener('resize', onResize); return () => window.removeEventListener('resize', onResize); }, []);
-  const selected = ['/object-storage', '/projects', '/schedules', '/workflow-history'].includes(location.pathname) ? location.pathname : location.pathname.startsWith('/applications') ? '/applications' : location.pathname.startsWith('/templates') ? '/templates' : location.pathname.startsWith('/alerts') ? '/alerts' : location.pathname.startsWith('/submit') ? '/submit' : location.pathname.startsWith('/audit') ? '/audit' : location.pathname.startsWith('/users') ? '/users' : '/overview';
+  const selected = ['/sql', '/object-storage', '/projects', '/schedules', '/workflow-history'].includes(location.pathname) ? location.pathname : location.pathname.startsWith('/applications') ? '/applications' : location.pathname.startsWith('/templates') ? '/templates' : location.pathname.startsWith('/alerts') ? '/alerts' : location.pathname.startsWith('/submit') ? '/submit' : location.pathname.startsWith('/audit') ? '/audit' : location.pathname.startsWith('/users') ? '/users' : '/overview';
   const menuItems = useMemo(() => [
     { key: '/overview', icon: <AppstoreOutlined />, label: t('overview') },
     { key: '/applications', icon: <DeploymentUnitOutlined />, label: t('applications') },
+    ...(runtimeConfig.features.sql && hasPermission(session, 'sqlQuery') ? [{ key: '/sql', icon: <DatabaseOutlined />, label: locale === 'en-US' ? 'SQL workspace' : 'SQL 工作台' }] : []),
     ...(runtimeConfig.features.objectStorage && hasPermission(session, 'objectStorage') ? [{ key: '/object-storage', icon: <CloudServerOutlined />, label: locale === 'en-US' ? 'Object storage' : '对象存储' }] : []),
     ...(runtimeConfig.features.workflows && hasPermission(session, 'workflowsRead') ? [
       { key: '/projects', icon: <PartitionOutlined />, label: locale === 'en-US' ? 'Projects & workflows' : '项目与工作流' },

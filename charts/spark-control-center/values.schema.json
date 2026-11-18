@@ -18,6 +18,58 @@
       "type": "object",
       "properties": { "annotations": { "$ref": "#/definitions/annotationMap" } }
     },
+    "sql": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 },
+            "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+          }
+        },
+        "internalAuth": { "type": "object" },
+        "database": { "type": "object" },
+        "identities": { "type": "object" },
+        "kyuubi": { "type": "object", "properties": { "url": { "type": "string" } } },
+        "catalog": {
+          "type": "object",
+          "properties": {
+            "url": { "type": "string" }, "realm": { "type": "string" },
+            "warehouse": { "type": "string" }
+          }
+        },
+        "results": {
+          "type": "object",
+          "properties": {
+            "endpoint": { "type": "string" }, "pathStyle": { "type": "boolean" },
+            "bucket": { "type": "string" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "maxRows": { "type": "integer", "minimum": 1, "maximum": 100000 },
+            "maxBytes": { "type": "integer", "minimum": 1024, "maximum": 67108864 },
+            "workers": { "type": "integer", "minimum": 1, "maximum": 8 },
+            "queryTimeout": { "type": "string" },
+            "resultTTL": { "type": "string" }
+          }
+        },
+        "tls": { "type": "object", "properties": { "allowHTTP": { "type": "boolean" } } },
+        "resources": { "type": "object" },
+        "networkPolicy": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "egress": { "type": "array", "items": { "type": "object" } }
+          }
+        }
+      }
+    },
     "objectStorage": {
       "type": "object",
       "additionalProperties": false,

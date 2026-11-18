@@ -1,0 +1,23 @@
+.sql-panels {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.sql-main {
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+}
+
+.sql-full-width { width: 100%; }
+.sql-editor { font-family: "IBM Plex Mono", Consolas, monospace; }
+.sql-schema { margin-top: 16px; overflow-wrap: anywhere; }
+.sql-schema .ant-btn { margin: 8px 0; }
+.sql-grant-form { margin-bottom: 12px; }
+.sql-grant-form .ant-select { min-width: 220px; }
+
+@media (max-width: 940px) {
+  .sql-panels { grid-template-columns: minmax(0, 1fr); }
+}

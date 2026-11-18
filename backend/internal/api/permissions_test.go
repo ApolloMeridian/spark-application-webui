@@ -22,6 +22,9 @@ func TestTenantCapabilityRoutes(t *testing.T) {
 		{"GET", "/v1/diagnostics/fingerprints", "alertsRead"}, {"GET", "/v1/projects/p/runs", "workflowsRead"},
 		{"POST", "/v1/projects/p/workflows/f/trigger", "workflowsWrite"},
 		{"GET", "/v1/object-storage/connections", "objectStorage"},
+		{"GET", "/v1/sql/queries", "sqlQuery"},
+		{"POST", "/v1/sql/queries", "sqlQuery"},
+		{"PUT", "/v1/sql/grants", "sqlManage"},
 		{"POST", "/v1/namespaces/spark/applications", "submit"},
 		{"POST", "/v1/namespaces/spark/applications/a/kill", "kill"},
 		{"DELETE", "/v1/namespaces/spark/applications/a", "delete"},
@@ -31,6 +34,25 @@ func TestTenantCapabilityRoutes(t *testing.T) {
 		if got := requestCapability(httptest.NewRequest(x.method, x.path, nil)); got != x.want {
 			t.Errorf("%s %s: %q", x.method, x.path, got)
 		}
+	}
+}
+
+func TestSQLOptInAndAdminManagement(t *testing.T) {
+	u := domain.User{Role: domain.RoleAdmin}
+	if u.Can("sqlQuery") || u.Can("sqlManage") {
+		t.Fatal("legacy admin automatically gained SQL access")
+	}
+	u.Permissions = &domain.TenantPermissions{SQLManage: true}
+	if u.Can("sqlManage") {
+		t.Fatal("SQL management did not require query access")
+	}
+	u.Permissions.SQLQuery = true
+	if !u.Can("sqlManage") {
+		t.Fatal("configured admin was denied SQL management")
+	}
+	u.Role = domain.RoleViewer
+	if !u.Can("sqlQuery") || u.Can("sqlManage") {
+		t.Fatal("viewer SQL permissions do not match tenant policy")
 	}
 }
 

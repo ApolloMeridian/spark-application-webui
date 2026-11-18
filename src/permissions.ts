@@ -13,6 +13,8 @@ export interface TenantPermissions {
   alertsRead: boolean;
   alertsWrite: boolean;
   objectStorage: boolean;
+  sqlQuery?: boolean;
+  sqlManage?: boolean;
 }
 export type Capability = Exclude<
   keyof TenantPermissions,
@@ -31,6 +33,8 @@ export const minimalPermissions: TenantPermissions = {
   alertsRead: false,
   alertsWrite: false,
   objectStorage: false,
+  sqlQuery: false,
+  sqlManage: false,
 };
 export function hasPermission(
   user: UserAccount | null | undefined,
@@ -38,6 +42,9 @@ export function hasPermission(
 ): boolean {
   if (!user || user.disabled) return false;
   const p = user.permissions;
+  if (capability === "sqlQuery") return Boolean(p?.sqlQuery);
+  if (capability === "sqlManage")
+    return user.role === "admin" && Boolean(p?.sqlQuery && p.sqlManage);
   if (!p)
     return (
       [

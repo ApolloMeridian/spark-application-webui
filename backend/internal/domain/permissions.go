@@ -15,6 +15,8 @@ type TenantPermissions struct {
 	AlertsRead     bool     `json:"alertsRead"`
 	AlertsWrite    bool     `json:"alertsWrite"`
 	ObjectStorage  bool     `json:"objectStorage"`
+	SQLQuery       bool     `json:"sqlQuery"`
+	SQLManage      bool     `json:"sqlManage"`
 }
 
 func DefaultTenant(role UserRole) string {
@@ -29,6 +31,12 @@ func (u User) Can(capability string) bool {
 		return false
 	}
 	p := u.Permissions
+	if capability == "sqlQuery" {
+		return p != nil && p.SQLQuery
+	}
+	if capability == "sqlManage" {
+		return p != nil && p.SQLQuery && p.SQLManage && u.Role == RoleAdmin
+	}
 	if p == nil {
 		switch capability {
 		case "templatesRead", "workflowsRead", "alertsRead", "objectStorage":

@@ -21,6 +21,7 @@ import { runtimeConfig } from './runtimeConfig';
 import { hasPermission, type Capability } from './permissions';
 import { lazy, Suspense } from 'react';
 const ObjectStoragePage = lazy(() => import('./pages/ObjectStoragePage'));
+const SqlPage = lazy(() => import('./pages/SqlPage'));
 
 function ProtectedRoute() {
   const { session, loading } = useAuth();
@@ -59,6 +60,7 @@ function ThemedApp() {
             <Route element={<ProtectedRoute />}>
               <Route element={<AppShell />}>
                 <Route path="/overview" element={<OverviewPage />} />
+                {runtimeConfig.features.sql && <Route path="/sql" element={<PermissionRoute capability="sqlQuery"><Suspense fallback={<Spin />}><SqlPage /></Suspense></PermissionRoute>} />}
                 <Route path="/object-storage" element={runtimeConfig.features.objectStorage ? <PermissionRoute capability="objectStorage"><Suspense fallback={<Spin />}><ObjectStoragePage /></Suspense></PermissionRoute> : <Navigate to="/overview" replace />} />
                 <Route path="/applications" element={<ApplicationsPage />} />
                 <Route path="/applications/:namespace/:name" element={<ApplicationDetailPage />} />

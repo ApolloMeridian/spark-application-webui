@@ -849,7 +849,17 @@ func (s *Service) mapApplication(object kube.Object, pods []kube.Pod, usage map[
 			executorByName[podName] = domain.ExecutorPod{Name: podName, State: executorPresentationState(state, raw), RawState: raw, Resources: domain.PodResource{Request: executorFallback}}
 		}
 	}
+	nodePools := s.overviewNodes.Load()
 	for _, pod := range pods {
+		nodePool := pod.NodePool
+		if nodePools != nil {
+			if elastic, matched := nodePools.elasticByNode[pod.Node]; matched {
+				nodePool = "baseline"
+				if elastic {
+					nodePool = "autoscale"
+				}
+			}
+		}
 		resource := domain.PodResource{Request: pod.Request}
 		if resource.Request.CPU == 0 && resource.Request.MemoryGiB == 0 {
 			if strings.EqualFold(pod.Role, "driver") || pod.Name == driverPodName {
@@ -867,12 +877,12 @@ func (s *Service) mapApplication(object kube.Object, pods []kube.Pod, usage map[
 			app.DriverPod = pod.Name
 			app.DriverNode = pod.Node
 			app.DriverPhase = pod.Phase
-			app.DriverNodePool = pod.NodePool
+			app.DriverNodePool = nodePool
 			continue
 		}
 		executorByName[pod.Name] = domain.ExecutorPod{
 			Name: pod.Name, State: executorPresentationState(state, pod.Phase), RawState: pod.Phase, Resources: resource, Node: pod.Node,
-			NodePool: pod.NodePool, StartedAt: pod.StartedAt, Restarts: pod.Restarts,
+			NodePool: nodePool, StartedAt: pod.StartedAt, Restarts: pod.Restarts,
 		}
 	}
 	if len(executorByName) == 0 {
@@ -1039,13 +1049,13 @@ func relatedPods(object kube.Object, pods []kube.Pod) []kube.Pod {
 }
 
 func podApplicationIdentity(pod kube.Pod, name, uid string) (matched, conflict bool) {
-	for _, key := range []string{"sparkoperator.k8s.io/app-name", "spark-app-name"} {
-		if value := pod.Labels[key]; value != "" {
-			if value != name {
-				return false, true
-			}
-			matched = true
+	// Spark's native spark-app-name is the Spark job name. Different
+	// SparkApplications can run the same job with the same native name.
+	if value := pod.Labels["sparkoperator.k8s.io/app-name"]; value != "" {
+		if value != name {
+			return false, true
 		}
+		matched = true
 	}
 	if pod.ApplicationUID != "" {
 		if pod.ApplicationUID != uid {

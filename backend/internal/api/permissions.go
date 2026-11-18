@@ -11,6 +11,10 @@ func requestCapability(r *http.Request) string {
 	p := r.URL.Path
 	write := r.Method != http.MethodGet && r.Method != http.MethodHead
 	switch {
+	case p == "/v1/sql/grants":
+		return "sqlManage"
+	case strings.HasPrefix(p, "/v1/sql/"):
+		return "sqlQuery"
 	case strings.HasPrefix(p, "/v1/object-storage"):
 		return "objectStorage"
 	case strings.HasPrefix(p, "/v1/templates"):
