@@ -87,17 +87,22 @@ JSON models: `src/types.ts`, `src/workflows.ts`, `src/objectStorage.ts` and `bac
 | GET | `/v1/projects/{project}/workflows/{id}/versions` |
 | DELETE | `/v1/projects/{project}/workflows/{id}/versions/{version}` |
 | POST | `/v1/projects/{project}/workflows/{id}/versions/{version}/restore` |
+| POST | `/v1/sql/catalog` |
 | DELETE | `/v1/sql/grants` |
 | GET | `/v1/sql/grants` |
 | PUT | `/v1/sql/grants` |
+| GET | `/v1/sql/namespaces` |
 | GET | `/v1/sql/queries` |
 | POST | `/v1/sql/queries` |
 | GET | `/v1/sql/queries/{id}` |
 | POST | `/v1/sql/queries/{id}/cancel` |
 | GET | `/v1/sql/queries/{id}/download` |
 | GET | `/v1/sql/queries/{id}/pages/{page}` |
+| GET | `/v1/sql/queries/{id}/statement` |
 | GET | `/v1/sql/table` |
 | GET | `/v1/sql/tables` |
+| GET | `/v1/sql/view` |
+| GET | `/v1/sql/views` |
 | GET | `/v1/stream` |
 | GET | `/v1/templates` |
 | POST | `/v1/templates` |
@@ -226,7 +231,9 @@ Startup migrations require schema/table/index privileges. Back up PostgreSQL bef
 - `application_template_versions`
 - `application_templates`
 - `authentication_rate_windows`
+- `console_sql_bootstrap_claims`
 - `console_sql_grants`
+- `console_sql_permissions`
 - `console_sql_queries`
 - `live_applications`
 - `local_user_sessions`

@@ -75,8 +75,8 @@ spec:
             - name: SQL_SIGNING_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.sql.internalAuth.existingSecret | quote }}
-                  key: {{ .Values.sql.internalAuth.key | quote }}
+                  name: {{ .Values.objectStorage.internalAuth.existingSecret | quote }}
+                  key: {{ .Values.objectStorage.internalAuth.signingKeyKey | quote }}
             {{- end }}
             - name: HTTP_ADDR
               value: ":{{ .Values.backend.service.port }}"

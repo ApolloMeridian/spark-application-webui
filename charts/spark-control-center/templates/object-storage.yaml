@@ -18,6 +18,9 @@
   {{- $connections = append $connections $item }}
 {{- end }}
 {{- $config := dict "connections" $connections "bootstrapGrants" $settings.bootstrapGrants "textMaxBytes" $settings.limits.textMaxBytes "maxUploadBytes" $settings.limits.maxUploadBytes "maxDownloadBytes" $settings.limits.maxDownloadBytes "partSizeBytes" $settings.limits.partSizeBytes "maxConcurrentTransfers" $settings.limits.maxConcurrentTransfers "requestsPerMinute" $settings.limits.requestsPerMinute "transferTimeoutSeconds" $settings.limits.transferTimeoutSeconds "retentionDays" $settings.audit.retentionDays }}
+{{- with (include "spark-control-center.sqlResultLocation" . | fromJson) }}
+  {{- $_ := set $config "sqlResults" . }}
+{{- end }}
 {{- if $settings.serviceAccount.create }}
 apiVersion: v1
 kind: ServiceAccount
@@ -202,6 +205,12 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "spark-control-center.backendSelectorLabels" . | nindent 14 }}
+        {{- if .Values.sql.enabled }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: sql
+        {{- end }}
       ports: [{ protocol: TCP, port: 8082 }]
   egress:
     {{- toYaml $settings.networkPolicy.egress | nindent 4 }}

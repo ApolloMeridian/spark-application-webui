@@ -4,6 +4,14 @@
 {{- end }}
 {{- $sql := .Values.sql }}
 {{- $name := printf "%s-sql" (include "spark-control-center.fullname" .) }}
+{{- $location := include "spark-control-center.sqlResultLocation" . | fromJson }}
+{{- $bootstrap := list }}
+{{- range .Values.objectStorage.bootstrapGrants }}
+  {{- if and (eq .connection $location.connection) (or .allBuckets (eq (default "" .bucket) $location.bucket)) }}
+    {{- $bootstrap = append $bootstrap (dict "username" .username "tenantId" .tenantId) }}
+  {{- end }}
+{{- end }}
+{{- $catalogSecret := default (include "spark-control-center.backendSecretName" .) $sql.catalog.credentialsSecret }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -37,6 +45,8 @@ metadata:
     app.kubernetes.io/component: sql
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/instance: {{ .Release.Name }}
@@ -76,15 +86,26 @@ spec:
             - name: SQL_SIGNING_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "sql.internalAuth.existingSecret is required" $sql.internalAuth.existingSecret | quote }}
-                  key: {{ $sql.internalAuth.key | quote }}
-            - name: SQL_DATABASE_URL
+                  name: {{ required "objectStorage.internalAuth.existingSecret is required" .Values.objectStorage.internalAuth.existingSecret | quote }}
+                  key: {{ .Values.objectStorage.internalAuth.signingKeyKey | quote }}
+            - { name: DATABASE_HOST, value: {{ .Values.database.host | quote }} }
+            - { name: DATABASE_PORT, value: {{ .Values.database.port | quote }} }
+            - { name: DATABASE_NAME, value: {{ .Values.database.name | quote }} }
+            - { name: DATABASE_SSLMODE, value: {{ .Values.database.sslMode | quote }} }
+            - name: DATABASE_USERNAME
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "sql.database.existingSecret is required" $sql.database.existingSecret | quote }}
-                  key: {{ $sql.database.key | quote }}
-            - name: SQL_PROFILES_FILE
-              value: /etc/spark-console/sql/profiles.json
+                  name: {{ include "spark-control-center.backendSecretName" . | quote }}
+                  key: {{ .Values.database.credentials.usernameKey | quote }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "spark-control-center.backendSecretName" . | quote }}
+                  key: {{ .Values.database.credentials.passwordKey | quote }}
+            - name: SQL_STORAGE_URL
+              value: "http://{{ include "spark-control-center.fullname" . }}-object-storage:8082"
+            - name: SQL_BOOTSTRAP_USERS
+              value: {{ $bootstrap | toJson | quote }}
             - name: SQL_KYUUBI_URL
               value: {{ required "sql.kyuubi.url is required" $sql.kyuubi.url | quote }}
             - name: SQL_POLARIS_URL
@@ -93,34 +114,32 @@ spec:
               value: {{ $sql.catalog.realm | quote }}
             - name: SQL_POLARIS_WAREHOUSE
               value: {{ required "sql.catalog.warehouse is required" $sql.catalog.warehouse | quote }}
-            - name: SQL_RESULT_ENDPOINT
-              value: {{ required "sql.results.endpoint is required" $sql.results.endpoint | quote }}
-            - name: SQL_RESULT_REGION
-              value: {{ $sql.results.region | quote }}
-            - name: SQL_RESULT_BUCKET
-              value: {{ required "sql.results.bucket is required" $sql.results.bucket | quote }}
-            - name: SQL_RESULT_PATH_STYLE
-              value: {{ $sql.results.pathStyle | quote }}
-            - name: SQL_RESULT_ACCESS_KEY
+            - name: SQL_POLARIS_ROLE
+              value: {{ required "sql.catalog.principalRole is required" $sql.catalog.principalRole | quote }}
+            - name: SQL_POLARIS_CLIENT_ID
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "sql.results.credentialsSecret is required" $sql.results.credentialsSecret | quote }}
-                  key: {{ $sql.results.accessKeyKey | quote }}
-            - name: SQL_RESULT_SECRET_KEY
+                  name: {{ $catalogSecret | quote }}
+                  key: {{ $sql.catalog.clientIDKey | quote }}
+            - name: SQL_POLARIS_CLIENT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ $sql.results.credentialsSecret | quote }}
-                  key: {{ $sql.results.secretKeyKey | quote }}
+                  name: {{ $catalogSecret | quote }}
+                  key: {{ $sql.catalog.clientSecretKey | quote }}
             - name: SQL_MAX_ROWS
               value: {{ $sql.limits.maxRows | quote }}
             - name: SQL_MAX_BYTES
-              value: {{ $sql.limits.maxBytes | quote }}
+              value: {{ $sql.limits.maxBytes | int64 | quote }}
             - name: SQL_WORKERS
               value: {{ $sql.limits.workers | quote }}
             - name: SQL_QUERY_TIMEOUT
               value: {{ $sql.limits.queryTimeout | quote }}
             - name: SQL_RESULT_TTL
               value: {{ $sql.limits.resultTTL | quote }}
+            - name: SQL_HISTORY_RETENTION
+              value: {{ $sql.history.retention | quote }}
+            - name: SQL_AUDIT_RETENTION
+              value: {{ $sql.audit.retention | quote }}
             - name: SQL_ALLOW_HTTP
               value: {{ $sql.tls.allowHTTP | quote }}
             {{- if $sql.tls.caConfigMap }}
@@ -131,18 +150,12 @@ spec:
             {{- toYaml $sql.resources | nindent 12 }}
           volumeMounts:
             - { name: tmp, mountPath: /tmp }
-            - { name: identities, mountPath: /etc/spark-console/sql, readOnly: true }
             {{- if $sql.tls.caConfigMap }}
             - { name: ca, mountPath: /etc/spark-console/ca, readOnly: true }
             {{- end }}
       volumes:
         - name: tmp
           emptyDir: { sizeLimit: 32Mi }
-        - name: identities
-          secret:
-            secretName: {{ required "sql.identities.existingSecret is required" $sql.identities.existingSecret | quote }}
-            items:
-              - { key: {{ $sql.identities.key | quote }}, path: profiles.json }
         {{- if $sql.tls.caConfigMap }}
         - name: ca
           configMap:

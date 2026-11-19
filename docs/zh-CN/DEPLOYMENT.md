@@ -205,7 +205,7 @@ Executor 日志通过 Loki `query_range` 查询，Pod 删除后仍可按时间�
 
 Chart 默认使用真实后端与 PostgreSQL 登录，不再默认 Mock。在单个 values 文件中指定初始管理员密码 Secret 和数据库 Secret。仅使用 OIDC 时设置 runtimeConfig.auth.mode=oidc、启用 oidc 并配置客户端 Secret/回调，此模式不要求初始本地管理员 Secret。存储仍需显式开启。
 
-新管理员/普通账户默认进入对应内置租户；升级保留已有账户与项目所属租户。在用户管理中配置租户权限，API 与调度器从 PostgreSQL 读取策略。参见[租户权限](WORKFLOWS.md)与[对象存储](OBJECT-STORAGE.md)。发布包含无私有前缀的前端/后端/存储三个 TAR 和 Helm TGZ，不生成校验文件。
+新管理员和普通账户默认进入对应的内置租户。升级保留账户与项目所属租户。在用户管理中配置租户权限，API 和调度器从 PostgreSQL 读取策略。1.6.1 发布包含四个无私有前缀的镜像包和两个 Helm 包。[租户权限](WORKFLOWS.md) · [对象存储](OBJECT-STORAGE.md) · [SQL 部署](SQL.md)
 
 ## 1.5.3 作业实例与终止操作
 

@@ -18,6 +18,7 @@ design.md
 /project_audit_report.md
 *[Rr][Oo][Aa][Dd][Mm][Aa][Pp]*
 *.local.yaml
+/values-test-1.6.0.local.yaml
 *.pem
 *.key
 *.crt

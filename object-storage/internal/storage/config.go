@@ -68,16 +68,17 @@ func (c Config) ExpandedBootstrap() ([]Bootstrap, error) {
 }
 
 type Config struct {
-	Connections            []Connection `json:"connections"`
-	Bootstrap              []Bootstrap  `json:"bootstrapGrants"`
-	MaxUpload              int64        `json:"maxUploadBytes"`
-	MaxDownload            int64        `json:"maxDownloadBytes"`
-	PartSize               int64        `json:"partSizeBytes"`
-	TextMaxBytes           int64        `json:"textMaxBytes"`
-	Concurrent             int          `json:"maxConcurrentTransfers"`
-	RetentionDays          int          `json:"retentionDays"`
-	RequestsPerMinute      int          `json:"requestsPerMinute"`
-	TransferTimeoutSeconds int          `json:"transferTimeoutSeconds"`
+	SQLResults             *ResultLocation `json:"sqlResults,omitempty"`
+	Connections            []Connection    `json:"connections"`
+	Bootstrap              []Bootstrap     `json:"bootstrapGrants"`
+	MaxUpload              int64           `json:"maxUploadBytes"`
+	MaxDownload            int64           `json:"maxDownloadBytes"`
+	PartSize               int64           `json:"partSizeBytes"`
+	TextMaxBytes           int64           `json:"textMaxBytes"`
+	Concurrent             int             `json:"maxConcurrentTransfers"`
+	RetentionDays          int             `json:"retentionDays"`
+	RequestsPerMinute      int             `json:"requestsPerMinute"`
+	TransferTimeoutSeconds int             `json:"transferTimeoutSeconds"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -149,6 +150,21 @@ func (c *Config) Validate() error {
 			}
 		default:
 			return fmt.Errorf("unsupported storage provider")
+		}
+	}
+	if c.SQLResults != nil {
+		x := c.SQLResults
+		if !ValidPrefix(x.Prefix) || x.Prefix == "" || len(x.Prefix) > 900 {
+			return fmt.Errorf("invalid private SQL result prefix")
+		}
+		found := false
+		for _, connection := range c.Connections {
+			if connection.ID == x.Connection && contains(connection.Buckets, x.Bucket) {
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("SQL results require a configured storage connection and bucket")
 		}
 	}
 	return nil

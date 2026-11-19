@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -13,24 +14,24 @@ import (
 )
 
 type Profile struct {
-	Tenant        string `json:"tenant"`
-	KyuubiUser    string `json:"kyuubiUser"`
-	KyuubiSecret  string `json:"kyuubiPassword"`
-	PolarisID     string `json:"polarisClientId"`
-	PolarisSecret string `json:"polarisClientSecret"`
-	PolarisRole   string `json:"polarisPrincipalRole"`
+	KyuubiUser string
+}
+
+type BootstrapUser struct {
+	Username string `json:"username"`
+	Tenant   string `json:"tenantId"`
 }
 
 type Config struct {
-	Database, Kyuubi, Polaris, Realm, Warehouse, CAFile        string
-	SigningKey, Endpoint, Region, Bucket, AccessKey, SecretKey string
-	PathStyle                                                  bool
-	Profiles                                                   map[string]Profile
-	MaxRows, MaxBytes, Workers                                 int
-	Timeout, Retention                                         time.Duration
+	Database, Kyuubi, Polaris, Realm, Warehouse, CAFile           string
+	SigningKey, StorageURL, PolarisID, PolarisSecret, PolarisRole string
+	Bootstrap                                                     []BootstrapUser
+	MaxRows, MaxBytes, Workers                                    int
+	Timeout, Retention, HistoryRetention, AuditRetention          time.Duration
 }
 
 var safeName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,127}$`)
+var catalogName = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,127}$`)
 var userName = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,128}$`)
 var icebergMetadataTables = map[string]bool{
 	"entries": true, "files": true, "data_files": true, "delete_files": true, "history": true,
@@ -42,37 +43,36 @@ var icebergMetadataTables = map[string]bool{
 func LoadConfig() (Config, error) {
 	env := os.Getenv
 	cfg := Config{
-		Database: env("SQL_DATABASE_URL"), SigningKey: env("SQL_SIGNING_KEY"),
+		SigningKey: env("SQL_SIGNING_KEY"), StorageURL: strings.TrimRight(env("SQL_STORAGE_URL"), "/"),
 		Kyuubi: strings.TrimRight(env("SQL_KYUUBI_URL"), "/"), Polaris: strings.TrimRight(env("SQL_POLARIS_URL"), "/"),
 		Realm: env("SQL_POLARIS_REALM"), Warehouse: env("SQL_POLARIS_WAREHOUSE"), CAFile: env("SQL_CA_FILE"),
-		Endpoint: env("SQL_RESULT_ENDPOINT"), Region: env("SQL_RESULT_REGION"), Bucket: env("SQL_RESULT_BUCKET"),
-		AccessKey: env("SQL_RESULT_ACCESS_KEY"), SecretKey: env("SQL_RESULT_SECRET_KEY"), PathStyle: env("SQL_RESULT_PATH_STYLE") == "true",
+		PolarisID: env("SQL_POLARIS_CLIENT_ID"), PolarisSecret: env("SQL_POLARIS_CLIENT_SECRET"), PolarisRole: env("SQL_POLARIS_ROLE"),
 	}
-	if len(cfg.SigningKey) < 32 || cfg.Database == "" || !userName.MatchString(cfg.Warehouse) ||
-		cfg.Bucket == "" || cfg.Region == "" || cfg.AccessKey == "" || cfg.SecretKey == "" {
-		return cfg, errors.New("SQL database, signing key, warehouse and private result bucket settings are required")
+	host, user, password := env("DATABASE_HOST"), env("DATABASE_USERNAME"), env("DATABASE_PASSWORD")
+	name, port, ssl := env("DATABASE_NAME"), env("DATABASE_PORT"), env("DATABASE_SSLMODE")
+	if host == "" || user == "" || password == "" || name == "" || port == "" || ssl == "" {
+		return cfg, errors.New("SQL requires the core database configuration")
 	}
-	for key, target := range map[string]string{"SQL_KYUUBI_URL": cfg.Kyuubi, "SQL_POLARIS_URL": cfg.Polaris, "SQL_RESULT_ENDPOINT": cfg.Endpoint} {
+	dsn := url.URL{Scheme: "postgres", Host: net.JoinHostPort(host, port), User: url.UserPassword(user, password), Path: "/" + name, RawQuery: url.Values{"sslmode": {ssl}}.Encode()}
+	cfg.Database = dsn.String()
+	if len(cfg.SigningKey) < 32 || !userName.MatchString(cfg.Warehouse) ||
+		!userName.MatchString(cfg.PolarisID) || strings.Contains(strings.ToLower(cfg.PolarisID), "root") ||
+		cfg.PolarisSecret == "" || !userName.MatchString(cfg.PolarisRole) || strings.EqualFold(cfg.PolarisRole, "all") {
+		return cfg, errors.New("SQL requires a signing key and a scoped Polaris service principal")
+	}
+	store, err := url.Parse(cfg.StorageURL)
+	if err != nil || store.Host == "" || store.User != nil || store.Path != "" || store.RawQuery != "" || store.Fragment != "" || (store.Scheme != "http" && store.Scheme != "https") {
+		return cfg, errors.New("SQL requires an internal object-storage URL")
+	}
+	for key, target := range map[string]string{"SQL_KYUUBI_URL": cfg.Kyuubi, "SQL_POLARIS_URL": cfg.Polaris} {
 		u, err := url.Parse(target)
 		if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
 			(u.Scheme != "https" && !(u.Scheme == "http" && env("SQL_ALLOW_HTTP") == "true")) {
 			return cfg, fmt.Errorf("%s must be an HTTPS endpoint (or explicitly enabled test HTTP)", key)
 		}
 	}
-	raw, err := os.ReadFile(env("SQL_PROFILES_FILE"))
-	if err != nil || len(raw) > 1<<20 || json.Unmarshal(raw, &cfg.Profiles) != nil || len(cfg.Profiles) == 0 {
-		return cfg, errors.New("SQL identity profiles Secret is missing or invalid")
-	}
-	users, principals := map[string]bool{}, map[string]bool{}
-	for id, p := range cfg.Profiles {
-		if id == "" || p.Tenant == "" || !userName.MatchString(p.KyuubiUser) || p.KyuubiSecret == "" ||
-			strings.EqualFold(p.KyuubiUser, "anonymous") || p.PolarisID == "" || p.PolarisSecret == "" ||
-			strings.Contains(strings.ToLower(p.PolarisID), "root") ||
-			!userName.MatchString(p.PolarisRole) || strings.EqualFold(p.PolarisRole, "all") ||
-			users[strings.ToLower(p.KyuubiUser)] || principals[p.PolarisID] {
-			return cfg, errors.New("each SQL profile requires a distinct authenticated user and scoped Polaris principal")
-		}
-		users[strings.ToLower(p.KyuubiUser)], principals[p.PolarisID] = true, true
+	if raw := env("SQL_BOOTSTRAP_USERS"); len(raw) > 65536 || json.Unmarshal([]byte(raw), &cfg.Bootstrap) != nil {
+		return cfg, errors.New("invalid SQL bootstrap users")
 	}
 	for _, setting := range []struct {
 		key      string
@@ -93,11 +93,37 @@ func LoadConfig() (Config, error) {
 	if err != nil || cfg.Timeout < time.Minute || cfg.Timeout > 30*time.Minute {
 		return cfg, errors.New("SQL_QUERY_TIMEOUT must be between 1m and 30m")
 	}
-	cfg.Retention, err = time.ParseDuration(env("SQL_RESULT_TTL"))
-	if err != nil || cfg.Retention < time.Minute || cfg.Retention > 24*time.Hour {
-		return cfg, errors.New("SQL_RESULT_TTL must be between 1m and 24h")
+	for _, setting := range []struct {
+		key, fallback string
+		value         *time.Duration
+		min, max      time.Duration
+	}{
+		{"SQL_RESULT_TTL", "1h", &cfg.Retention, 30 * time.Second, 30 * 24 * time.Hour},
+		{"SQL_HISTORY_RETENTION", "30d", &cfg.HistoryRetention, 24 * time.Hour, 365 * 24 * time.Hour},
+		{"SQL_AUDIT_RETENTION", "90d", &cfg.AuditRetention, 24 * time.Hour, 365 * 24 * time.Hour},
+	} {
+		raw := env(setting.key)
+		if raw == "" {
+			raw = setting.fallback
+		}
+		d, err := retentionDuration(raw)
+		if err != nil || d < setting.min || d > setting.max {
+			return cfg, fmt.Errorf("%s must be between %s and %s", setting.key, setting.min, setting.max)
+		}
+		*setting.value = d
 	}
 	return cfg, nil
+}
+
+func retentionDuration(value string) (time.Duration, error) {
+	if raw, ok := strings.CutSuffix(value, "d"); ok {
+		days, err := strconv.ParseUint(raw, 10, 16)
+		if err != nil || days > 365 {
+			return 0, errors.New("invalid number of days")
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(value)
 }
 
 func validTable(name string) bool {
@@ -109,7 +135,7 @@ func validTable(name string) bool {
 		return false
 	}
 	for _, part := range parts[1:] {
-		if !safeName.MatchString(part) {
+		if !catalogName.MatchString(part) {
 			return false
 		}
 	}

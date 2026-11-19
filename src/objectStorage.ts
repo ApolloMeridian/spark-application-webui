@@ -86,6 +86,7 @@ export interface StorageObject {
   version: string;
   modified?: string;
   directory: boolean;
+  readOnly?: boolean;
 }
 export interface StorageTarget {
   connection: string;

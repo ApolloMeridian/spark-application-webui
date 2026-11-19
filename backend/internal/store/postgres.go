@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS operation_audit (
 	  message text NOT NULL
 	)`,
 		`CREATE INDEX IF NOT EXISTS operation_audit_occurred_at_idx ON operation_audit (occurred_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS operation_audit_sql_retention_idx ON operation_audit (occurred_at, id) WHERE starts_with(operation, 'SQL_')`,
 		`CREATE INDEX IF NOT EXISTS operation_audit_application_idx ON operation_audit (namespace, application_name, occurred_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS spark_application_history (
   application_id text PRIMARY KEY,

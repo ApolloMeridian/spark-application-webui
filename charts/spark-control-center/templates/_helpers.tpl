@@ -65,3 +65,26 @@ app.kubernetes.io/component: backend
 {{ $key | quote }}: {{ $value | quote }}
 {{- end }}
 {{- end }}
+{{/* Validate the reserved destination before rendering any SQL deployment. */}}
+{{- define "spark-control-center.sqlResultLocation" -}}
+{{- $results := .Values.sql.results -}}
+{{- if or .Values.sql.enabled $results.connection $results.bucket $results.prefix -}}
+  {{- if not .Values.objectStorage.enabled -}}{{ fail "sql requires objectStorage.enabled=true" }}{{- end -}}
+  {{- if not (and $results.connection $results.bucket (regexMatch "^([A-Za-z0-9_][A-Za-z0-9._-]*/)+$" $results.prefix) (le (len $results.prefix) 900)) -}}
+    {{- fail "sql.results requires a connection, bucket and non-empty slash-terminated prefix" -}}
+  {{- end -}}
+  {{- $valid := false -}}
+  {{- range .Values.objectStorage.connections -}}
+    {{- if and (eq .id $results.connection) (has $results.bucket .buckets) -}}
+      {{- if and (eq .provider "s3") (not .s3.conditionalWrites) -}}
+        {{- fail "SQL results require conditional writes on the selected S3 connection" -}}
+      {{- end -}}
+      {{- $valid = true -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if not $valid -}}{{ fail "sql.results.bucket must be listed in the selected objectStorage connection" }}{{- end -}}
+  {{- dict "connection" $results.connection "bucket" $results.bucket "prefix" $results.prefix | toJson -}}
+{{- else -}}
+  {}
+{{- end -}}
+{{- end -}}

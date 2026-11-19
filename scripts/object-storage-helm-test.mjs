@@ -286,6 +286,65 @@ const configured = JSON.parse(
 );
 assert.equal(configured.textMaxBytes, 2097152);
 assert(!Object.hasOwn(configured, "downloadAudit"));
+const sqlFlags = [...s3, "-f", `${chart}/examples/values-sql-minio.yaml`];
+const sqlDocs = manifests(...sqlFlags);
+const sqlDeployment = sqlDocs.find(
+  (doc) => doc.kind === "Deployment" && doc.metadata.name.endsWith("-sql"),
+);
+const sqlEnv = Object.fromEntries(
+  sqlDeployment.spec.template.spec.containers[0].env.map((entry) => [
+    entry.name,
+    entry.valueFrom?.secretKeyRef ?? entry.value,
+  ]),
+);
+assert.deepEqual(sqlEnv.SQL_SIGNING_KEY, {
+  name: "spark-console-storage-signing",
+  key: "signing-key",
+});
+assert.equal(sqlEnv.DATABASE_PASSWORD.name, "spark-postgres-secret");
+assert.deepEqual(sqlEnv.SQL_POLARIS_CLIENT_SECRET, {
+  name: sqlEnv.DATABASE_PASSWORD.name,
+  key: "POLARIS_CLIENT_SECRET",
+});
+assert(!Object.keys(sqlEnv).some((name) => /SQL_(RESULTS|IDENTITIES|DATABASE_DSN)/.test(name)));
+const sqlResultLocation = (docs) =>
+  JSON.parse(
+    docs.find((doc) => doc.kind === "ConfigMap" && isPlugin(doc)).data[
+      "config.json"
+    ],
+  ).sqlResults;
+assert.deepEqual(sqlResultLocation(sqlDocs), {
+  connection: "minio",
+  bucket: "spark-artifacts",
+  prefix: "spark-console-sql/",
+});
+assert.deepEqual(
+  sqlResultLocation(manifests(...sqlFlags, "--set", "sql.enabled=false")),
+  sqlResultLocation(sqlDocs),
+);
+assert.throws(
+  () => manifests(...sqlFlags, "--set", "sql.results.bucket=unconfigured"),
+  /sql.results.bucket must be listed in the selected objectStorage connection/,
+);
+assert.throws(
+  () => manifests(...sqlFlags, "--set", "sql.results.prefix=relative"),
+  /sql.results requires a connection, bucket and non-empty slash-terminated prefix/,
+);
+const gcsSql = manifests(
+  "-f",
+  production,
+  "-f",
+  `${chart}/examples/values-object-storage-gke.yaml`,
+  "-f",
+  `${chart}/examples/values-sql-minio.yaml`,
+  "--set",
+  "sql.results.connection=gcs,sql.results.bucket=spark-artifacts-example",
+);
+assert.deepEqual(sqlResultLocation(gcsSql), {
+  connection: "gcs",
+  bucket: "spark-artifacts-example",
+  prefix: "spark-console-sql/",
+});
 for (const flags of [
   ["--set", "objectStorage.internalAuth.existingSecret="],
   ["--set", "objectStorage.connections[0].s3.credentialsSecret="],
@@ -366,6 +425,17 @@ assert(!/10\.0\.32\./.test(packagedValues));
 assert(
   packagedValues.indexOf("objectStorage:") > packagedValues.indexOf("backend:"),
 );
+const kyuubi = "charts/kyuubi";
+const kyuubiValues = `${kyuubi}/examples/values-spark-console.yaml`;
+const kyuubiDocs = parseAllDocuments(run("template", "kyuubi-scc", kyuubi, "-n", "kyuubi-scc", "-f", kyuubiValues,
+  "--set-json", 'args=["./bin/kyuubi","run"]')).map((doc) => doc.toJS()).filter(Boolean);
+const kyuubiPod = kyuubiDocs.find((doc) => doc.kind === "StatefulSet").spec.template.spec;
+assert.deepEqual(kyuubiPod.containers[0].args, ["./bin/kyuubi", "run"]);
+assert.equal(kyuubiPod.serviceAccountName, "kyuubi");
+assert(kyuubiDocs.some((doc) => doc.kind === "ServiceAccount" && doc.metadata.name === "kyuubi"));
+assert(kyuubiDocs.some((doc) => doc.kind === "RoleBinding" && doc.subjects.some((subject) =>
+  subject.name === "kyuubi" && subject.namespace === "kyuubi-scc")));
+run("lint", kyuubi, "-f", kyuubiValues);
 console.log(
-  "PASS: disabled/default and S3/GKE/generic WIF Helm resources, quoted annotation types and YAML 1.1 keywords, invalid annotation rejection, independent KSA, secret references and chart package.",
+  "PASS: storage and SQL chart resources, dedicated Kyuubi arguments and service account, and console chart packaging.",
 );

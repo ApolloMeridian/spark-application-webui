@@ -3,10 +3,11 @@ package sqlquery
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,16 +18,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"spark-control-center/object-storage/internal/storage"
 )
 
 const maxResponse = 8 << 20
 
 type clients struct {
 	http *http.Client
-	s3   *s3.Client
 	cfg  Config
 }
 
@@ -45,16 +43,7 @@ func newClients(cfg Config) (*clients, error) {
 	client := &http.Client{Transport: transport, Timeout: 195 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
-	store := s3.NewFromConfig(aws.Config{
-		Region: cfg.Region, Credentials: credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
-		HTTPClient: client, RetryMaxAttempts: 2,
-	}, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(cfg.Endpoint)
-		o.UsePathStyle = cfg.PathStyle
-		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
-		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
-	})
-	return &clients{http: client, s3: store, cfg: cfg}, nil
+	return &clients{http: client, cfg: cfg}, nil
 }
 
 func (c *clients) request(ctx context.Context, method, endpoint, contentType string, body io.Reader, authenticate func(*http.Request)) ([]byte, int, error) {
@@ -81,26 +70,63 @@ func (c *clients) request(ctx context.Context, method, endpoint, contentType str
 	return raw, response.StatusCode, nil
 }
 
-func (c *clients) parse(ctx context.Context, sql string) ([]string, error) {
+type objectAccess struct {
+	Scope, Action, Resource string
+	ViewVersion             int `json:"viewVersion,omitempty"`
+}
+
+type statementPlan struct {
+	Kind   string
+	Value  string
+	Access []objectAccess
+}
+
+type parseFailure struct {
+	status  int
+	message string
+}
+
+func (err parseFailure) Error() string { return err.message }
+
+func (c *clients) parse(ctx context.Context, sql string, scope planningContext) (statementPlan, error) {
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
-	raw, status, err := c.request(ctx, http.MethodPost, "http://127.0.0.1:18083/parse", "text/plain", strings.NewReader(sql), nil)
+	temps := make([]string, 0, len(scope.tempViews))
+	for name := range scope.tempViews {
+		temps = append(temps, name)
+	}
+	raw, status, err := c.request(ctx, http.MethodPost, "http://127.0.0.1:18083/parse", "text/plain", strings.NewReader(sql), func(r *http.Request) {
+		r.Header.Set("X-Sql-Namespace", scope.namespace)
+		r.Header.Set("X-Sql-Temp-Views", strings.Join(temps, ","))
+	})
 	if err != nil {
-		return nil, errors.New("Spark SQL parser unavailable")
+		return statementPlan{}, parseFailure{503, "Spark SQL parser unavailable"}
 	}
-	if status != 200 {
-		return nil, errors.New("only supported read-only Spark SQL is accepted; use polaris.namespace.table and supported built-in functions")
+	switch status {
+	case 400:
+		return statementPlan{}, parseFailure{400, "Invalid Spark SQL syntax"}
+	case 422:
+		return statementPlan{}, parseFailure{422, "SQL capability unavailable: " + string(raw)}
+	case 200:
+	default:
+		return statementPlan{}, parseFailure{503, "Spark SQL parser unavailable"}
 	}
-	tables := []string{}
-	if len(raw) > 0 {
-		for _, name := range strings.Split(string(raw), "\n") {
-			if !validTable(name) {
-				return nil, errors.New("invalid parser response")
-			}
-			tables = append(tables, name)
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	kind, value, _ := strings.Cut(lines[0], "\t")
+	out := statementPlan{Kind: kind, Value: value, Access: []objectAccess{}}
+	if (kind != "query" && kind != "metadata" && kind != "command" && kind != "use" && kind != "temp") ||
+		(kind == "use" && value != "polaris" && !validNamespace(value)) || (kind == "temp" && !catalogName.MatchString(value)) || len(lines) > 65 {
+		return statementPlan{}, errors.New("invalid parser response")
+	}
+	for _, line := range lines[1:] {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 3 || (!validAccess(fields[0], fields[1], fields[2]) &&
+			!(fields[0] == "temp" && fields[1] == "read" && catalogName.MatchString(fields[2]))) {
+			return statementPlan{}, errors.New("invalid parser response")
 		}
+		out.Access = append(out.Access, objectAccess{Scope: fields[0], Action: fields[1], Resource: fields[2]})
 	}
-	return tables, nil
+	return out, nil
 }
 
 type catalogSession struct {
@@ -109,10 +135,19 @@ type catalogSession struct {
 	prefix string
 }
 
-func (c *clients) catalog(ctx context.Context, p Profile) (catalogSession, error) {
+type catalogFailure int
+
+func (e catalogFailure) Error() string { return fmt.Sprintf("Polaris operation failed (%d)", e) }
+
+func isCatalogNotFound(err error) bool {
+	var status catalogFailure
+	return errors.As(err, &status) && status == http.StatusNotFound
+}
+
+func (c *clients) catalog(ctx context.Context) (catalogSession, error) {
 	fail := errors.New("Polaris principal or catalog is unavailable")
 	resp, status, err := c.request(ctx, http.MethodPost, c.cfg.Polaris+"/v1/oauth/tokens", "application/x-www-form-urlencoded",
-		strings.NewReader(url.Values{"grant_type": {"client_credentials"}, "client_id": {p.PolarisID}, "client_secret": {p.PolarisSecret}, "scope": {"PRINCIPAL_ROLE:" + p.PolarisRole}}.Encode()),
+		strings.NewReader(url.Values{"grant_type": {"client_credentials"}, "client_id": {c.cfg.PolarisID}, "client_secret": {c.cfg.PolarisSecret}, "scope": {"PRINCIPAL_ROLE:" + c.cfg.PolarisRole}}.Encode()),
 		func(r *http.Request) { r.Header.Set("Polaris-Realm", c.cfg.Realm) })
 	var token struct {
 		AccessToken string `json:"access_token"`
@@ -142,12 +177,24 @@ func (c *clients) catalog(ctx context.Context, p Profile) (catalogSession, error
 }
 
 func (s catalogSession) get(ctx context.Context, endpoint string, out any) error {
-	raw, status, err := s.client.request(ctx, http.MethodGet, s.client.cfg.Polaris+endpoint, "", nil, func(r *http.Request) {
+	return s.call(ctx, http.MethodGet, endpoint, nil, out)
+}
+
+func (s catalogSession) call(ctx context.Context, method, endpoint string, input, out any) error {
+	var body io.Reader
+	if input != nil {
+		data, err := json.Marshal(input)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(data)
+	}
+	raw, status, err := s.client.request(ctx, method, s.client.cfg.Polaris+endpoint, "application/json", body, func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer "+s.token)
 		r.Header.Set("Polaris-Realm", s.client.cfg.Realm)
 	})
-	if err != nil || status != 200 || json.Unmarshal(raw, out) != nil {
-		return errors.New("Polaris denied access or the table is unavailable")
+	if err != nil || status/100 != 2 || (out != nil && json.Unmarshal(raw, out) != nil) {
+		return catalogFailure(status)
 	}
 	return nil
 }
@@ -157,6 +204,7 @@ type TableInfo struct {
 	CurrentSchemaID   int    `json:"current-schema-id"`
 	CurrentSnapshotID *int64 `json:"current-snapshot-id"`
 	DefaultSpecID     int    `json:"default-spec-id"`
+	Comment           string `json:"comment,omitempty"`
 	Schemas           []struct {
 		ID     int `json:"schema-id"`
 		Fields []struct {
@@ -178,16 +226,18 @@ func (s catalogSession) table(ctx context.Context, name string) (TableInfo, erro
 	if !validTable(name) {
 		return TableInfo{}, errors.New("invalid catalog identifier")
 	}
-	parts := strings.Split(name, ".")
 	var out struct {
-		Metadata TableInfo `json:"metadata"`
+		Metadata struct {
+			TableInfo
+			Properties map[string]string `json:"properties"`
+		} `json:"metadata"`
 	}
-	namespace := url.PathEscape(strings.Join(parts[1:len(parts)-1], "\x1f"))
-	err := s.get(ctx, "/v1/"+s.prefix+"/namespaces/"+namespace+"/tables/"+parts[len(parts)-1], &out)
+	err := s.get(ctx, s.tablePath(name), &out)
 	if err == nil && !uuidPattern.MatchString(out.Metadata.UUID) {
 		err = errors.New("table identity missing")
 	}
-	return out.Metadata, err
+	out.Metadata.Comment = out.Metadata.Properties["comment"]
+	return out.Metadata.TableInfo, err
 }
 
 func (c *clients) engine(ctx context.Context, p Profile, method, endpoint string, input, output any) (int, error) {
@@ -200,7 +250,7 @@ func (c *clients) engine(ctx context.Context, p Profile, method, endpoint string
 		body = bytes.NewReader(raw)
 	}
 	raw, status, err := c.request(ctx, method, c.cfg.Kyuubi+"/api/v1"+endpoint, "application/json", body,
-		func(r *http.Request) { r.SetBasicAuth(p.KyuubiUser, p.KyuubiSecret) })
+		func(r *http.Request) { r.SetBasicAuth(p.KyuubiUser, c.engineToken(p.KyuubiUser, time.Now())) })
 	if err != nil || status/100 != 2 {
 		return status, fmt.Errorf("Kyuubi request failed (%d)", status)
 	}
@@ -211,45 +261,71 @@ func (c *clients) engine(ctx context.Context, p Profile, method, endpoint string
 }
 
 func (c *clients) checkKyuubiAuth(ctx context.Context, p Profile) error {
-	var nonce [16]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return err
+	_, status, _ := c.request(ctx, http.MethodGet, c.cfg.Kyuubi+"/api/v1/sessions/count", "", nil,
+		func(r *http.Request) { r.SetBasicAuth(p.KyuubiUser, "invalid") })
+	switch {
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return nil
+	case status/100 == 2:
+		return fmt.Errorf("Kyuubi REST accepted invalid credentials (HTTP %d); configure CUSTOM authentication", status)
+	case status != 0:
+		return fmt.Errorf("Kyuubi REST authentication check returned HTTP %d; verify the REST service URL", status)
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return errors.New("Kyuubi REST authentication check timed out")
+	default:
+		return errors.New("Could not reach Kyuubi REST; verify the service URL and connectivity")
 	}
-	p.KyuubiSecret = hex.EncodeToString(nonce[:])
-	status, _ := c.engine(ctx, p, http.MethodGet, "/sessions/count", nil, nil)
-	if status != http.StatusUnauthorized && status != http.StatusForbidden {
-		return errors.New("Kyuubi must reject invalid credentials")
-	}
-	return nil
+}
+
+func (c *clients) engineToken(username string, now time.Time) string {
+	expiry := fmt.Sprint(now.Add(45 * time.Second).Unix())
+	mac := hmac.New(sha256.New, []byte(c.cfg.SigningKey))
+	fmt.Fprintf(mac, "spark-console-kyuubi-v1\n%s\n%s", username, expiry)
+	return expiry + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 type resultPage struct {
 	Rows [][]json.RawMessage `json:"rows"`
 }
 
-func objectKey(id string, page int) string {
-	return fmt.Sprintf("spark-console-sql/%s/%06d.json", id, page)
+func (c *clients) result(ctx context.Context, method, id string, page int, body io.Reader) ([]byte, error) {
+	target := fmt.Sprintf("/internal/sql-results/%s/%06d.json", id, page)
+	raw, _, err := c.resultRequest(ctx, method, target, body)
+	return raw, err
+}
+
+func (c *clients) deleteResult(ctx context.Context, id string) (bool, error) {
+	_, status, err := c.resultRequest(ctx, http.MethodDelete, "/internal/sql-results/"+id, nil)
+	if err == nil && status != http.StatusAccepted && status != http.StatusNoContent {
+		err = errors.New("unexpected result cleanup response")
+	}
+	return status == http.StatusNoContent, err
+}
+
+func (c *clients) resultRequest(ctx context.Context, method, target string, body io.Reader) ([]byte, int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	raw, status, err := c.request(ctx, method, c.cfg.StorageURL+target, "application/json", body, func(r *http.Request) {
+		r.Header.Set(storage.ResultHeader, storage.Sign([]byte(c.cfg.SigningKey), storage.Claims{
+			ID: "sql-gateway", Tenant: "internal", Audience: storage.ResultAudience,
+			Method: method, Target: target, Expires: time.Now().Add(45 * time.Second).Unix(),
+		}))
+	})
+	if err != nil || status/100 != 2 || len(raw) > storage.MaxResultPage {
+		return nil, status, errors.New("private result storage unavailable")
+	}
+	return raw, status, nil
 }
 
 func (c *clients) put(ctx context.Context, id string, page int, raw []byte) error {
-	_, err := c.s3.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(c.cfg.Bucket), Key: aws.String(objectKey(id, page)),
-		Body: bytes.NewReader(raw), ContentType: aws.String("application/json"),
-	})
+	_, err := c.result(ctx, http.MethodPut, id, page, bytes.NewReader(raw))
 	return err
 }
 
 func (c *clients) read(ctx context.Context, id string, page int) (resultPage, error) {
-	result, err := c.s3.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(c.cfg.Bucket), Key: aws.String(objectKey(id, page)),
-	})
-	if err != nil {
-		return resultPage{}, err
-	}
-	defer result.Body.Close()
 	var out resultPage
-	data, err := io.ReadAll(io.LimitReader(result.Body, maxResponse+1))
-	if err != nil || len(data) > maxResponse || json.Unmarshal(data, &out) != nil {
+	data, err := c.result(ctx, http.MethodGet, id, page, nil)
+	if err != nil || json.Unmarshal(data, &out) != nil {
 		return resultPage{}, errors.New("invalid query result")
 	}
 	return out, nil

@@ -7,7 +7,7 @@ Spark Control Center is a web console for operating Apache Spark applications on
 ## Highlights
 
 - Optional independent S3/MinIO/GCS WIF object-storage service: prefix grants, resumable transfers, conditional writes, virtual folders, recursive path search and Monaco text editing.
-- Optional SQL workspace for Kyuubi Spark SQL and Polaris Iceberg tables. Browse granted schemas, run read-only queries under a dedicated identity, and page through stored results or download CSV. [SQL deployment](docs/en/SQL.md).
+- Optional SQL workspace for Kyuubi Spark SQL and Polaris Iceberg. Browse authorized catalogs, tables and views, run governed SQL scripts, and review execution history or download results. [SQL deployment](docs/en/SQL.md).
 - Persist and aggregate failure diagnostics/fingerprints; keep alerts and templates tenant-scoped even when Kubernetes namespaces are shared.
 
 - Discover SparkApplications across configured namespaces, with status, owner, lifecycle timestamps, and resource usage.
@@ -74,7 +74,7 @@ See the [UI tour](docs/en/UI.md) for application, log, submission, alert and exe
 - **Frontend:** React, TypeScript, Vite, Ant Design, ECharts
 - **Backend:** Go HTTP service with a PostgreSQL-backed workflow scheduler
 - **Object storage:** optional stateless Go service on port 8082, reached through the backend's HMAC-signed gateway; S3/MinIO or GCS WIF credentials remain server-side
-- **SQL workspace:** optional Go gateway with a Spark Catalyst parser, authenticated Kyuubi REST, Polaris Iceberg REST, PostgreSQL grants and a private S3-compatible results bucket
+- **SQL workspace:** optional Go gateway with a Spark Catalyst parser, authenticated Kyuubi REST, Polaris Iceberg REST, PostgreSQL grants and private result pages
 - **Integrations:** Kubernetes Spark Operator API, Prometheus, Loki, PostgreSQL, optional OIDC
 - **Deployment:** non-root container images, Nginx same-origin API proxy, Helm and scoped RBAC
 
@@ -123,7 +123,7 @@ docker build -f object-storage/Dockerfile -t spark-control-center-object-storage
 docker build -f sql-gateway/Dockerfile -t spark-control-center-sql:1.6.0 .
 ```
 
-[Releases](https://github.com/ApolloMeridian/spark-application-webui/releases) from 1.6.0 contain four image TAR archives and one Helm TGZ package. Image tags use unqualified repository names. The chart defaults both plugin deployments to disabled.
+[Releases](https://github.com/ApolloMeridian/spark-application-webui/releases) from 1.6.1 contain four image TAR archives plus Helm packages for Spark Control Center and its dedicated Kyuubi instance. Image tags use unqualified repository names. The console chart defaults both plugin deployments to disabled.
 
 ```bash
 docker load -i spark-control-center-1.6.0.tar

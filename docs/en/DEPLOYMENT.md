@@ -225,7 +225,7 @@ The backend refreshes the node inventory every 30 seconds. The chart grants its 
 
 Production chart defaults use the real backend and PostgreSQL login, not Mock. Prepare the initial administrator password Secret and database Secret referenced in your single values file. To use OIDC-only login, set runtimeConfig.auth.mode=oidc, enable oidc, configure the provider/client Secret and callback; no initial local administrator Secret is then required. Storage remains disabled unless explicitly enabled.
 
-New admin/viewer accounts default to their corresponding built-in tenants. Existing user/project assignments are preserved. Configure tenant access in User management; the API and scheduler read policies from PostgreSQL. See [tenant permissions](WORKFLOWS.md#tenant-and-permission-boundaries) and [optional storage](OBJECT-STORAGE.md). All release assets use unprefixed image names: frontend/backend/storage TAR plus Helm TGZ, without a checksum file.
+New admin and viewer accounts default to their corresponding built-in tenants. Upgrades preserve user and project assignments. Configure tenant access in User management. The API and scheduler read policies from PostgreSQL. Release 1.6.1 includes four unprefixed image archives and two Helm packages. [Tenant permissions](WORKFLOWS.md#tenant-and-permission-boundaries) · [Object storage](OBJECT-STORAGE.md) · [SQL deployment](SQL.md)
 
 ## Application instances and termination in 1.5.3
 

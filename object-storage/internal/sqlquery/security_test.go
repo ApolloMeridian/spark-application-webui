@@ -60,3 +60,27 @@ func TestCSVWorksheetSafety(t *testing.T) {
 		}
 	}
 }
+
+func TestSQLScopesAndPrivilegesAreIndependent(t *testing.T) {
+	policies := []grant{
+		{Scope: "namespace", Table: "polaris.analytics", Actions: []string{"read", "metadataRead"}},
+		{Scope: "table", Table: "polaris.analytics.inbox", UUID: "expected", Actions: []string{"write"}},
+	}
+	for _, tc := range []struct {
+		scope, resource, privilege string
+		allowed                    bool
+	}{
+		{"table", "polaris.analytics.inbox", "write", true},
+		{"table", "polaris.analytics.other", "write", false},
+		{"table", "polaris.analytics.other", "read", true},
+		{"table", "polaris.analytics.other", "delete", false},
+		{"table", "polaris.analytics_private.other", "read", false},
+		{"table", "polaris.analytics.nested.other", "read", false},
+		{"namespace", "polaris.analytics", "metadataRead", true},
+		{"catalog", "polaris", "metadataRead", false},
+	} {
+		if _, allowed := permits(policies, tc.scope, tc.resource, tc.privilege); allowed != tc.allowed {
+			t.Errorf("%s %s %s: got %t", tc.scope, tc.resource, tc.privilege, allowed)
+		}
+	}
+}

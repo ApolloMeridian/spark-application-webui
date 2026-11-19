@@ -85,8 +85,9 @@ jobs:
           docker save -o "release/spark-control-center-object-storage-${{ steps.version.outputs.value }}.tar" "spark-control-center-object-storage:${{ steps.version.outputs.value }}"
           docker save -o "release/spark-control-center-sql-${{ steps.version.outputs.value }}.tar" "spark-control-center-sql:${{ steps.version.outputs.value }}"
           helm package charts/spark-control-center --destination release
-          # Publish the four independent image archives and Helm package; no checksum asset.
-          test "$(find release -maxdepth 1 -type f | wc -l)" -eq 5
+          helm package charts/kyuubi --version "0.1.0-scc.${{ steps.version.outputs.value }}" --destination release
+          test -f "release/kyuubi-0.1.0-scc.${{ steps.version.outputs.value }}.tgz"
+          test "$(find release -maxdepth 1 -type f | wc -l)" -eq 6
 
       - name: Create or update GitHub Release
         env:

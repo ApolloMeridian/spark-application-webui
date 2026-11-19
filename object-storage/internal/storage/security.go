@@ -32,9 +32,14 @@ func Sign(key []byte, claims Claims) string {
 	return payload + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 func Verify(key []byte, r *http.Request) (Claims, error) {
+	return VerifyAudience(key, r, "X-Spark-Storage-Identity", "spark-object-storage")
+}
+
+func VerifyAudience(key []byte, r *http.Request, header, audience string) (Claims, error) {
 	var x Claims
-	parts := strings.Split(r.Header.Get("X-Spark-Storage-Identity"), ".")
-	if len(parts) != 2 {
+	token := r.Header.Get(header)
+	parts := strings.SplitN(token, ".", 2)
+	if len(token) > 4096 || len(parts) != 2 {
 		return x, fail(401, "invalid_internal_identity")
 	}
 	mac := hmac.New(sha256.New, key)
@@ -48,7 +53,7 @@ func Verify(key []byte, r *http.Request) (Claims, error) {
 		return x, fail(401, "invalid_internal_identity")
 	}
 	now := time.Now().Unix()
-	if x.ID == "" || x.Tenant == "" || x.Audience != "spark-object-storage" || x.Expires < now || x.Expires > now+90 || x.Method != r.Method || x.Target != r.URL.RequestURI() {
+	if x.ID == "" || x.Tenant == "" || x.Audience != audience || x.Expires <= now || x.Expires > now+90 || x.Method != r.Method || x.Target != r.URL.RequestURI() {
 		return x, fail(401, "invalid_internal_identity")
 	}
 	return x, nil

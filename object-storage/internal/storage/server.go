@@ -94,6 +94,9 @@ func (s *Server) Handler() http.Handler {
 		s.respond(w, items, e)
 	})
 	mux.Handle("/v1/", s.authenticate(api))
+	mux.HandleFunc("PUT /internal/sql-results/{id}/{page}", s.sqlResult)
+	mux.HandleFunc("GET /internal/sql-results/{id}/{page}", s.sqlResult)
+	mux.HandleFunc("DELETE /internal/sql-results/{id}", s.sqlResult)
 	return mux
 }
 func who(r *http.Request) principal { return r.Context().Value(principalKey{}).(principal) }
@@ -170,6 +173,9 @@ func (s *Server) connection(id, b string) (Connection, Provider, error) {
 	return Connection{}, nil, fail(403, "access_denied")
 }
 func (s *Server) authorize(r *http.Request, c, b, k, a string) (Provider, error) {
+	if !s.resultAllowed(c, b, k, a) {
+		return nil, fail(403, "access_denied")
+	}
 	_, p, e := s.connection(c, b)
 	if e != nil {
 		return nil, e
@@ -338,12 +344,18 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		if e != nil {
 			break
 		}
+		visible := out.Objects[:0]
 		for _, o := range out.Objects {
 			if !immediateObject(o, k) {
 				s.respond(w, nil, fail(502, "invalid_provider_response"))
 				return
 			}
+			if s.resultVisible(c, b, o) {
+				o.ReadOnly = !s.resultAllowed(c, b, o.Key, "edit")
+				visible = append(visible, o)
+			}
 		}
+		out.Objects = visible
 		if search != "" {
 			scanned += len(out.Objects)
 			matches := make([]Object, 0, len(out.Objects))
@@ -430,7 +442,8 @@ func (s *Server) text(w http.ResponseWriter, r *http.Request) {
 		s.respond(w, nil, e)
 		return
 	}
-	s.respond(w, map[string]any{"content": string(raw), "object": head, "truncated": truncated, "previewBytes": len(raw), "readOnly": truncated}, nil)
+	head.ReadOnly = !s.resultAllowed(c, b, k, "edit")
+	s.respond(w, map[string]any{"content": string(raw), "object": head, "truncated": truncated, "previewBytes": len(raw), "readOnly": truncated || head.ReadOnly}, nil)
 }
 func (s *Server) mutate(r *http.Request, action, c, b, k, target string, fn func() (any, error)) (any, error) {
 	id, e := s.Store.Begin(r.Context(), who(r).User, action, c, b, k, target)

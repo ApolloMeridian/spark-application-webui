@@ -32,6 +32,7 @@ type Object struct {
 	Version   string    `json:"version"`
 	Modified  time.Time `json:"modified"`
 	Directory bool      `json:"directory"`
+	ReadOnly  bool      `json:"readOnly,omitempty"`
 }
 type Page struct {
 	Objects []Object `json:"objects"`

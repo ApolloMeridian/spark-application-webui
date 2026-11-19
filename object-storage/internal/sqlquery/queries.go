@@ -6,18 +6,23 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
-const queryFields = `id::text,state,tables,columns,rows,pages,truncated,message,operation,created_at,expires_at,table_uuids`
+const queryFields = `id::text,state,tables,columns,rows,pages,truncated,message,operation,created_at,expires_at,table_uuids,catalog,write_table,statement_plan,ordinal,
+  CASE WHEN statement_count>1 AND EXISTS(SELECT 1 FROM console_sql_queries child
+       WHERE child.parent_id=console_sql_queries.id AND child.state='succeeded' AND child.expires_at<=now()) THEN 'expired'
+       WHEN state <> 'succeeded' OR expires_at IS NULL OR (pages=0 AND columns IN ('[]'::jsonb,'null'::jsonb)) THEN 'none'
+       WHEN expires_at <= now() THEN 'expired' ELSE 'available' END`
 
 func scanQuery(row pgx.Row) (query, []string, error) {
 	var q query
 	var ids []string
-	err := row.Scan(&q.ID, &q.State, &q.Tables, &q.Columns, &q.Rows, &q.Pages, &q.Truncated, &q.Message, &q.Operation, &q.Created, &q.Expires, &ids)
+	err := row.Scan(&q.ID, &q.State, &q.Tables, &q.Columns, &q.Rows, &q.Pages, &q.Truncated, &q.Message, &q.Operation, &q.Created, &q.Expires, &ids, &q.Catalog, &q.Write, &q.Plan, &q.Ordinal, &q.ResultState)
 	return q, ids, err
 }
 
@@ -29,29 +34,48 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, x user) {
 	if !decode(w, r, &input) {
 		return
 	}
-	sql := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(input.SQL), ";"))
-	if sql == "" || len(sql) > 32768 || strings.Contains(sql, "${") || !uuidPattern.MatchString(input.RequestID) {
+	if len(input.SQL) > 32768 || strings.Contains(input.SQL, "${") || !uuidPattern.MatchString(input.RequestID) {
 		reply(w, 400, nil, "invalid SQL or request ID")
 		return
 	}
-	if p, ok := s.cfg.Profiles[x.ID]; !ok || p.Tenant != x.Tenant {
-		reply(w, 403, nil, "SQL identity is not provisioned")
+	statements, err := splitStatements(input.SQL)
+	if err != nil {
+		s.recordDenied(r.Context(), x, input.RequestID, fingerprint(input.SQL), "Invalid Spark SQL syntax")
+		reply(w, 400, nil, err.Error())
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 18*time.Second)
 	defer cancel()
-	names, err := s.clients.parse(ctx, sql)
-	if err != nil {
-		s.recordDenied(ctx, x, input.RequestID, fingerprint(sql), "SQL rejected by parser")
-		reply(w, 400, nil, err.Error())
-		return
+	hash := fingerprint(input.SQL)
+	plan := statementPlan{Kind: "script"}
+	ids := []string{}
+	var policy string
+	if len(statements) == 1 {
+		plan, err = s.planStatement(ctx, statements[0], planningContext{})
+		if err != nil {
+			s.recordDenied(ctx, x, input.RequestID, hash, "SQL rejected during planning")
+			status := 503
+			var parseErr parseFailure
+			if errors.As(err, &parseErr) {
+				status = parseErr.status
+			}
+			reply(w, status, nil, err.Error())
+			return
+		}
+		ids, err = s.authorize(ctx, x, plan.Access)
+		if err != nil {
+			s.recordDenied(ctx, x, input.RequestID, hash, err.Error())
+			reply(w, 403, nil, err.Error())
+			return
+		}
+	} else {
+		policy, err = s.policyVersion(ctx, x)
+		if err != nil {
+			reply(w, 503, nil, "SQL permissions unavailable")
+			return
+		}
 	}
-	ids, err := s.authorize(ctx, x, names)
-	if err != nil {
-		s.recordDenied(ctx, x, input.RequestID, fingerprint(sql), "SQL table access denied")
-		reply(w, 403, nil, "one or more input tables are not granted")
-		return
-	}
+	names, write := plan.resources()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		reply(w, 503, nil, "query database unavailable")
@@ -65,7 +89,6 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, x user) {
 	var id, previous string
 	err = tx.QueryRow(ctx, `SELECT id::text,fingerprint FROM console_sql_queries
 		WHERE tenant=$1 AND user_id=$2 AND request_key=$3`, x.Tenant, x.ID, input.RequestID).Scan(&id, &previous)
-	hash := fingerprint(sql)
 	if err == nil {
 		if previous != hash {
 			reply(w, 409, nil, "request ID already used")
@@ -80,7 +103,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, x user) {
 	}
 	var pending, ownerPending int
 	err = tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE tenant=$1 AND user_id=$2)
-		FROM console_sql_queries WHERE state IN ('queued','running')`, x.Tenant, x.ID).Scan(&pending, &ownerPending)
+		FROM console_sql_queries WHERE parent_id IS NULL AND state IN ('queued','running')`, x.Tenant, x.ID).Scan(&pending, &ownerPending)
 	if err != nil {
 		reply(w, 503, nil, "query queue unavailable")
 		return
@@ -89,10 +112,10 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, x user) {
 		reply(w, 429, nil, "query queue is full")
 		return
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO console_sql_queries(id,tenant,user_id,actor_name,statement,fingerprint,request_key,tables,table_uuids)
-		VALUES(gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8) RETURNING id::text`, x.Tenant, x.ID, x.Name, sql, hash, input.RequestID, names, ids).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO console_sql_queries(id,tenant,user_id,actor_name,statement,fingerprint,request_key,tables,table_uuids,catalog,write_table,statement_plan,statement_count,policy_version)
+		VALUES(gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id::text`, x.Tenant, x.ID, x.Name, input.SQL, hash, input.RequestID, names, ids, s.cfg.catalogID(), write, plan, len(statements), policy).Scan(&id)
 	if err == nil {
-		err = audit(ctx, tx, x, id, "SQL_SUBMIT", "SUCCESS", hash+" "+strings.Join(names, ","))
+		err = audit(ctx, tx, x, id, "SQL_SUBMIT", "SUCCESS", hash+" "+plan.description())
 	}
 	if err == nil {
 		err = tx.Commit(ctx)
@@ -127,22 +150,70 @@ func (s *Server) owned(r *http.Request, x user) (query, []string, error) {
 }
 
 func (s *Server) canRead(ctx context.Context, x user, q query, ids []string) bool {
-	if q.State != "succeeded" || q.Expires == nil || !q.Expires.After(time.Now()) {
-		return false
-	}
-	if p, ok := s.cfg.Profiles[x.ID]; !ok || p.Tenant != x.Tenant {
+	if q.Catalog != s.cfg.catalogID() || q.ResultState != "available" || q.Expires == nil || !q.Expires.After(time.Now()) {
 		return false
 	}
 	if _, err := s.actualUser(ctx, x.actor); err != nil {
 		return false
 	}
-	now, err := s.authorize(ctx, x, q.Tables)
+	now, err := s.authorize(ctx, x, q.statementPlan().Access)
 	return err == nil && slices.Equal(now, ids)
 }
 
+func (q query) statementPlan() statementPlan {
+	if q.Plan != nil {
+		return *q.Plan
+	}
+	plan := statementPlan{Kind: "query"}
+	for _, name := range q.Tables {
+		plan.Access = append(plan.Access, objectAccess{Scope: "table", Action: "read", Resource: name})
+	}
+	if q.Write != "" {
+		plan.Kind = "command"
+		plan.Access = append(plan.Access, objectAccess{Scope: "table", Action: "write", Resource: q.Write})
+	}
+	return plan
+}
+
+func (plan statementPlan) description() string {
+	items := make([]string, 0, len(plan.Access))
+	for _, target := range plan.Access {
+		items = append(items, target.Action+"="+target.Resource)
+	}
+	return plan.Kind + " " + strings.Join(items, " ")
+}
+
+func (plan statementPlan) resources() ([]string, string) {
+	names := []string{}
+	var write string
+	for _, target := range plan.Access {
+		if target.Action == "write" {
+			write = target.Resource
+		} else if !slices.Contains(names, target.Resource) {
+			names = append(names, target.Resource)
+		}
+	}
+	return names, write
+}
+
 func (s *Server) history(w http.ResponseWriter, r *http.Request, x user) {
+	offset := 0
+	paged := r.URL.Query().Has("page")
+	if paged {
+		page, err := strconv.Atoi(r.URL.Query().Get("page"))
+		if err != nil || page < 1 || page > 100000 {
+			reply(w, 400, nil, "invalid history page")
+			return
+		}
+		offset = (page - 1) * 10
+	}
+	limit := 100
+	if paged {
+		limit = 11
+	}
 	rows, err := s.db.Query(r.Context(), `SELECT `+queryFields+` FROM console_sql_queries
-		WHERE tenant=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT 100`, x.Tenant, x.ID)
+		WHERE tenant=$1 AND user_id=$2 AND parent_id IS NULL AND created_at >= now()-make_interval(secs=>$5)
+		ORDER BY created_at DESC,id DESC LIMIT $3 OFFSET $4`, x.Tenant, x.ID, limit, offset, s.cfg.HistoryRetention.Seconds())
 	if err != nil {
 		reply(w, 503, nil, "query history unavailable")
 		return
@@ -163,7 +234,29 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request, x user) {
 		reply(w, 503, nil, "query history unavailable")
 		return
 	}
-	reply(w, 200, all, "")
+	if paged {
+		reply(w, 200, map[string]any{"queries": all[:min(len(all), 10)], "hasNext": len(all) > 10}, "")
+	} else {
+		reply(w, 200, all, "")
+	}
+}
+
+func (s *Server) statementText(w http.ResponseWriter, r *http.Request, x user) {
+	id := r.PathValue("id")
+	if !uuidPattern.MatchString(id) {
+		reply(w, 404, nil, "query not found")
+		return
+	}
+	var statement string
+	err := s.db.QueryRow(r.Context(), `SELECT statement FROM console_sql_queries
+		WHERE id=$1 AND tenant=$2 AND user_id=$3 AND created_at >= now()-make_interval(secs=>$4)`, id, x.Tenant, x.ID, s.cfg.HistoryRetention.Seconds()).Scan(&statement)
+	if errors.Is(err, pgx.ErrNoRows) {
+		reply(w, 404, nil, "query not found")
+	} else if err != nil {
+		reply(w, 503, nil, "query text unavailable")
+	} else {
+		reply(w, 200, map[string]string{"sql": statement}, "")
+	}
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request, x user) {
@@ -174,8 +267,39 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request, x user) {
 	}
 	if q.State == "succeeded" && !s.canRead(r.Context(), x, q, ids) {
 		q.Columns, q.Pages = nil, 0
+		if q.ResultState == "available" {
+			q.ResultState = "unavailable"
+		}
 	}
+	if q.Plan != nil && q.Plan.Kind == "script" {
+		q.Steps, err = s.querySteps(r.Context(), x, q.ID)
+		if err != nil {
+			reply(w, 503, nil, "SQL statement history unavailable")
+			return
+		}
+	}
+	q.RefreshBranches = q.affectedBranches()
 	reply(w, 200, q, "")
+}
+
+func (q query) affectedBranches() []string {
+	if q.State != "succeeded" || q.Plan == nil || q.Plan.Kind != "command" {
+		return nil
+	}
+	var branches []string
+	for _, target := range q.Plan.Access {
+		if !slices.Contains([]string{"create", "metadataWrite", "delete", "purge"}, target.Action) {
+			continue
+		}
+		name := target.Resource
+		if target.Scope == "table" || target.Scope == "view" || target.Scope == "namespace" && target.Action == "delete" {
+			name = namespaceOf(name)
+		}
+		if !slices.Contains(branches, name) {
+			branches = append(branches, name)
+		}
+	}
+	return branches
 }
 
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request, x user) {
@@ -192,9 +316,8 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request, x user) {
 	}
 	defer tx.Rollback(ctx)
 	tag, err := tx.Exec(ctx, `UPDATE console_sql_queries SET cancel_requested=true,
-		state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,
-		statement=CASE WHEN state='queued' THEN '' ELSE statement END
-		WHERE id=$1 AND tenant=$2 AND user_id=$3 AND NOT cancel_requested AND state IN ('queued','running')`, id, x.Tenant, x.ID)
+		state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END
+		WHERE id=$1 AND tenant=$2 AND user_id=$3 AND parent_id IS NULL AND NOT cancel_requested AND state IN ('queued','running')`, id, x.Tenant, x.ID)
 	if err == nil && tag.RowsAffected() == 0 {
 		reply(w, 409, nil, "query is not cancellable")
 		return
@@ -213,10 +336,11 @@ func (s *Server) cancel(w http.ResponseWriter, r *http.Request, x user) {
 }
 
 type work struct {
-	q     query
-	x     user
-	SQL   string
-	UUIDs []string
+	q      query
+	x      user
+	SQL    string
+	UUIDs  []string
+	Policy string
 }
 
 func (s *Server) claim(ctx context.Context) (work, error) {
@@ -228,20 +352,27 @@ func (s *Server) claim(ctx context.Context) (work, error) {
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(16001602)"); err != nil {
 		return work{}, err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE console_sql_queries SET state='interrupted',message='Worker lost; submit a new run',statement=''
-		WHERE state='running' AND worker_deadline<=now()`); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE console_sql_queries SET state='interrupted',message='Worker lost; submit a new run',
+		cleanup_after=CASE WHEN state='running' THEN now()+interval '30 seconds' ELSE NULL END
+		WHERE parent_id IS NULL AND ((state='running' AND worker_deadline<=now()) OR (state='queued' AND catalog<>$1))`, s.cfg.catalogID()); err != nil {
+		return work{}, err
+	}
+	if _, err = tx.Exec(ctx, `UPDATE console_sql_queries step SET state='interrupted',
+		message='Worker lost; submit a new run',cleanup_after=now()+interval '30 seconds'
+		FROM console_sql_queries parent WHERE step.parent_id=parent.id AND step.state='running'
+		AND parent.state NOT IN ('queued','running')`); err != nil {
 		return work{}, err
 	}
 	var job work
 	err = tx.QueryRow(ctx, `WITH next AS (
-	  SELECT q.id FROM console_sql_queries q WHERE q.state='queued' AND NOT EXISTS(
-	   SELECT 1 FROM console_sql_queries r WHERE r.state='running' AND r.tenant=q.tenant AND r.user_id=q.user_id)
-	   AND (SELECT count(*) FROM console_sql_queries WHERE state='running') < $1
+	  SELECT q.id FROM console_sql_queries q WHERE q.state='queued' AND q.parent_id IS NULL AND NOT EXISTS(
+	   SELECT 1 FROM console_sql_queries r WHERE r.parent_id IS NULL AND r.state='running' AND r.tenant=q.tenant AND r.user_id=q.user_id)
+	   AND (SELECT count(*) FROM console_sql_queries WHERE state='running' AND parent_id IS NULL) < $1
 	  ORDER BY q.created_at LIMIT 1 FOR UPDATE SKIP LOCKED
-	) UPDATE console_sql_queries q SET state='running',worker_deadline=now()+interval '20 seconds'
+	) UPDATE console_sql_queries q SET state='running',started_at=now(),worker_deadline=now()+interval '20 seconds'
 	  FROM next WHERE q.id=next.id
-	  RETURNING q.id::text,q.tenant,q.user_id,q.actor_name,q.statement,q.tables,q.table_uuids`, s.cfg.Workers).Scan(
-		&job.q.ID, &job.x.Tenant, &job.x.ID, &job.x.Name, &job.SQL, &job.q.Tables, &job.UUIDs)
+	  RETURNING q.id::text,q.tenant,q.user_id,q.actor_name,q.statement,q.tables,q.table_uuids,q.catalog,q.write_table,q.statement_plan,q.policy_version`, s.cfg.Workers).Scan(
+		&job.q.ID, &job.x.Tenant, &job.x.ID, &job.x.Name, &job.SQL, &job.q.Tables, &job.UUIDs, &job.q.Catalog, &job.q.Write, &job.q.Plan, &job.Policy)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return work{}, err
 	}
@@ -291,11 +422,11 @@ func (s *Server) keepLease(ctx context.Context, job work, stop context.CancelFun
 		}
 		step, cancel := context.WithTimeout(ctx, 3*time.Second)
 		_, auth := s.actualUser(step, job.x.actor)
-		uuids, err := s.authorize(step, job.x, job.q.Tables)
+		err := s.checkAuthorization(step, job)
 		tag, lease := s.db.Exec(step, `UPDATE console_sql_queries SET worker_deadline=now()+interval '20 seconds'
 			WHERE id=$1 AND state='running' AND NOT cancel_requested AND worker_deadline>now()`, job.q.ID)
 		cancel()
-		if auth != nil || err != nil || lease != nil || !slices.Equal(job.UUIDs, uuids) || tag.RowsAffected() != 1 {
+		if auth != nil || err != nil || lease != nil || tag.RowsAffected() != 1 {
 			stop()
 			return
 		}
@@ -317,15 +448,21 @@ func (s *Server) finish(job work, q query, err error) {
 		state, result, message = "failed", "FAILED", err.Error()
 	}
 	encoded, _ := json.Marshal(q.Columns)
+	var durationMS int64
 	e = tx.QueryRow(ctx, `UPDATE console_sql_queries SET state=CASE WHEN cancel_requested THEN 'cancelled' ELSE $2 END,
-		columns=$3,rows=$4,pages=$5,truncated=$6,message=CASE WHEN cancel_requested THEN '' ELSE $7 END,statement='',
-		expires_at=now()+make_interval(secs=>$8) WHERE id=$1 AND state='running' AND worker_deadline>now()
-		RETURNING state`, job.q.ID, state, encoded, q.Rows, q.Pages, q.Truncated, message, s.cfg.Retention.Seconds()).Scan(&state)
+		columns=$3,rows=$4,pages=$5,truncated=$6,message=CASE WHEN cancel_requested THEN '' ELSE $7 END,
+		expires_at=CASE WHEN NOT cancel_requested AND $2='succeeded' AND $3::jsonb<>'null'::jsonb THEN now()+make_interval(secs=>$8) END,
+		cleanup_after=CASE WHEN cancel_requested OR $2<>'succeeded' THEN now()+interval '30 seconds'
+			WHEN $5>0 THEN now()+make_interval(secs=>$8) END WHERE id=$1 AND state='running' AND worker_deadline>now()
+		RETURNING state, COALESCE((extract(epoch FROM now()-started_at)*1000)::bigint,0)`,
+		job.q.ID, state, encoded, q.Rows, q.Pages, q.Truncated, message, s.cfg.Retention.Seconds()).Scan(&state, &durationMS)
 	if e == nil {
 		if state == "cancelled" {
 			result = "SUCCESS"
 		}
-		e = audit(ctx, tx, job.x, job.q.ID, "SQL_FINISH", result, state+" operation="+q.Operation)
+		e = audit(ctx, tx, job.x, job.q.ID, "SQL_FINISH", result,
+			"step=1 fingerprint="+fingerprint(job.SQL)+" state="+state+" durationMs="+strconv.FormatInt(durationMS, 10)+
+				" operation="+q.Operation+" "+job.q.statementPlan().description())
 	}
 	if e == nil {
 		e = tx.Commit(ctx)

@@ -2,7 +2,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>org.sparkconsole</groupId>
   <artifactId>sql-guard</artifactId>
-  <version>1.6.0</version>
+  <version>1.6.1</version>
   <properties>
     <maven.compiler.release>11</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -10,13 +10,25 @@
   <dependencies>
     <dependency>
       <groupId>org.apache.spark</groupId>
-      <artifactId>spark-catalyst_2.12</artifactId>
+      <artifactId>spark-sql_2.12</artifactId>
       <version>3.5.9</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.iceberg</groupId>
+      <artifactId>iceberg-spark-runtime-3.5_2.12</artifactId>
+      <version>1.10.2</version>
+      <scope>provided</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.iceberg</groupId>
       <artifactId>iceberg-core</artifactId>
       <version>1.10.2</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.kyuubi</groupId>
+      <artifactId>kyuubi-common_2.12</artifactId>
+      <version>1.11.0</version>
       <scope>provided</scope>
     </dependency>
   </dependencies>

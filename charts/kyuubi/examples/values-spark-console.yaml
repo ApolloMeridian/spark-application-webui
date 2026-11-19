@@ -1,0 +1,100 @@
+# Install as kyuubi-scc in namespace kyuubi-scc.
+# Backend URL: http://kyuubi-scc-rest.kyuubi-scc.svc.cluster.local:10099
+replicaCount: 1
+image:
+  # The image must contain /app/sql-guard.jar from the SQL gateway in /opt/kyuubi/jars/.
+  repository: example.com/kyuubi-spark-sql-guard
+  tag: "1.11.1-scc.1.6.1"
+serviceAccount:
+  create: true
+  name: kyuubi
+rbac:
+  create: true
+  rules:
+    - apiGroups: [""]
+      resources: ["pods", "configmaps", "services"]
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+    - apiGroups: [""]
+      resources: ["pods/log"]
+      verbs: ["get"]
+server:
+  thriftBinary:
+    enabled: false
+  thriftHttp:
+    enabled: false
+  mysql:
+    enabled: false
+  rest:
+    enabled: true
+    port: 10099
+    service:
+      type: ClusterIP
+env:
+  - name: SPARK_CONSOLE_ENGINE_SIGNING_KEY
+    valueFrom:
+      secretKeyRef:
+        name: spark-console-storage-signing
+        key: signing-key
+  - name: AWS_ACCESS_KEY_ID
+    valueFrom:
+      secretKeyRef:
+        name: spark-staging-s3
+        key: AWS_ACCESS_KEY_ID
+  - name: AWS_SECRET_ACCESS_KEY
+    valueFrom:
+      secretKeyRef:
+        name: spark-staging-s3
+        key: AWS_SECRET_ACCESS_KEY
+kyuubiConf:
+  files:
+    kyuubi-defaults.conf: |
+      kyuubi.kubernetes.namespace=kyuubi-scc
+      kyuubi.ha.namespace=kyuubi-scc
+      kyuubi.authentication=CUSTOM
+      kyuubi.authentication.custom.class=org.sparkconsole.ConsoleKyuubiAuth
+      kyuubi.authentication.custom.basic.class=org.sparkconsole.ConsoleKyuubiAuth
+      kyuubi.frontend.protocols=REST
+      kyuubi.frontend.rest.bind.host=0.0.0.0
+      kyuubi.frontend.rest.bind.port=10099
+      kyuubi.frontend.rest.ui.enabled=false
+      kyuubi.engine.type=SPARK_SQL
+      kyuubi.engine.share.level=USER
+      kyuubi.engine.doAs.enabled=false
+      kyuubi.engine.single.spark.session=false
+      kyuubi.session.engine.idle.timeout=PT5M
+      kyuubi.operation.interrupt.on.cancel=true
+sparkConf:
+  files:
+    spark-defaults.conf: |
+      spark.master=k8s://https://kubernetes.default.svc:443
+      spark.submit.deployMode=cluster
+      spark.kubernetes.namespace=kyuubi-scc
+      spark.kubernetes.authenticate.driver.serviceAccountName=kyuubi
+      spark.kubernetes.container.image=example.com/spark-3.5-iceberg-java11
+      spark.kubernetes.file.upload.path=s3a://example-bucket/spark-console-sql/staging/
+      spark.jars=s3a://example-bucket/spark-console-sql/artifacts/spark-console-sql-guard-1.6.1.jar
+      spark.hadoop.fs.s3a.endpoint=https://minio.example.com
+      spark.hadoop.fs.s3a.endpoint.region=us-east-1
+      spark.hadoop.fs.s3a.path.style.access=true
+      spark.kubernetes.driver.secretKeyRef.AWS_ACCESS_KEY_ID=spark-staging-s3:AWS_ACCESS_KEY_ID
+      spark.kubernetes.driver.secretKeyRef.AWS_SECRET_ACCESS_KEY=spark-staging-s3:AWS_SECRET_ACCESS_KEY
+      spark.kubernetes.executor.secretKeyRef.AWS_ACCESS_KEY_ID=spark-staging-s3:AWS_ACCESS_KEY_ID
+      spark.kubernetes.executor.secretKeyRef.AWS_SECRET_ACCESS_KEY=spark-staging-s3:AWS_SECRET_ACCESS_KEY
+      spark.kubernetes.driver.secretKeyRef.SPARK_CONSOLE_POLARIS_CLIENT_ID=spark-console-polaris:POLARIS_CLIENT_ID
+      spark.kubernetes.driver.secretKeyRef.SPARK_CONSOLE_POLARIS_CLIENT_SECRET=spark-console-polaris:POLARIS_CLIENT_SECRET
+      spark.kubernetes.driver.secretKeyRef.SPARK_CONSOLE_ENGINE_SIGNING_KEY=spark-console-storage-signing:signing-key
+      spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions,org.sparkconsole.DriverGuard
+      spark.sql.catalog.polaris=org.sparkconsole.ManagedSparkCatalog
+      spark.sql.catalog.polaris.catalog-impl=org.sparkconsole.ManagedRESTCatalog
+      spark.sql.catalog.polaris.uri=https://polaris.example.com/api/catalog
+      spark.sql.catalog.polaris.oauth2-server-uri=https://polaris.example.com/api/catalog/v1/oauth/tokens
+      spark.sql.catalog.polaris.warehouse=example_catalog
+      spark.sql.catalog.polaris.header.Polaris-Realm=POLARIS
+      spark.sql.catalog.polaris.console-principal-id=replace-with-client-id
+      spark.sql.catalog.polaris.scope=PRINCIPAL_ROLE:spark_console_sql
+      spark.sql.catalog.polaris.cache-enabled=false
+      spark.sql.catalog.polaris.io-impl=org.apache.iceberg.aws.s3.S3FileIO
+      spark.sql.defaultCatalog=polaris
+      spark.sql.catalogImplementation=in-memory
+      spark.sql.variable.substitute=false
+      spark.driver.maxResultSize=128m

@@ -1,17 +1,19 @@
-# Example for an isolated intranet test cluster. Create the referenced
-# Secrets and private result bucket before enabling the SQL gateway.
+# Example for an isolated intranet test cluster. Provision the scoped
+# Polaris principal and authenticate the dedicated Kyuubi REST service first.
+objectStorage:
+  enabled: true
 sql:
   enabled: true
   kyuubi:
-    url: http://kyuubi-sql.spark-sql.svc.cluster.local:10099
+    url: http://kyuubi-scc-rest.kyuubi-scc.svc.cluster.local:10099
   catalog:
     url: http://polaris.polaris.svc.cluster.local:8181/api/catalog
     realm: POLARIS
     warehouse: example_catalog
+    principalRole: spark_console_sql
   results:
-    endpoint: http://minio.storage.svc.cluster.local:9000
-    region: us-east-1
-    bucket: spark-query-results
-    pathStyle: true
+    connection: minio
+    bucket: spark-artifacts
+    prefix: spark-console-sql/
   tls:
     allowHTTP: true

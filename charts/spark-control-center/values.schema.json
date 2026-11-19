@@ -31,22 +31,21 @@
             "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
           }
         },
-        "internalAuth": { "type": "object" },
-        "database": { "type": "object" },
-        "identities": { "type": "object" },
         "kyuubi": { "type": "object", "properties": { "url": { "type": "string" } } },
         "catalog": {
-          "type": "object",
+          "type": "object", "additionalProperties": false,
           "properties": {
             "url": { "type": "string" }, "realm": { "type": "string" },
-            "warehouse": { "type": "string" }
+            "warehouse": { "type": "string" }, "principalRole": { "type": "string" },
+            "credentialsSecret": { "type": "string" }, "clientIDKey": { "type": "string", "minLength": 1 },
+            "clientSecretKey": { "type": "string", "minLength": 1 }
           }
         },
         "results": {
-          "type": "object",
+          "type": "object", "additionalProperties": false,
           "properties": {
-            "endpoint": { "type": "string" }, "pathStyle": { "type": "boolean" },
-            "bucket": { "type": "string" }
+            "connection": { "type": "string" }, "bucket": { "type": "string" },
+            "prefix": { "type": "string", "maxLength": 900 }
           }
         },
         "limits": {
@@ -60,6 +59,8 @@
           }
         },
         "tls": { "type": "object", "properties": { "allowHTTP": { "type": "boolean" } } },
+        "history": { "type": "object", "properties": { "retention": { "type": "string" } } },
+        "audit": { "type": "object", "properties": { "retention": { "type": "string" } } },
         "resources": { "type": "object" },
         "networkPolicy": {
           "type": "object",

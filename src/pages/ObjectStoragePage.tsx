@@ -860,7 +860,7 @@ export default function ObjectStoragePage() {
                                   }
                                   onClick={() => {
                                     setCopy(o);
-                                    setCopyKey(o.key + ".copy");
+                                    setCopyKey((o.readOnly ? o.key.split("/").at(-1) : o.key) + ".copy");
                                   }}
                                 />
                                 <Popconfirm
@@ -878,7 +878,7 @@ export default function ObjectStoragePage() {
                                     aria-label={text("删除", "Delete")}
                                     danger
                                     icon={<DeleteOutlined />}
-                                    disabled={!allowed("delete", o.key)}
+                                    disabled={o.readOnly || !allowed("delete", o.key)}
                                   />
                                 </Popconfirm>
                                 <Button

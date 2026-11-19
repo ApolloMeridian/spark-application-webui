@@ -7,6 +7,7 @@ Spark Control Center 是面向 Kubernetes 上 Apache Spark 作业的运维控制
 ## 核心能力
 
 - 可选的独立 S3/MinIO/GCS WIF 对象存储服务：目录授权、断点传输、条件写、临时文件夹、递归路径搜索和 Monaco 文本编辑。
+- 可选 SQL 工作台通过 Kyuubi 执行 Spark SQL，支持 Polaris 元数据浏览、表和视图授权、多语句脚本、结果历史与审计。[SQL 部署说明](docs/zh-CN/SQL.md)
 - 持久化故障根因与指纹聚合；即使共享 Kubernetes 命名空间，模板与告警仍按租户隔离。
 
 - 查询指定命名空间中的 SparkApplication，展示状态、Owner、生命周期时间和资源使用情况。
@@ -116,7 +117,7 @@ docker build -f object-storage/Dockerfile -t spark-control-center-object-storage
 docker build -f sql-gateway/Dockerfile -t spark-control-center-sql:1.6.0 .
 ```
 
-[Releases](https://github.com/ApolloMeridian/spark-application-webui/releases) 从 1.6.0 起包含四个镜像 TAR 和一个 Helm TGZ，镜像标签使用独立仓库名。对象存储与 SQL 网关默认关闭。
+[Releases](https://github.com/ApolloMeridian/spark-application-webui/releases) 从 1.6.1 起包含四个镜像 TAR，以及 Spark Control Center 和专用 Kyuubi 实例的 Helm 包。镜像标签使用独立仓库名。对象存储与 SQL 网关默认关闭。
 
 ```bash
 docker load -i spark-control-center-1.6.0.tar

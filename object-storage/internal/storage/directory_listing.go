@@ -148,7 +148,11 @@ func (s *Server) numberedPage(r *http.Request, provider Provider, key directoryK
 	}
 	matches := make([]Object, 0, len(snapshot.objects))
 	for _, object := range snapshot.objects {
+		if !s.resultVisible(key.connection, key.bucket, object) {
+			continue
+		}
 		if search == "" || strings.Contains(strings.ToLower(strings.TrimPrefix(object.Key, key.prefix)), search) {
+			object.ReadOnly = !s.resultAllowed(key.connection, key.bucket, object.Key, "edit")
 			matches = append(matches, object)
 		}
 	}

@@ -64,6 +64,7 @@ const tables = [
       "object-storage/internal/storage/store.go",
       "object-storage/internal/storage/limits.go",
       "object-storage/internal/sqlquery/server.go",
+      "object-storage/internal/sqlquery/permissions.go",
     ].flatMap((p) =>
       [...read(p).matchAll(/CREATE TABLE IF NOT EXISTS ([a-z_]+)/g)].map(
         (x) => x[1],
