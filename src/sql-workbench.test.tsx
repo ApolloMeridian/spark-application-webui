@@ -7,7 +7,10 @@ import { I18nProvider } from "./i18n";
 import SqlPage from "./pages/SqlPage";
 
 vi.mock("./auth", () => ({ useAuth: () => ({ session: null }) }));
-vi.mock("./components/SqlEditor", () => ({ default: () => <textarea aria-label="SQL" /> }));
+vi.mock("./components/SqlEditor", async () => {
+  const { forwardRef } = await import("react");
+  return { default: forwardRef(function MockEditor() { return <textarea aria-label="SQL" />; }) };
+});
 
 afterEach(() => {
   cleanup();

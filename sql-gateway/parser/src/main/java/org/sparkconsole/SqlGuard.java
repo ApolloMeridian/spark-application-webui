@@ -105,7 +105,8 @@ public final class SqlGuard {
             if (!table.options().isEmpty()) {
                 throw new UnsupportedOperationException("Unsupported relation options");
             }
-            tables.add(parts.size() == 1 && tempViews.contains(parts.head()) ? parts.head() : resource(parts, false));
+            tables.add(parts.size() == 1 && tempViews.contains(parts.head())
+                    ? parts.head() : resource(parts, false, true));
         }
         if (plan instanceof UnresolvedTableValuedFunction) {
             var function = (UnresolvedTableValuedFunction) plan;
@@ -120,7 +121,11 @@ public final class SqlGuard {
     }
 
     private String resource(Seq<String> parts, boolean isNamespace) {
-        if (parts.size() < (isNamespace ? 0 : 1) || parts.size() > (isNamespace ? 7 : 8)) {
+        return resource(parts, isNamespace, false);
+    }
+
+    private String resource(Seq<String> parts, boolean isNamespace, boolean allowMetadata) {
+        if (parts.size() < (isNamespace ? 0 : 1) || parts.size() > (isNamespace ? 7 : allowMetadata ? 9 : 8)) {
             throw new UnsupportedOperationException("Qualify the Polaris resource");
         }
         if (parts.nonEmpty() && (parts.head().equalsIgnoreCase("spark_catalog") || parts.head().equalsIgnoreCase("global_temp"))) {
@@ -130,11 +135,19 @@ public final class SqlGuard {
         var values = parts.iterator();
         if (values.hasNext() && parts.head().equals("polaris")) values.next();
         while (values.hasNext()) name.append('.').append(identifier(values.next()));
-        if (!isNamespace && (name.toString().split("\\.").length < 3 ||
-            (name.toString().split("\\.").length > 3 && ICEBERG_METADATA_TABLES.contains(parts.last())))) {
-            throw new UnsupportedOperationException("Unsupported Iceberg table identifier");
+        if (!isNamespace) {
+            String[] segments = name.toString().split("\\.");
+            boolean metadata = metadataTable(segments);
+            if (segments.length < 3 || (metadata && !allowMetadata) ||
+                    segments.length > (metadata ? 9 : 8)) {
+                throw new UnsupportedOperationException("Unsupported Iceberg table identifier");
+            }
         }
         return name.toString();
+    }
+
+    private static boolean metadataTable(String[] segments) {
+        return segments.length > 3 && ICEBERG_METADATA_TABLES.contains(segments[segments.length - 1]);
     }
 
     private String object(LogicalPlan plan) {
@@ -206,6 +219,7 @@ public final class SqlGuard {
     private String inspectStatement(String sql) throws Exception {
         Set<String> tables = new TreeSet<>();
         List<String> permissions = new ArrayList<>();
+        List<String> targets = new ArrayList<>();
         var parsed = new SparkSqlParser().parsePlan(sql);
         String result = "command";
         if (parsed instanceof InsertIntoStatement) {
@@ -229,12 +243,16 @@ public final class SqlGuard {
             var create = (CreateTable)parsed;
             tableSpec(create.tableSpec());
             validateSchema(create.tableSchema());
-            permissions.add(access("namespace", "create", parent(object(create.name()))));
+            String name = object(create.name());
+            targets.add(access("target", "table", name));
+            permissions.add(access("namespace", "create", parent(name)));
         } else if (parsed instanceof CreateTableAsSelect) {
             var create = (CreateTableAsSelect)parsed;
             tableSpec(create.tableSpec());
             if (create.writeOptions().nonEmpty()) throw new UnsupportedOperationException("Unsupported write options");
-            permissions.add(access("namespace", "create", parent(object(create.name()))));
+            String name = object(create.name());
+            targets.add(access("target", "table", name));
+            permissions.add(access("namespace", "create", parent(name)));
             plan(create.query(), Set.of(), tables);
         } else if (parsed instanceof DropTable) {
             var drop = (DropTable)parsed;
@@ -243,6 +261,7 @@ public final class SqlGuard {
             var create = (CreateView)parsed;
             properties(create.properties().keysIterator(), Set.of("comment"));
             String name = object(create.child());
+            targets.add(access("target", "view", name));
             if (create.replace()) {
                 permissions.add(access("view", "metadataWrite", name));
             }
@@ -264,6 +283,8 @@ public final class SqlGuard {
             var rename = (RenameTable)parsed;
             String source = object(rename.child());
             String target = rename.newName().size() == 1 ? parent(source) + "." + identifier(rename.newName().head()) : resource(rename.newName(), false);
+            targets.add(access("target", "renameFrom", source));
+            targets.add(access("target", "renameTo", target));
             permissions.add(access(rename.isView() ? "view" : "table", "metadataWrite", source));
             permissions.add(access("namespace", "create", parent(target)));
         } else if (Set.of("AddColumns", "DropColumns", "RenameColumn", "AlterColumn",
@@ -286,7 +307,9 @@ public final class SqlGuard {
         } else if (parsed instanceof CreateNamespace) {
             var create = (CreateNamespace)parsed;
             properties(create.properties().keysIterator(), Set.of("comment"));
-            String resource = parent(namespace(create.name()));
+            String name = namespace(create.name());
+            targets.add(access("target", "namespace", name));
+            String resource = parent(name);
             permissions.add(access(qualify(resource), "create", resource));
         } else if (parsed instanceof DropNamespace) {
             var drop = (DropNamespace)parsed;
@@ -324,7 +347,13 @@ public final class SqlGuard {
             while (expressions.hasNext()) expression(expressions.next(), Set.of(), tables);
         }
         if (tables.size() > 32) throw new UnsupportedOperationException("Too many input tables");
-        for (String name : tables) permissions.add(access(name.contains(".") ? "table" : "temp", "read", name));
+        for (String name : tables) {
+            String scope = metadataTable(name.split("\\.")) ? "metadataTable" : name.contains(".") ? "table" : "temp";
+            permissions.add(access(scope, "read", name));
+        }
+        String statement = result.equals("query") ? "Select" : parsed.getClass().getSimpleName();
+        permissions.add("statement\t" + statement);
+        permissions.addAll(targets);
         return result + "\n" + String.join("\n", permissions);
     }
 

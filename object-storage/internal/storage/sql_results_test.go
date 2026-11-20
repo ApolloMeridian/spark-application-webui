@@ -83,8 +83,9 @@ func TestPrivateSQLResultsUseSelectedProvider(t *testing.T) {
 			if w := invoke(http.MethodGet, path, ResultAudience); w.Code != 200 || w.Body.String() != provider.value {
 				t.Fatal(w.Code, w.Body.String())
 			}
-			if !s.reserved("allowed", "private/artifacts/test.jar") || s.reserved("allowed", "private-other/doc.txt") {
-				t.Fatal("reserved result and artifact boundaries are incorrect")
+			if !s.reserved("allowed", "private/pages") || !s.reserved("allowed", provider.key) ||
+				s.reserved("allowed", "private/pages-backup/old.json") || s.reserved("other", provider.key) {
+				t.Fatal("reserved result boundary is incorrect")
 			}
 			for _, action := range []string{"read", "download", "copy-source"} {
 				if !s.resultAllowed(kind, "allowed", provider.key, action) {
@@ -93,13 +94,19 @@ func TestPrivateSQLResultsUseSelectedProvider(t *testing.T) {
 			}
 			for _, action := range []string{"edit", "upload", "delete", "copy-destination"} {
 				if s.resultAllowed(kind, "allowed", provider.key, action) ||
-					s.resultAllowed("alias", "allowed", "private/artifacts/test.jar", action) {
+					s.resultAllowed("alias", "allowed", provider.key, action) {
 					t.Fatalf("%s should be protected even through another connection", action)
+				}
+				for _, object := range []string{"private/artifacts/test.jar", "private/staging/input.txt", "private/pages-backup/old.json"} {
+					if !s.resultAllowed(kind, "allowed", object, action) {
+						t.Fatalf("%s should follow normal ACL for %s", action, object)
+					}
 				}
 			}
 			if !s.resultVisible(kind, "allowed", Object{Key: "private/", Directory: true}) ||
-				s.resultVisible(kind, "allowed", Object{Key: "private/staging/", Directory: true}) {
-				t.Fatal("wrong reserved directory visibility")
+				!s.resultVisible(kind, "allowed", Object{Key: "private/staging/", Directory: true}) ||
+				!s.resultVisible(kind, "allowed", Object{Key: "private/artifacts/", Directory: true}) {
+				t.Fatal("wrong directory visibility")
 			}
 			deletePath := strings.TrimSuffix(path, "/000001.json")
 			provider.page = Page{Objects: []Object{{Key: provider.key, Version: "v1"}}, Next: "second-page"}

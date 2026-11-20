@@ -4,6 +4,8 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import org.apache.iceberg.BaseTable;
+import org.apache.iceberg.MetadataTableType;
+import org.apache.iceberg.MetadataTableUtils;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.exceptions.NoSuchTableException;
@@ -36,9 +38,22 @@ public final class ManagedRESTCatalog extends RESTCatalog {
 
     @Override
     public Table loadTable(TableIdentifier identifier) {
-        String expected = DriverPolicy.current().binding(identifier.toString());
+        DriverPolicy policy = DriverPolicy.current();
+        String expected = policy.binding(identifier.toString());
         if (expected == null) {
             throw new NoSuchTableException("Table is outside the console authorization binding.");
+        }
+        if (expected.endsWith(":metadata")) {
+            var type = MetadataTableType.from(identifier.name());
+            if (type == null || identifier.namespace().length() < 2) {
+                throw new NoSuchTableException("Unknown Iceberg metadata table.");
+            }
+            var base = TableIdentifier.of(identifier.namespace().levels());
+            String baseBinding = policy.binding(base.toString());
+            if (baseBinding == null || !expected.equals(baseBinding + ":metadata")) {
+                throw new NoSuchTableException("Iceberg metadata belongs to a different table.");
+            }
+            return MetadataTableUtils.createMetadataTableInstance(loadTable(base), type);
         }
         Table table = super.loadTable(identifier);
         if (!(table instanceof BaseTable) || !expected.equals(((BaseTable) table).operations().current().uuid())) {

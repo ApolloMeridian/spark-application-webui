@@ -266,12 +266,16 @@ func decode(w http.ResponseWriter, r *http.Request, value any) bool {
 }
 
 func audit(ctx context.Context, tx pgx.Tx, x user, id, action, result, detail string) error {
+	return insertAudit(ctx, tx, x, id, action, result, "", detail, nil)
+}
+
+func insertAudit(ctx context.Context, tx pgx.Tx, x user, id, action, result, reason, detail string, fields []byte) error {
 	detail = "userId=" + x.ID + " " + detail
 	if len(detail) > 2048 {
 		detail = strings.ToValidUTF8(detail[:2048], "")
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO operation_audit(id,tenant_id,application_name,namespace,operator_name,operation,reason,occurred_at,result,message)
-		VALUES(gen_random_uuid()::text,$1,$2,'',$3,$4,'',now(),$5,$6)`, x.Tenant, id, x.Name, action, result, detail)
+	_, err := tx.Exec(ctx, `INSERT INTO operation_audit(id,tenant_id,application_name,namespace,operator_name,operation,reason,occurred_at,result,message,sql_details)
+		VALUES(gen_random_uuid()::text,$1,$2,'',$3,$4,$5,clock_timestamp(),$6,$7,$8::jsonb)`, x.Tenant, id, x.Name, action, reason, result, detail, fields)
 	return err
 }
 

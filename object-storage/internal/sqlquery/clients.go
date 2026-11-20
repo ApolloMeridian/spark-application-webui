@@ -72,13 +72,21 @@ func (c *clients) request(ctx context.Context, method, endpoint, contentType str
 
 type objectAccess struct {
 	Scope, Action, Resource string
-	ViewVersion             int `json:"viewVersion,omitempty"`
+	ViewVersion             int    `json:"viewVersion,omitempty"`
+	MetadataTable           string `json:"metadataTable,omitempty"`
 }
 
 type statementPlan struct {
-	Kind   string
-	Value  string
-	Access []objectAccess
+	Kind          string
+	Value         string
+	Access        []objectAccess
+	StatementType string            `json:"statementType,omitempty"`
+	Targets       []statementTarget `json:"targets,omitempty"`
+}
+
+type statementTarget struct {
+	Type     string `json:"type"`
+	Resource string `json:"resource"`
 }
 
 type parseFailure struct {
@@ -115,13 +123,46 @@ func (c *clients) parse(ctx context.Context, sql string, scope planningContext) 
 	kind, value, _ := strings.Cut(lines[0], "\t")
 	out := statementPlan{Kind: kind, Value: value, Access: []objectAccess{}}
 	if (kind != "query" && kind != "metadata" && kind != "command" && kind != "use" && kind != "temp") ||
-		(kind == "use" && value != "polaris" && !validNamespace(value)) || (kind == "temp" && !catalogName.MatchString(value)) || len(lines) > 65 {
+		(kind == "use" && value != "polaris" && !validNamespace(value)) || (kind == "temp" && !catalogName.MatchString(value)) || len(lines) > 70 {
 		return statementPlan{}, errors.New("invalid parser response")
 	}
 	for _, line := range lines[1:] {
 		fields := strings.Split(line, "\t")
-		if len(fields) != 3 || (!validAccess(fields[0], fields[1], fields[2]) &&
-			!(fields[0] == "temp" && fields[1] == "read" && catalogName.MatchString(fields[2]))) {
+		if len(fields) == 2 && fields[0] == "statement" && userName.MatchString(fields[1]) && out.StatementType == "" {
+			out.StatementType = fields[1]
+			continue
+		}
+		if len(fields) != 3 {
+			return statementPlan{}, errors.New("invalid parser response")
+		}
+		if fields[0] == "target" {
+			switch fields[1] {
+			case "namespace":
+				if !validNamespace(fields[2]) {
+					return statementPlan{}, errors.New("invalid parser namespace target")
+				}
+			case "table", "view", "renameFrom", "renameTo":
+				if !validTable(fields[2]) {
+					return statementPlan{}, errors.New("invalid parser table target")
+				}
+			default:
+				return statementPlan{}, errors.New("invalid parser target")
+			}
+			out.Targets = append(out.Targets, statementTarget{Type: fields[1], Resource: fields[2]})
+			continue
+		}
+		if fields[0] == "metadataTable" && fields[1] == "read" {
+			base, ok := metadataBase(fields[2])
+			if !ok {
+				return statementPlan{}, errors.New("invalid Iceberg metadata relation")
+			}
+			for _, action := range []string{"read", "metadataRead"} {
+				out.Access = append(out.Access, objectAccess{Scope: "table", Action: action, Resource: base, MetadataTable: fields[2]})
+			}
+			continue
+		}
+		if !validAccess(fields[0], fields[1], fields[2]) &&
+			!(fields[0] == "temp" && fields[1] == "read" && catalogName.MatchString(fields[2])) {
 			return statementPlan{}, errors.New("invalid parser response")
 		}
 		out.Access = append(out.Access, objectAccess{Scope: fields[0], Action: fields[1], Resource: fields[2]})

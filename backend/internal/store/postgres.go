@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS operation_audit (
   result text NOT NULL CHECK (result IN ('SUCCESS', 'FAILED')),
 	  message text NOT NULL
 	)`,
+		`ALTER TABLE operation_audit ADD COLUMN IF NOT EXISTS sql_details jsonb`,
 		`CREATE INDEX IF NOT EXISTS operation_audit_occurred_at_idx ON operation_audit (occurred_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS operation_audit_sql_retention_idx ON operation_audit (occurred_at, id) WHERE starts_with(operation, 'SQL_')`,
 		`CREATE INDEX IF NOT EXISTS operation_audit_application_idx ON operation_audit (namespace, application_name, occurred_at DESC)`,
@@ -291,7 +292,7 @@ func (s *PostgresStore) List(ctx context.Context, limit int) ([]domain.Operation
 		limit = 1000
 	}
 	rows, err := s.pool.Query(ctx, `
-SELECT id, application_name, namespace, operator_name, operation, reason, occurred_at, result, message,tenant_id
+SELECT id, application_name, namespace, operator_name, operation, reason, occurred_at, result, message,tenant_id,sql_details
 FROM operation_audit ORDER BY occurred_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query audit records: %w", err)
@@ -302,7 +303,7 @@ FROM operation_audit ORDER BY occurred_at DESC LIMIT $1`, limit)
 		var audit domain.OperationAudit
 		var when time.Time
 		if err := rows.Scan(&audit.ID, &audit.ApplicationName, &audit.Namespace, &audit.Operator,
-			&audit.Operation, &audit.Reason, &when, &audit.Result, &audit.Message, &audit.TenantID); err != nil {
+			&audit.Operation, &audit.Reason, &when, &audit.Result, &audit.Message, &audit.TenantID, &audit.SQLDetails); err != nil {
 			return nil, fmt.Errorf("scan audit record: %w", err)
 		}
 		audit.Timestamp = when.UTC().Format(time.RFC3339Nano)

@@ -9,6 +9,7 @@ import (
 )
 
 const lifecycleSchema = `
+ALTER TABLE IF EXISTS operation_audit ADD COLUMN IF NOT EXISTS sql_details jsonb;
 DO $$ BEGIN
 	IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
 		AND table_name='console_sql_queries' AND column_name='cleanup_after') THEN

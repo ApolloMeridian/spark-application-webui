@@ -4,7 +4,7 @@ replicaCount: 1
 image:
   # The image must contain /app/sql-guard.jar from the SQL gateway in /opt/kyuubi/jars/.
   repository: example.com/kyuubi-spark-sql-guard
-  tag: "1.11.1-scc.1.6.1"
+  tag: "1.11.1-scc.1.6.1-patch"
 serviceAccount:
   create: true
   name: kyuubi
@@ -72,7 +72,7 @@ sparkConf:
       spark.kubernetes.authenticate.driver.serviceAccountName=kyuubi
       spark.kubernetes.container.image=example.com/spark-3.5-iceberg-java11
       spark.kubernetes.file.upload.path=s3a://example-bucket/spark-console-sql/staging/
-      spark.jars=s3a://example-bucket/spark-console-sql/artifacts/spark-console-sql-guard-1.6.1.jar
+      spark.jars=s3a://example-bucket/spark-console-sql/artifacts/spark-console-sql-guard-1.6.1-patch.jar
       spark.hadoop.fs.s3a.endpoint=https://minio.example.com
       spark.hadoop.fs.s3a.endpoint.region=us-east-1
       spark.hadoop.fs.s3a.path.style.access=true

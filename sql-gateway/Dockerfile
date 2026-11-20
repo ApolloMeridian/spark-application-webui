@@ -21,7 +21,7 @@ FROM ${JAVA_IMAGE}
 WORKDIR /app
 ENV SPARK_LOCAL_IP=127.0.0.1
 COPY --from=build /out/sql-gateway /app/sql-gateway
-COPY --from=parser /build/target/sql-guard-1.6.1.jar /app/sql-guard.jar
+COPY --from=parser /build/target/sql-guard-1.6.1-patch.jar /app/sql-guard.jar
 COPY --from=parser /build/target/dependency/ /app/lib/
 USER 65532:65532
 EXPOSE 8083

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -114,31 +113,33 @@ func (s *Server) checkAuthorization(ctx context.Context, job work) error {
 	return nil
 }
 
-func (s *Server) executeScript(ctx context.Context, parent work) error {
+func (s *Server) executeScript(ctx context.Context, parent work) (bool, error) {
 	statements, err := splitStatements(parent.SQL)
 	if err != nil {
-		return err
+		return false, failedDuring("planning", err)
 	}
 	p, session, closeSession, err := s.openEngineSession(ctx, parent)
 	if err != nil {
-		return err
+		return false, failedDuring("session", err)
 	}
 	defer closeSession()
 	scope := planningContext{tempViews: map[string][]objectAccess{}}
 	for index, sql := range statements {
 		if err := ctx.Err(); err != nil {
-			return err
+			return false, err
 		}
 		if _, err := s.actualUser(ctx, parent.x.actor); err != nil {
-			return errors.New("SQL access was revoked")
+			return false, failedDuring("authorization", errors.New("SQL access was revoked"))
 		}
 		if err := s.checkAuthorization(ctx, parent); err != nil {
-			return err
+			return false, failedDuring("authorization", err)
 		}
 		plan, planErr := s.planStatement(ctx, sql, scope)
+		planErr = failedDuring("planning", planErr)
 		ids := []string{}
 		if planErr == nil {
 			ids, planErr = s.authorize(ctx, parent.x, plan.Access)
+			planErr = failedDuring("authorization", planErr)
 		}
 		if ids == nil {
 			ids = []string{}
@@ -153,25 +154,27 @@ func (s *Server) executeScript(ctx context.Context, parent work) error {
 			FROM console_sql_queries WHERE id=$1 AND state='running' AND NOT cancel_requested AND worker_deadline>now()
 			RETURNING id::text`, parent.q.ID, fingerprint(sql), names, ids, write, plan, job.q.Ordinal).Scan(&job.q.ID)
 		if err != nil {
-			return errors.New("could not record SQL statement")
+			dbError(err)
+			return false, failedDuring("audit", errors.New("could not record SQL statement"))
 		}
 		output := job.q
 		stepErr := planErr
 		if stepErr == nil {
 			bindings, err := s.bindQuery(ctx, job)
 			if err != nil {
-				stepErr = err
+				stepErr = failedDuring("binding", err)
 			} else if err := s.checkAuthorization(ctx, parent); err != nil {
-				stepErr = err
+				stepErr = failedDuring("authorization", err)
 			} else {
 				output, stepErr = s.executeStatement(ctx, job, p, session, parent.q.ID, bindings)
 			}
 		}
-		if err := s.finishStep(parent, job, output, stepErr); err != nil {
-			return err
+		finished, err := s.finishStep(parent, job, output, stepErr, index == len(statements)-1)
+		if err != nil {
+			return false, err
 		}
-		if stepErr != nil {
-			return fmt.Errorf("Statement %d: %w", job.q.Ordinal, stepErr)
+		if finished {
+			return true, nil
 		}
 		switch plan.Kind {
 		case "use":
@@ -180,15 +183,15 @@ func (s *Server) executeScript(ctx context.Context, parent work) error {
 			scope.tempViews[plan.Value] = plan.Access
 		}
 	}
-	return nil
+	return false, nil
 }
 
-func (s *Server) finishStep(parent work, step work, output query, failure error) error {
+func (s *Server) finishStep(parent work, step work, output query, failure error, last bool) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback(ctx)
 	state, result, message := "succeeded", "SUCCESS", ""
@@ -198,7 +201,7 @@ func (s *Server) finishStep(parent work, step work, output query, failure error)
 	var duration int64
 	columns, _ := json.Marshal(output.Columns)
 	err = tx.QueryRow(ctx, `UPDATE console_sql_queries step SET state=CASE WHEN parent.cancel_requested THEN 'cancelled' ELSE $3 END,
-		columns=$4,rows=$5,pages=$6,truncated=$7,message=$8,
+		columns=$4,rows=$5,pages=$6,truncated=$7,message=$8,operation=$10,
 		expires_at=CASE WHEN $3='succeeded' AND NOT parent.cancel_requested AND $4::jsonb<>'null'::jsonb
 			THEN now()+make_interval(secs=>$9) END,
 		cleanup_after=CASE WHEN $3<>'succeeded' OR parent.cancel_requested THEN now()+interval '30 seconds'
@@ -206,16 +209,32 @@ func (s *Server) finishStep(parent work, step work, output query, failure error)
 		FROM console_sql_queries parent WHERE step.id=$1 AND parent.id=$2 AND step.parent_id=parent.id
 			AND step.state='running' AND parent.state='running' AND parent.worker_deadline>now()
 		RETURNING step.state,(extract(epoch FROM now()-step.started_at)*1000)::bigint`, step.q.ID, parent.q.ID,
-		state, columns, output.Rows, output.Pages, output.Truncated, message, s.cfg.Retention.Seconds()).Scan(&state, &duration)
+		state, columns, output.Rows, output.Pages, output.Truncated, message, s.cfg.Retention.Seconds(), output.Operation).Scan(&state, &duration)
+	if state == "cancelled" {
+		result = "FAILED"
+		failure = failedDuring("cancelled", errors.New("SQL run cancelled"))
+	}
 	if err == nil {
-		err = audit(ctx, tx, parent.x, parent.q.ID, "SQL_STATEMENT", result, "step="+strconv.Itoa(step.q.Ordinal)+
-			" state="+state+" durationMs="+strconv.FormatInt(duration, 10)+" fingerprint="+fingerprint(step.SQL)+" "+step.q.statementPlan().description())
+		err = auditSQL(ctx, tx, parent.x, parent.q.ID, "SQL_STATEMENT", result, sqlAuditDetails{
+			Step: step.q.Ordinal, State: state, DurationMS: duration, StatementFingerprint: fingerprint(step.SQL),
+			RequestFingerprint: fingerprint(parent.SQL), OperationID: output.Operation, Plan: step.q.statementPlan(),
+		}, failure)
+	}
+	terminal := failure != nil || last
+	if err == nil && terminal {
+		if failure != nil {
+			failure = fmt.Errorf("Statement %d: %w", step.q.Ordinal, failure)
+		}
+		err = s.finishInTx(ctx, tx, parent, parent.q, failure)
+	}
+	if err == nil {
+		err = tx.Commit(ctx)
 	}
 	if err != nil {
 		dbError(err)
-		return errors.New("could not save SQL statement outcome")
+		return false, failedDuring("audit", errors.New("could not save SQL statement outcome"))
 	}
-	return tx.Commit(ctx)
+	return terminal, nil
 }
 
 func (s *Server) querySteps(ctx context.Context, x user, id string) ([]query, error) {
@@ -255,13 +274,16 @@ func (s *Server) planStatement(ctx context.Context, sql string, scope planningCo
 	if len(plan.Access) > 64 {
 		return plan, errors.New("too many SQL resources")
 	}
-	plan.Access, err = s.resolveViews(ctx, plan.Access)
+	resolved, err := s.resolveViews(ctx, plan.Access)
+	if err == nil {
+		plan.Access = resolved
+	}
 	return plan, err
 }
 
 func (s *Server) resolveViews(ctx context.Context, requested []objectAccess) ([]objectAccess, error) {
 	if !slices.ContainsFunc(requested, func(a objectAccess) bool {
-		return a.Scope == "table" && (a.Action == "read" || a.Action == "metadataRead")
+		return a.Scope == "table" && a.MetadataTable == "" && (a.Action == "read" || a.Action == "metadataRead")
 	}) {
 		return requested, nil
 	}
@@ -282,7 +304,7 @@ func (s *Server) resolveViews(ctx context.Context, requested []objectAccess) ([]
 			return errors.New("view dependency limit exceeded")
 		}
 		checked[target] = true
-		if target.Scope != "table" || (target.Action != "read" && target.Action != "metadataRead") {
+		if target.Scope != "table" || target.MetadataTable != "" || (target.Action != "read" && target.Action != "metadataRead") {
 			targets = append(targets, target)
 			return nil
 		}

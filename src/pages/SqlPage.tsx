@@ -2,10 +2,11 @@ import {
   App, Button, Card, Empty, Input, Popconfirm, Select, Space, Table, Tabs,
   Tag, Typography,
 } from "antd";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { useAuth } from "../auth";
 import SqlCatalog, { sqlRequest as request, useSqlCatalogWidth } from "../components/SqlCatalog";
+import type { SqlEditorHandle } from "../components/SqlEditor";
 import { useI18n } from "../i18n";
 import { hasPermission } from "../permissions";
 import { apiUrl } from "../runtimeConfig";
@@ -85,6 +86,7 @@ export default function SqlPage() {
   const { session } = useAuth();
   const manager = hasPermission(session, "sqlManage");
   const [sql, setSql] = useState("SELECT 1 AS result");
+  const editor = useRef<SqlEditorHandle>(null);
   const [tab, setTab] = useState("result");
   const [catalogWidth, setCatalogWidth] = useSqlCatalogWidth();
   const [changed, setChanged] = useState<{ name: string } | { branches: string[] }>();
@@ -192,10 +194,12 @@ export default function SqlPage() {
   }, [pages, page, resultId, notify]);
 
   async function submit() {
+    const executionText = editor.current?.executionText() ?? sql;
+    if (!executionText.trim() || loading) return;
     setLoading(true);
     try {
       const next = await request<{ id: string }>("/queries", jsonBody("POST", {
-        sql, requestId: crypto.randomUUID(),
+        sql: executionText, requestId: crypto.randomUUID(),
       }));
       setQueryID(next.id);
       setTab("result");
@@ -263,7 +267,7 @@ export default function SqlPage() {
         <Card size="small" title={en ? "Spark SQL" : "Spark SQL 查询"}>
           <Space direction="vertical" className="sql-full-width">
             <Suspense fallback={<div className="sql-editor" aria-busy="true" />}>
-              <SqlEditor value={sql} onChange={setSql} onRun={() => { if (sql.trim() && !loading) void submit(); }} />
+              <SqlEditor ref={editor} value={sql} onChange={setSql} onRun={() => void submit()} />
             </Suspense>
             <Space>
               <Button type="primary" disabled={!sql.trim()} loading={loading} onClick={() => void submit()}>{en ? "Run query" : "运行查询"}</Button>

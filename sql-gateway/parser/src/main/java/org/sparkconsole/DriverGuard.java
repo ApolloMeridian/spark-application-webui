@@ -41,7 +41,7 @@ public final class DriverGuard implements SparkSessionExtensionsProvider {
                         new Class<?>[]{ParserInterface.class}, (proxy, method, args) -> {
                             if (method.getName().equals("parsePlan")) {
                                 String statement = (String)args[0];
-                                if (statement.equals(READY)) return delegate.parsePlan("SELECT 'spark-console-driver-v1' AS version");
+                                if (statement.equals(READY)) return delegate.parsePlan("SELECT 'spark-console-driver-v2' AS version");
                                 if (statement.startsWith(INSTALL)) {
                                     DriverPolicy.install(session, statement.substring(INSTALL.length()));
                                     return delegate.parsePlan("SELECT 1");

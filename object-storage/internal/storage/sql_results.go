@@ -25,8 +25,11 @@ var resultID = regexp.MustCompile(`^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$`)
 
 func (s *Server) reserved(bucket, key string) bool {
 	x := s.Config.SQLResults
-	return x != nil && bucket == x.Bucket &&
-		(strings.HasPrefix(key, x.Prefix) || key == strings.TrimSuffix(x.Prefix, "/"))
+	if x == nil || bucket != x.Bucket {
+		return false
+	}
+	pages := x.Prefix + "pages"
+	return key == pages || strings.HasPrefix(key, pages+"/")
 }
 
 func (s *Server) resultAllowed(connection, bucket, key, action string) bool {
@@ -40,7 +43,7 @@ func (s *Server) resultAllowed(connection, bucket, key, action string) bool {
 	}
 	if action == "list" {
 		folder := strings.TrimSuffix(key, "/")
-		if folder == strings.TrimSuffix(x.Prefix, "/") || folder == x.Prefix+"pages" {
+		if folder == x.Prefix+"pages" {
 			return true
 		}
 		return strings.HasPrefix(folder, x.Prefix+"pages/") &&

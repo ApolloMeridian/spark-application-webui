@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import * as monaco from "monaco-editor";
 import EditorWorker from "monaco-editor/editor/editor.worker.js?worker";
 import { SQL_RELATION_DRAG_TYPE } from "./SqlCatalog";
@@ -6,15 +6,31 @@ import { SQL_RELATION_DRAG_TYPE } from "./SqlCatalog";
 const browser = self as typeof self & { MonacoEnvironment?: monaco.Environment };
 browser.MonacoEnvironment ??= { getWorker: () => new EditorWorker() };
 
-export default function SqlEditor({ value, onChange, onRun }: {
+export interface SqlEditorHandle {
+  executionText(): string;
+}
+
+interface SqlEditorProps {
   value: string;
   onChange: (sql: string) => void;
   onRun: () => void;
-}) {
+}
+
+const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function SqlEditor({ value, onChange, onRun }, ref) {
   const host = useRef<HTMLDivElement>(null);
   const instance = useRef<monaco.editor.IStandaloneCodeEditor>();
   const current = useRef({ value, onChange, onRun });
   current.current = { value, onChange, onRun };
+
+  useImperativeHandle(ref, () => ({
+    executionText() {
+      const editor = instance.current;
+      const selection = editor?.getSelection();
+      const model = editor?.getModel();
+      if (model && selection && !selection.isEmpty()) return model.getValueInRange(selection);
+      return model?.getValue() ?? current.current.value;
+    },
+  }), []);
 
   useEffect(() => {
     if (!host.current) return;
@@ -70,4 +86,6 @@ export default function SqlEditor({ value, onChange, onRun }: {
       editor.pushUndoStop();
       editor.focus();
     }} />;
-}
+});
+
+export default SqlEditor;

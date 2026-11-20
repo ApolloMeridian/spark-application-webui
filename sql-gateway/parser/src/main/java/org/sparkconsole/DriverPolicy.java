@@ -70,7 +70,7 @@ final class DriverPolicy {
             if (!fields[8].equals("-")) {
                 for (String pair : fields[8].split(",")) {
                     String[] binding = pair.split("=", -1);
-                    if (binding.length != 2 || !binding[1].matches("[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}(:[0-9]+)?")) throw denied();
+                    if (binding.length != 2 || !binding[1].matches("[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}(:(?:[0-9]+|metadata))?")) throw denied();
                     if (bindings.put(binding[0], binding[1]) != null) throw denied();
                 }
             }

@@ -21,19 +21,22 @@ const good = inspect(`
   GROUP BY f.id`);
 assert.equal(good.status, 0, good.stderr);
 assert.deepEqual(good.stdout.trim().split(/\r?\n/), [
-  "query", "table\tread\tpolaris.analytics.customers", "table\tread\tpolaris.events.audit", "table\tread\tpolaris.events.purchases",
+  "query", "table\tread\tpolaris.analytics.customers", "table\tread\tpolaris.events.audit", "table\tread\tpolaris.events.purchases", "statement\tSelect",
 ]);
 const append = inspect("INSERT INTO polaris.events.purchases SELECT id FROM polaris.analytics.customers");
 assert.equal(append.status, 0, append.stderr);
-assert.deepEqual(append.stdout.trim().split(/\r?\n/), ["command", "table\twrite\tpolaris.events.purchases", "table\tread\tpolaris.analytics.customers"]);
+assert.deepEqual(append.stdout.trim().split(/\r?\n/), ["command", "table\twrite\tpolaris.events.purchases", "table\tread\tpolaris.analytics.customers", "statement\tInsertIntoStatement"]);
 for (const [sql, expected] of [
-  ["SELECT * FROM events.purchases", "query\ntable\tread\tpolaris.events.purchases"],
-  ["SELECT * FROM range(10)", "query"],
-  ["SHOW CREATE TABLE events.purchases", "metadata\ntable\tmetadataRead\tpolaris.events.purchases"],
-  ["INSERT OVERWRITE TABLE polaris.events.purchases SELECT 1", "command\ntable\toverwrite\tpolaris.events.purchases"],
-  ["DROP TABLE polaris.events.purchases PURGE", "command\ntable\tpurge\tpolaris.events.purchases"],
+  ["SELECT * FROM events.purchases", "query\ntable\tread\tpolaris.events.purchases\nstatement\tSelect"],
+  ["SELECT * FROM range(10)", "query\nstatement\tSelect"],
+  ["SELECT file_path FROM polaris.events.purchases.files", "query\nmetadataTable\tread\tpolaris.events.purchases.files\nstatement\tSelect"],
+  ["SELECT snapshot_id FROM events.purchases.snapshots", "query\nmetadataTable\tread\tpolaris.events.purchases.snapshots\nstatement\tSelect"],
+  ["SHOW CREATE TABLE events.purchases", "metadata\ntable\tmetadataRead\tpolaris.events.purchases\nstatement\tShowCreateTable"],
+  ["INSERT OVERWRITE TABLE polaris.events.purchases SELECT 1", "command\ntable\toverwrite\tpolaris.events.purchases\nstatement\tInsertIntoStatement"],
+  ["DROP TABLE polaris.events.purchases PURGE", "command\ntable\tpurge\tpolaris.events.purchases\nstatement\tDropTable"],
+  ["CREATE NAMESPACE IF NOT EXISTS polaris.analytics", "command\ncatalog\tcreate\tpolaris\nstatement\tCreateNamespace\ntarget\tnamespace\tpolaris.analytics"],
   ["CREATE TABLE polaris.`with-dashes`.items (id INT) USING iceberg COMMENT 'comment' TBLPROPERTIES ('format-version'='2')",
-    "command\nnamespace\tcreate\tpolaris.with-dashes"],
+    "command\nnamespace\tcreate\tpolaris.with-dashes\nstatement\tCreateTable\ntarget\ttable\tpolaris.with-dashes.items"],
 ]) {
   const parsed = inspect(sql);
   assert.equal(parsed.status, 0, parsed.stderr);
@@ -41,7 +44,8 @@ for (const [sql, expected] of [
 }
 for (const sql of [
   "SELECT * FROM parquet.`s3a://example/private/`",
-  "SELECT * FROM polaris.events.purchases.files",
+  "DELETE FROM polaris.events.purchases.files",
+  "DROP TABLE polaris.events.purchases.files PURGE",
   "SELECT reflect('java.lang.System', 'getenv', 'PATH')",
   "SELECT * FROM spark_catalog.events.purchases",
   "CREATE TABLE polaris.events.purchases (id INT) USING iceberg LOCATION 's3a://example/private/'",

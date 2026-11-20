@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type UserRole string
 
@@ -187,16 +190,17 @@ type HistorySummary struct {
 }
 
 type OperationAudit struct {
-	TenantID        string `json:"tenantId,omitempty"`
-	ID              string `json:"id"`
-	ApplicationName string `json:"applicationName"`
-	Namespace       string `json:"namespace"`
-	Operator        string `json:"operator"`
-	Operation       string `json:"operation"`
-	Reason          string `json:"reason,omitempty"`
-	Timestamp       string `json:"timestamp"`
-	Result          string `json:"result"`
-	Message         string `json:"message"`
+	TenantID        string          `json:"tenantId,omitempty"`
+	ID              string          `json:"id"`
+	ApplicationName string          `json:"applicationName"`
+	Namespace       string          `json:"namespace"`
+	Operator        string          `json:"operator"`
+	Operation       string          `json:"operation"`
+	Reason          string          `json:"reason,omitempty"`
+	Timestamp       string          `json:"timestamp"`
+	Result          string          `json:"result"`
+	Message         string          `json:"message"`
+	SQLDetails      json.RawMessage `json:"sqlDetails,omitempty"`
 }
 
 type TemplateParameter struct {

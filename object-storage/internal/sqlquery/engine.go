@@ -36,8 +36,10 @@ func (s *Server) run(ctx context.Context, job work) {
 	defer stop()
 	go s.keepLease(ctx, job, stop)
 	if job.q.statementPlan().Kind == "script" {
-		err := s.executeScript(ctx, job)
-		s.finish(job, job.q, err)
+		finished, err := s.executeScript(ctx, job)
+		if !finished {
+			s.finish(job, job.q, err)
+		}
 		return
 	}
 	if statements, err := splitStatements(job.SQL); err != nil || len(statements) != 1 {
@@ -94,7 +96,7 @@ func (s *Server) openEngineSession(ctx context.Context, job work) (Profile, stri
 		closeSession()
 		return p, "", nil, err
 	}
-	if err := s.verifySQLValue(ctx, p, sessionPath, "SELECT spark_console_guard_version()", "spark-console-driver-v1", 0); err != nil {
+	if err := s.verifySQLValue(ctx, p, sessionPath, "SELECT spark_console_guard_version()", "spark-console-driver-v2", 0); err != nil {
 		closeSession()
 		return p, "", nil, errors.New("Spark Driver Guard is unavailable")
 	}
@@ -190,6 +192,7 @@ func (s *Server) bindQuery(ctx context.Context, job work) (string, error) {
 		return "", err
 	}
 	bindings := []string{}
+	tableUUIDs := make(map[string]string)
 	for i, target := range plan.Access {
 		if target.Scope != "table" && target.Scope != "view" {
 			continue
@@ -205,11 +208,15 @@ func (s *Server) bindQuery(ctx context.Context, job work) (string, error) {
 			uuid = info.UUID
 			version = ":" + strconv.Itoa(info.CurrentVersion)
 		} else {
-			info, err := catalog.table(check, name)
-			if err != nil {
-				return "", errors.New("table unavailable or has been replaced")
+			uuid = tableUUIDs[name]
+			if uuid == "" {
+				info, err := catalog.table(check, name)
+				if err != nil {
+					return "", errors.New("table unavailable or has been replaced")
+				}
+				uuid = info.UUID
+				tableUUIDs[name] = uuid
 			}
-			uuid = info.UUID
 		}
 		expected := tableUUID(grants[i])
 		if expected != "" && expected != uuid {
@@ -218,6 +225,16 @@ func (s *Server) bindQuery(ctx context.Context, job work) (string, error) {
 		binding := strings.TrimPrefix(name, "polaris.") + "=" + uuid + version
 		if !slices.Contains(bindings, binding) {
 			bindings = append(bindings, binding)
+		}
+		if target.MetadataTable != "" {
+			base, ok := metadataBase(target.MetadataTable)
+			if !ok || base != name || target.Scope != "table" {
+				return "", errors.New("invalid Iceberg metadata relation binding")
+			}
+			metadata := strings.TrimPrefix(target.MetadataTable, "polaris.") + "=" + uuid + ":metadata"
+			if !slices.Contains(bindings, metadata) {
+				bindings = append(bindings, metadata)
+			}
 		}
 	}
 	if len(bindings) == 0 {

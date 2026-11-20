@@ -40,7 +40,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, x user) {
 	}
 	statements, err := splitStatements(input.SQL)
 	if err != nil {
-		s.recordDenied(r.Context(), x, input.RequestID, fingerprint(input.SQL), "Invalid Spark SQL syntax")
+		s.recordDenied(r.Context(), x, input.RequestID, fingerprint(input.SQL), statementPlan{}, failedDuring("planning", err))
 		reply(w, 400, nil, err.Error())
 		return
 	}
@@ -53,7 +53,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, x user) {
 	if len(statements) == 1 {
 		plan, err = s.planStatement(ctx, statements[0], planningContext{})
 		if err != nil {
-			s.recordDenied(ctx, x, input.RequestID, hash, "SQL rejected during planning")
+			s.recordDenied(ctx, x, input.RequestID, hash, plan, failedDuring("planning", err))
 			status := 503
 			var parseErr parseFailure
 			if errors.As(err, &parseErr) {
@@ -64,7 +64,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, x user) {
 		}
 		ids, err = s.authorize(ctx, x, plan.Access)
 		if err != nil {
-			s.recordDenied(ctx, x, input.RequestID, hash, err.Error())
+			s.recordDenied(ctx, x, input.RequestID, hash, plan, failedDuring("authorization", err))
 			reply(w, 403, nil, err.Error())
 			return
 		}
@@ -115,7 +115,11 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, x user) {
 	err = tx.QueryRow(ctx, `INSERT INTO console_sql_queries(id,tenant,user_id,actor_name,statement,fingerprint,request_key,tables,table_uuids,catalog,write_table,statement_plan,statement_count,policy_version)
 		VALUES(gen_random_uuid(),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id::text`, x.Tenant, x.ID, x.Name, input.SQL, hash, input.RequestID, names, ids, s.cfg.catalogID(), write, plan, len(statements), policy).Scan(&id)
 	if err == nil {
-		err = audit(ctx, tx, x, id, "SQL_SUBMIT", "SUCCESS", hash+" "+plan.description())
+		event := sqlAuditDetails{RequestFingerprint: hash, State: "queued", Plan: plan}
+		if len(statements) > 1 {
+			event.Script = &scriptAuditCounts{Total: len(statements)}
+		}
+		err = auditSQL(ctx, tx, x, id, "SQL_SUBMIT", "SUCCESS", event, nil)
 	}
 	if err == nil {
 		err = tx.Commit(ctx)
@@ -128,14 +132,15 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request, x user) {
 	reply(w, 202, map[string]string{"id": id}, "")
 }
 
-func (s *Server) recordDenied(ctx context.Context, x user, id, hash, reason string) {
+func (s *Server) recordDenied(ctx context.Context, x user, id, hash string, plan statementPlan, failure error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		dbError(err)
 		return
 	}
 	defer tx.Rollback(ctx)
-	if err = audit(ctx, tx, x, id, "SQL_DENIED", "FAILED", reason+" "+hash); err == nil {
+	if err = auditSQL(ctx, tx, x, id, "SQL_DENIED", "FAILED",
+		sqlAuditDetails{RequestFingerprint: hash, State: "rejected", Plan: plan}, failure); err == nil {
 		err = tx.Commit(ctx)
 	}
 	dbError(err)
@@ -176,11 +181,22 @@ func (q query) statementPlan() statementPlan {
 }
 
 func (plan statementPlan) description() string {
-	items := make([]string, 0, len(plan.Access))
+	items := []string{plan.Kind}
+	if plan.StatementType != "" {
+		items = append(items, "statement="+plan.StatementType)
+	}
+	for _, target := range plan.Targets {
+		items = append(items, "target."+target.Type+"="+target.Resource)
+	}
 	for _, target := range plan.Access {
+		if target.MetadataTable != "" {
+			if item := "metadataTable=" + target.MetadataTable; !slices.Contains(items, item) {
+				items = append(items, item)
+			}
+		}
 		items = append(items, target.Action+"="+target.Resource)
 	}
-	return plan.Kind + " " + strings.Join(items, " ")
+	return strings.Join(items, " ")
 }
 
 func (plan statementPlan) resources() ([]string, string) {
@@ -442,30 +458,51 @@ func (s *Server) finish(job work, q query, err error) {
 		return
 	}
 	defer tx.Rollback(ctx)
-	state, result := "succeeded", "SUCCESS"
-	message := ""
-	if err != nil {
-		state, result, message = "failed", "FAILED", err.Error()
-	}
-	encoded, _ := json.Marshal(q.Columns)
-	var durationMS int64
-	e = tx.QueryRow(ctx, `UPDATE console_sql_queries SET state=CASE WHEN cancel_requested THEN 'cancelled' ELSE $2 END,
-		columns=$3,rows=$4,pages=$5,truncated=$6,message=CASE WHEN cancel_requested THEN '' ELSE $7 END,
-		expires_at=CASE WHEN NOT cancel_requested AND $2='succeeded' AND $3::jsonb<>'null'::jsonb THEN now()+make_interval(secs=>$8) END,
-		cleanup_after=CASE WHEN cancel_requested OR $2<>'succeeded' THEN now()+interval '30 seconds'
-			WHEN $5>0 THEN now()+make_interval(secs=>$8) END WHERE id=$1 AND state='running' AND worker_deadline>now()
-		RETURNING state, COALESCE((extract(epoch FROM now()-started_at)*1000)::bigint,0)`,
-		job.q.ID, state, encoded, q.Rows, q.Pages, q.Truncated, message, s.cfg.Retention.Seconds()).Scan(&state, &durationMS)
-	if e == nil {
-		if state == "cancelled" {
-			result = "SUCCESS"
-		}
-		e = audit(ctx, tx, job.x, job.q.ID, "SQL_FINISH", result,
-			"step=1 fingerprint="+fingerprint(job.SQL)+" state="+state+" durationMs="+strconv.FormatInt(durationMS, 10)+
-				" operation="+q.Operation+" "+job.q.statementPlan().description())
-	}
+	e = s.finishInTx(ctx, tx, job, q, err)
 	if e == nil {
 		e = tx.Commit(ctx)
 	}
 	dbError(e)
+}
+
+func (s *Server) finishInTx(ctx context.Context, tx pgx.Tx, job work, q query, failure error) error {
+	state, result := "succeeded", "SUCCESS"
+	message := ""
+	if failure != nil {
+		state, result, message = "failed", "FAILED", failure.Error()
+	}
+	encoded, _ := json.Marshal(q.Columns)
+	var durationMS int64
+	var requestFingerprint string
+	var total int
+	err := tx.QueryRow(ctx, `UPDATE console_sql_queries SET state=CASE WHEN cancel_requested THEN 'cancelled' ELSE $2 END,
+		columns=$3,rows=$4,pages=$5,truncated=$6,message=CASE WHEN cancel_requested THEN '' ELSE $7 END,
+		expires_at=CASE WHEN NOT cancel_requested AND $2='succeeded' AND $3::jsonb<>'null'::jsonb THEN now()+make_interval(secs=>$8) END,
+		cleanup_after=CASE WHEN cancel_requested OR $2<>'succeeded' THEN now()+interval '30 seconds'
+			WHEN $5>0 THEN now()+make_interval(secs=>$8) END WHERE id=$1 AND state='running' AND worker_deadline>now()
+		RETURNING state, COALESCE((extract(epoch FROM now()-started_at)*1000)::bigint,0),fingerprint,statement_count`,
+		job.q.ID, state, encoded, q.Rows, q.Pages, q.Truncated, message, s.cfg.Retention.Seconds()).Scan(&state, &durationMS, &requestFingerprint, &total)
+	if err != nil {
+		return err
+	}
+	if state == "cancelled" {
+		result = "FAILED"
+		failure = failedDuring("cancelled", errors.New("SQL run cancelled"))
+	}
+	event := sqlAuditDetails{RequestFingerprint: requestFingerprint, State: state, DurationMS: durationMS, Plan: job.q.statementPlan()}
+	if event.Plan.Kind == "script" {
+		counts := scriptAuditCounts{Total: total}
+		err := tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE operation<>''),
+			COALESCE(min(ordinal) FILTER (WHERE state='failed'),0)
+			FROM console_sql_queries WHERE parent_id=$1`, job.q.ID).
+			Scan(&counts.Attempted, &counts.EngineAccepted, &counts.FailedStep)
+		if err != nil {
+			return err
+		}
+		counts.Skipped = max(0, counts.Total-counts.Attempted)
+		event.Script = &counts
+	} else {
+		event.Step, event.StatementFingerprint, event.OperationID = 1, fingerprint(job.SQL), q.Operation
+	}
+	return auditSQL(ctx, tx, job.x, job.q.ID, "SQL_FINISH", result, event, failure)
 }

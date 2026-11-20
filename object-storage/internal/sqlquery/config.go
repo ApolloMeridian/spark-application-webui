@@ -141,3 +141,11 @@ func validTable(name string) bool {
 	}
 	return true
 }
+
+func metadataBase(name string) (string, bool) {
+	at := strings.LastIndexByte(name, '.')
+	if at < 1 || !icebergMetadataTables[name[at+1:]] || !validTable(name[:at]) {
+		return "", false
+	}
+	return name[:at], true
+}
