@@ -17,10 +17,12 @@ final class DriverPolicy {
     static final String SESSION = "spark.sql.sparkconsole.session";
     private static final Map<SparkSession, DriverPolicy> POLICIES = Collections.synchronizedMap(new WeakHashMap<>());
     private final String sqlHash;
+    private final String sessionId;
     private final Map<String, String> bindings;
     private final long expires;
 
-    private DriverPolicy(String sqlHash, Map<String, String> bindings, long expires) {
+    private DriverPolicy(String sessionId, String sqlHash, Map<String, String> bindings, long expires) {
+        this.sessionId = sessionId;
         this.sqlHash = sqlHash;
         this.bindings = bindings;
         this.expires = expires;
@@ -49,6 +51,26 @@ final class DriverPolicy {
         return forSession(active.get());
     }
 
+    static String compactionBinding(SparkSession session) {
+        var installed = POLICIES.get(session);
+        if (installed != null) return forSession(session).binding("@compaction");
+        // Iceberg clones the session for compaction workers. The clone keeps the
+        // gateway's immutable run ID but cannot install or replace the parent ticket.
+        var run = session.conf().get(SESSION, "");
+        if (run.isEmpty()) return null;
+        synchronized (POLICIES) {
+            for (var entry : POLICIES.entrySet()) {
+                var parent = entry.getKey();
+                var policy = entry.getValue();
+                if (parent != null && parent.sparkContext() == session.sparkContext() &&
+                        policy.sessionId.equals(run) && policy.expires > Instant.now().getEpochSecond()) {
+                    return policy.binding("@compaction");
+                }
+            }
+        }
+        return null;
+    }
+
     private static DriverPolicy verify(String ticket, String session, String catalogHash) {
         try {
             String key = System.getenv("SPARK_CONSOLE_ENGINE_SIGNING_KEY");
@@ -74,7 +96,7 @@ final class DriverPolicy {
                     if (bindings.put(binding[0], binding[1]) != null) throw denied();
                 }
             }
-            return new DriverPolicy(fields[5], Map.copyOf(bindings), expiry);
+            return new DriverPolicy(fields[0], fields[5], Map.copyOf(bindings), expiry);
         } catch (Exception failure) {
             throw denied();
         }

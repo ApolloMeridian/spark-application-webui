@@ -48,11 +48,15 @@ const privilegeLabels = {
   create: ["Create", "创建"], delete: ["Delete", "删除"],
   purge: ["Drop and purge", "删除表及底层数据"],
   metadataRead: ["Read metadata", "读取元数据"], metadataWrite: ["Edit metadata", "修改元数据"],
+  rewriteDataFiles: ["Compact data files", "压缩数据文件"],
+  rewriteManifests: ["Rewrite manifests", "重写清单"],
+  expireSnapshots: ["Expire snapshots", "清理过期快照"],
+  previewOrphanFiles: ["Preview orphan files", "预览孤儿文件"],
 } as const;
 const levels = Object.keys(privilegeLabels) as (keyof typeof privilegeLabels)[];
 const availablePrivilege = (scope: Grant["scope"], action: string) =>
   ((scope !== "table" && scope !== "view") || action !== "create") &&
-  (scope !== "view" || !["write", "overwrite", "update", "deleteRows", "merge", "purge"].includes(action));
+  (scope !== "view" || ["read", "delete", "metadataRead", "metadataWrite"].includes(action));
 const active = (query?: Query) => query?.state === "queued" || query?.state === "running";
 const jsonBody = (method: string, body: object): RequestInit => ({
   method,

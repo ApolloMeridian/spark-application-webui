@@ -1,6 +1,6 @@
 image:
   repository: registry.example.com/platform/spark-control-center
-  tag: "1.6.1-patch"
+  tag: "1.6.1-patch-v2"
 
 backend:
   enabled: false

@@ -79,6 +79,7 @@ func (s *Server) openEngineSession(ctx context.Context, job work) (Profile, stri
 	var session handle
 	status, err := s.clients.engine(ctx, p, http.MethodPost, "/sessions", map[string]any{"configs": map[string]string{
 		"spark.sql.sparkconsole.session": job.q.ID,
+		"spark.sql.iceberg.merge-schema": "false",
 	}}, &session)
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
 		return p, "", nil, fmt.Errorf("Kyuubi REST rejected the signed console identity (HTTP %d); verify the shared signing key", status)
@@ -96,7 +97,7 @@ func (s *Server) openEngineSession(ctx context.Context, job work) (Profile, stri
 		closeSession()
 		return p, "", nil, err
 	}
-	if err := s.verifySQLValue(ctx, p, sessionPath, "SELECT spark_console_guard_version()", "spark-console-driver-v2", 0); err != nil {
+	if err := s.verifySQLValue(ctx, p, sessionPath, "SELECT spark_console_guard_version()", "spark-console-driver-v3", 0); err != nil {
 		closeSession()
 		return p, "", nil, errors.New("Spark Driver Guard is unavailable")
 	}
@@ -191,6 +192,21 @@ func (s *Server) bindQuery(ctx context.Context, job work) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	for _, target := range plan.Targets {
+		if target.Type != "renameTo" {
+			continue
+		}
+		if _, err := catalog.table(check, target.Resource); err == nil {
+			return "", errors.New("rename destination already exists")
+		} else if !isCatalogNotFound(err) {
+			return "", errors.New("could not verify rename destination")
+		}
+		if _, err := catalog.view(check, target.Resource); err == nil {
+			return "", errors.New("rename destination already exists")
+		} else if !isCatalogNotFound(err) {
+			return "", errors.New("could not verify rename destination")
+		}
+	}
 	bindings := []string{}
 	tableUUIDs := make(map[string]string)
 	for i, target := range plan.Access {
@@ -212,6 +228,9 @@ func (s *Server) bindQuery(ctx context.Context, job work) (string, error) {
 			if uuid == "" {
 				info, err := catalog.table(check, name)
 				if err != nil {
+					if isCatalogNotFound(err) && slices.Contains([]string{"write", "overwrite", "update", "merge", "deleteRows"}, target.Action) {
+						return "", errors.New("write target must be an existing managed Iceberg table; views are read-only")
+					}
 					return "", errors.New("table unavailable or has been replaced")
 				}
 				uuid = info.UUID
@@ -225,6 +244,13 @@ func (s *Server) bindQuery(ctx context.Context, job work) (string, error) {
 		binding := strings.TrimPrefix(name, "polaris.") + "=" + uuid + version
 		if !slices.Contains(bindings, binding) {
 			bindings = append(bindings, binding)
+		}
+		if plan.Kind == "metadata" && len(plan.Access) == 1 && target.Scope == "table" && slices.Contains(maintenanceActions, target.Action) {
+			marker := "@maintenance"
+			if target.Action == "rewriteDataFiles" {
+				marker = "@compaction"
+			}
+			bindings = append(bindings, marker+"="+uuid)
 		}
 		if target.MetadataTable != "" {
 			base, ok := metadataBase(target.MetadataTable)

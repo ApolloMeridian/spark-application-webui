@@ -97,6 +97,9 @@ type parseFailure struct {
 func (err parseFailure) Error() string { return err.message }
 
 func (c *clients) parse(ctx context.Context, sql string, scope planningContext) (statementPlan, error) {
+	if strings.Contains(sql, "${") {
+		return statementPlan{}, parseFailure{422, "SQL variable substitution is managed by the platform"}
+	}
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 	temps := make([]string, 0, len(scope.tempViews))
@@ -115,6 +118,8 @@ func (c *clients) parse(ctx context.Context, sql string, scope planningContext) 
 		return statementPlan{}, parseFailure{400, "Invalid Spark SQL syntax"}
 	case 422:
 		return statementPlan{}, parseFailure{422, "SQL capability unavailable: " + string(raw)}
+	case 500:
+		return statementPlan{}, parseFailure{503, "Spark SQL parser failed"}
 	case 200:
 	default:
 		return statementPlan{}, parseFailure{503, "Spark SQL parser unavailable"}

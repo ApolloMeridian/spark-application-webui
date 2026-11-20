@@ -14,6 +14,8 @@ import (
 )
 
 var catalogActions = []string{"read", "write", "overwrite", "update", "deleteRows", "merge", "create", "delete", "purge", "metadataRead", "metadataWrite"}
+var maintenanceActions = []string{"rewriteDataFiles", "rewriteManifests", "expireSnapshots", "previewOrphanFiles"}
+var sqlActions = append(slices.Clone(catalogActions), maintenanceActions...)
 
 const permissionSchema = `
 CREATE TABLE IF NOT EXISTS console_sql_permissions (
@@ -27,6 +29,7 @@ CREATE TABLE IF NOT EXISTS console_sql_bootstrap_claims (
  tenant text NOT NULL, user_id text NOT NULL, catalog text NOT NULL,
  PRIMARY KEY(tenant,user_id,catalog)
 );
+ALTER TABLE console_sql_bootstrap_claims ADD COLUMN IF NOT EXISTS maintenance_defaults_applied boolean NOT NULL DEFAULT false;
 ALTER TABLE console_sql_queries ADD COLUMN IF NOT EXISTS catalog text NOT NULL DEFAULT '';
 ALTER TABLE console_sql_queries ADD COLUMN IF NOT EXISTS write_table text NOT NULL DEFAULT '';
 ALTER TABLE console_sql_queries ADD COLUMN IF NOT EXISTS statement_plan jsonb;
@@ -58,8 +61,8 @@ func engineProfile(x user) Profile {
 func (s *Server) bootstrap(ctx context.Context) error {
 	for _, bootstrap := range s.cfg.Bootstrap {
 		_, err := s.db.Exec(ctx, `WITH claim AS (
-			INSERT INTO console_sql_bootstrap_claims(tenant,user_id,catalog)
-			SELECT tenant_id,id,$3 FROM local_users
+			INSERT INTO console_sql_bootstrap_claims(tenant,user_id,catalog,maintenance_defaults_applied)
+			SELECT tenant_id,id,$3,true FROM local_users
 			WHERE tenant_id=$1 AND username_normalized=lower($2) AND role='admin' AND NOT disabled
 			ON CONFLICT DO NOTHING RETURNING tenant,user_id,catalog
 		), permission AS (
@@ -68,7 +71,23 @@ func (s *Server) bootstrap(ctx context.Context) error {
 			ON CONFLICT DO NOTHING
 		)
 		UPDATE tenants SET permissions=COALESCE(permissions,'{}'::jsonb)||'{"sqlQuery":true,"sqlManage":true}'::jsonb
-		WHERE id IN (SELECT tenant FROM claim)`, bootstrap.Tenant, bootstrap.Username, s.cfg.catalogID(), catalogActions)
+		WHERE id IN (SELECT tenant FROM claim)`, bootstrap.Tenant, bootstrap.Username, s.cfg.catalogID(), sqlActions)
+		if err != nil {
+			return err
+		}
+		// Upgrade an original full bootstrap grant once. Keep edited or revoked grants intact.
+		_, err = s.db.Exec(ctx, `WITH upgraded AS (
+			UPDATE console_sql_bootstrap_claims b SET maintenance_defaults_applied=true
+			FROM local_users u WHERE b.tenant=$1 AND b.catalog=$3 AND b.tenant=u.tenant_id AND b.user_id=u.id
+				AND u.username_normalized=lower($2) AND u.role='admin' AND NOT u.disabled
+				AND NOT b.maintenance_defaults_applied
+			RETURNING b.tenant,b.user_id,b.catalog
+		)
+		UPDATE console_sql_permissions p SET actions=$4,grant_id=gen_random_uuid()
+		FROM upgraded b
+		WHERE p.tenant=b.tenant AND p.user_id=b.user_id AND p.catalog=b.catalog AND p.scope='catalog'
+			AND p.resource='polaris' AND p.actions @> $5::text[] AND p.actions <@ $5::text[]`,
+			bootstrap.Tenant, bootstrap.Username, s.cfg.catalogID(), sqlActions, catalogActions)
 		if err != nil {
 			return err
 		}
@@ -94,7 +113,7 @@ func namespaceOf(table string) string {
 }
 
 func validAccess(scope, action, resource string) bool {
-	if !slices.Contains(catalogActions, action) {
+	if !slices.Contains(sqlActions, action) {
 		return false
 	}
 	switch scope {
@@ -102,8 +121,10 @@ func validAccess(scope, action, resource string) bool {
 		return resource == "polaris"
 	case "namespace":
 		return validNamespace(resource)
-	case "table", "view":
+	case "table":
 		return validTable(resource) && action != "create"
+	case "view":
+		return validTable(resource) && slices.Contains([]string{"read", "delete", "metadataRead", "metadataWrite"}, action)
 	default:
 		return false
 	}
@@ -182,7 +203,7 @@ func (s *Server) changeGrant(w http.ResponseWriter, r *http.Request, x user, add
 		return
 	}
 	if g.User == "" || !validAccess(g.Scope, "metadataRead", g.Table) ||
-		(add && (len(g.Actions) == 0 || len(g.Actions) > len(catalogActions))) {
+		(add && (len(g.Actions) == 0 || len(g.Actions) > len(sqlActions))) {
 		reply(w, 400, nil, "invalid SQL grant")
 		return
 	}
@@ -206,8 +227,7 @@ func (s *Server) changeGrant(w http.ResponseWriter, r *http.Request, x user, add
 	if add {
 		for _, action := range g.Actions {
 			_, ok := permits(current, g.Scope, g.Table, action)
-			if !ok || !validAccess(g.Scope, action, g.Table) ||
-				(g.Scope == "view" && slices.Contains([]string{"write", "overwrite", "update", "deleteRows", "merge", "purge"}, action)) {
+			if !ok || !validAccess(g.Scope, action, g.Table) {
 				reply(w, 403, nil, "SQL permission is outside your scope")
 				return
 			}
