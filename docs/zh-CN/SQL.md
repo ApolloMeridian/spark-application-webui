@@ -23,19 +23,18 @@ Spark Control Center 通过认证的 Kyuubi REST 服务和加载 Driver Guard �
 发布包包含基于 Apache Kyuubi 1.11.1 的 Helm Chart，修复了容器 `args` 的模板。使用[独立部署示例](../../charts/kyuubi/examples/values-spark-console.yaml)，填写镜像、Polaris 和存储地址，在 `kyuubi-scc` 中准备所引用的 Secret。启用后，Chart 会创建 `kyuubi` ServiceAccount 和命名空间级 RBAC。Kyuubi REST 服务应只对控制台 SQL 网关开放。引擎命名空间应独立于普通 SparkApplication 的提交范围。
 
 ```bash
-docker load -i spark-control-center-sql-1.6.1-patch-v2.tar
-guard_container=$(docker create spark-control-center-sql:1.6.1-patch-v2)
-docker cp "${guard_container}:/app/sql-guard.jar" ./spark-console-sql-guard-1.6.1-patch-v2.jar
+guard_container=$(docker create spark-control-center-sql:1.6.1-patch-v3)
+docker cp "${guard_container}:/app/sql-guard.jar" ./spark-console-sql-guard-1.6.1-patch-v3.jar
 docker rm "${guard_container}"
 
-mc cp ./spark-console-sql-guard-1.6.1-patch-v2.jar \
+mc cp ./spark-console-sql-guard-1.6.1-patch-v3.jar \
   minio/example-bucket/spark-console-sql/artifacts/
 ```
 
 将同一份 JAR 放入 Kyuubi 镜像的 `/opt/kyuubi/jars/`，供 `ConsoleKyuubiAuth` 加载。将 `spark.jars` 改成上传位置对应的 S3A URI。Driver 需要读取此 JAR，并通过 Secret 获得 Polaris 凭证和引擎签名密钥。使用 GCS 时，staging 需要对应的 Hadoop GCS Connector 和 Workload Identity。
 
 ```bash
-helm upgrade --install kyuubi-scc ./kyuubi-0.1.0-scc.1.6.1-patch-v2.tgz \
+helm upgrade --install kyuubi-scc ./kyuubi-0.1.0-scc.1.6.1-patch-v3.tgz \
   --namespace kyuubi-scc --create-namespace \
   -f kyuubi-values.yaml
 ```
@@ -75,21 +74,28 @@ helm upgrade --install kyuubi-scc ./kyuubi-0.1.0-scc.1.6.1-patch-v2.tgz \
 | `ALTER VIEW ... AS` 和 `SET/UNSET TBLPROPERTIES` | 视图 `metadataWrite`，定义引用关系 `read` | 可编辑的视图属性为 `comment`。 |
 | 重命名表或视图 | 源对象 `metadataWrite`，目标命名空间 `create` | 目标名称必须空闲。 |
 | `DROP TABLE`、`DROP TABLE ... PURGE`、删除视图或空命名空间 | 对象 `delete` 或表 `purge` | PURGE 需要 Polaris 提供对应能力。 |
-| `CALL polaris.system.rewrite_data_files('db.tbl')` | 表 `rewriteDataFiles` | 使用默认小文件合并策略，消耗 Spark 计算和临时存储。 |
+| `rewrite_data_files`、`rewrite_position_delete_files` | 表 `rewriteDataFiles` | 可通过字面量 `options` 设置 `rewrite-all` 或 `min-input-files`。 |
 | `CALL polaris.system.rewrite_manifests('db.tbl')` | 表 `rewriteManifests` | 可用命名参数 `spec_id` 指定非负分区规范 ID。 |
 | `CALL polaris.system.expire_snapshots(table => 'db.tbl', stream_results => true)` | 表 `expireSnapshots` | 会物理清理只被过期快照引用的文件。可用 `retain_last` 保留额外快照。 |
-| `CALL polaris.system.remove_orphan_files(table => 'db.tbl', dry_run => true, prefix_listing => true)` | 表 `previewOrphanFiles` | 通过 Iceberg FileIO 预览候选文件。实际删除交给平台运维。 |
+| `remove_orphan_files(table => 'db.tbl', dry_run => true, prefix_listing => true)` | 表 `previewOrphanFiles` | 通过 Iceberg FileIO 预览候选文件。 |
+| `remove_orphan_files(table => 'db.tbl', dry_run => false, prefix_listing => true)` | 表 `deleteOrphanFiles` | 使用 Iceberg 默认安全年龄与受管表自身的位置。 |
+| `VERSION AS OF`、`TIMESTAMP AS OF`、查询 `table.branch_name` | 表 `read` + `snapshotRead` | 接受快照 ID、分支或标签名、字面量时间。 |
+| `ancestors_of` | 表 `snapshotRead` | 查看指定或当前快照的祖先。 |
+| `CREATE/REPLACE/DROP BRANCH` 或 `TAG` | 表 `referenceManage` | 更改 `main` 还需 `snapshotManage`。 |
+| 向 `table.branch_name` 写入 | 表 `branchWrite` + 该写入动作 | Driver 验证分支已存在且属于绑定的表。 |
+| `fast_forward`、`rollback_to_snapshot`、`rollback_to_timestamp`、`set_current_snapshot`、`cherrypick_snapshot`、`publish_changes` | 表 `snapshotManage` | 继续遵循 Iceberg 的快照祖先、操作类型和 WAP 约束。 |
 
-四种过程需要带命名空间的表名和字面量参数。禁止位置覆盖、自由过滤器、任意过程和外部输入。建议将快照过期授权限于专门的运维角色。孤儿文件预览通过 Iceberg FileIO 列举受管表路径，可使用 Polaris 下发的存储凭证。保留期类属性至少一天，最少快照数至少一条。提交重试、Parquet 文件布局和常用写入属性采用逐项白名单。委派方式与现有表授权相同，绑定表 UUID。升级时，仅为仍保留完整初始授权的 Helm 管理员一次性添加这些权限。
+过程需要带命名空间的表名和经校验的字面量参数。孤儿文件清理通过 Iceberg FileIO 列举受管表路径，可使用 Polaris 下发的存储凭证。清理范围受表 UUID、表位置及平台存储权限约束。委派方式与现有表授权相同，支持在目录、命名空间或具体表授予这些动作。升级时，仅为仍保留完整初始授权的 Helm 管理员一次性添加新权限。
+
+审计记录 Iceberg 操作、请求的分支／标签或快照、受管表 UUID、操作者、执行结果与耗时。`engineSucceeded` 可以区分操作已经完成但结果页保存失败的情况。快照切换过程在返回前后快照 ID 时，服务端将这些 ID 一并保存到 `sqlDetails.outcome`，结果页到期后仍可查询审计。
 
 错误按语法错误（400）、平台限制（422）、缺少授权（403）和解析器不可用或内部失败（503）区分。已进入队列的脚本在历史与审计中记录失败阶段。不回显 SQL 原文或上游堆栈。
 
 ### 仍由平台管理的操作
 
-- 显式 Time Travel、分支／标签读写与管理保持拒绝。Iceberg 元数据表仍会按授权显示历史元数据。历史数据治理需要同时考虑表快照、引用和存储保留策略。
 - 关闭隐式 Schema Evolution。普通 MERGE 保持 `merge` 权限。加列先用有 `metadataWrite` 授权的 `ALTER TABLE`，再执行 MERGE。
 - `CREATE OR REPLACE TABLE` 和 `REPLACE TABLE` 保持拒绝。原子替换会同时修改数据和结构，需要重新验证同名对象绑定并独立授权。可按意图使用 `CREATE TABLE IF NOT EXISTS` 或 `INSERT OVERWRITE`。
 - `CREATE TABLE LIKE` 采用经过检查的 `SHOW CREATE TABLE` 输出并修改目标表名。Iceberg V2 表的 `ANALYZE TABLE` 保持关闭，可查询 `.files`、`.partitions` 做运维统计。二者不会写入 Spark 优化器统计。
-- 显式 `INSERT ... PARTITION`、`REPLACE WHERE`、格式升级、任意 Location、外部 UDF 和非白名单配置保持拒绝。清单之外的运维能力还包括 position-delete 文件重写、快照回滚或切换、孤儿文件物理清理与注册外部表。
+- 显式 `INSERT ... PARTITION`、`REPLACE WHERE`、格式升级、任意 Location、外部 UDF 和非白名单配置保持拒绝。外部数据导入、注册或迁移、共享底层文件的表克隆，以及 CDC 视图由平台单独管理。
 
 上游参考 [Iceberg 1.10.2 DDL](https://iceberg.apache.org/docs/1.10.2/spark-ddl/)、[Spark 写入](https://iceberg.apache.org/docs/1.10.2/spark-writes/)、[Spark 运维过程](https://iceberg.apache.org/docs/1.10.2/spark-procedures/)和 [Polaris 1.6.0](https://polaris.apache.org/releases/1.6.0/)。

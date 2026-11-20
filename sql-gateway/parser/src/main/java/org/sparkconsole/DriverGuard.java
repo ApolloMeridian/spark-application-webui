@@ -40,7 +40,7 @@ public final class DriverGuard implements SparkSessionExtensionsProvider {
     private static final String INSTALL = "SET " + DriverPolicy.TICKET + "=";
     private static final Set<String> COMPACTION_READ_OPTIONS = Set.of("path", "scan-task-set-id", "split-size", "file-open-cost");
     private static final Set<String> COMPACTION_WRITE_OPTIONS = Set.of("path", "rewritten-file-scan-task-set-id",
-            "target-file-size-bytes", "distribution-mode", "output-spec-id");
+            "target-file-size-bytes", "target-delete-file-size-bytes", "distribution-mode", "output-spec-id");
     private static final Set<String> SETTINGS = Set.of(
             "spark.sql.catalog.polaris",
             "spark.sql.catalog.polaris.catalog-impl", "spark.sql.catalog.polaris.console-principal-id",
@@ -58,7 +58,7 @@ public final class DriverGuard implements SparkSessionExtensionsProvider {
                         new Class<?>[]{ParserInterface.class}, (proxy, method, args) -> {
                             if (method.getName().equals("parsePlan")) {
                                 String statement = (String)args[0];
-                                if (statement.equals(READY)) return delegate.parsePlan("SELECT 'spark-console-driver-v3' AS version");
+                                if (statement.equals(READY)) return delegate.parsePlan("SELECT 'spark-console-driver-v4' AS version");
                                 if (statement.startsWith(INSTALL)) {
                                     DriverPolicy.install(session, statement.substring(INSTALL.length()));
                                     return delegate.parsePlan("SELECT 1");
@@ -132,7 +132,8 @@ public final class DriverGuard implements SparkSessionExtensionsProvider {
     private static void requireBinding(CatalogPlugin catalog, Identifier identifier, SparkSession session) {
         requireCatalog(catalog);
         String name = String.join(".", identifier.namespace()) + "." + identifier.name();
-        if (DriverPolicy.forSession(session).binding(name) == null) throw DriverPolicy.denied();
+        var policy = DriverPolicy.forSession(session);
+        if (policy.binding(name) == null && policy.binding("@branch:" + name) == null) throw DriverPolicy.denied();
     }
 
     private static void check(LogicalPlan plan, SparkSession session) {
@@ -166,9 +167,8 @@ public final class DriverGuard implements SparkSessionExtensionsProvider {
         String expected;
         if (relation.catalog().isEmpty() && relation.identifier().isEmpty() && relation.options().isEmpty()) {
             // Maintenance metadata scans have no catalog identifier.
-            var policy = DriverPolicy.forSession(session);
-            expected = policy.binding("@maintenance");
-            if (expected == null) expected = policy.binding("@compaction");
+            expected = DriverPolicy.compactionBinding(session);
+            if (expected == null) expected = DriverPolicy.forSession(session).binding("@maintenance");
         } else if (compactionRelation(relation)) {
             expected = DriverPolicy.compactionBinding(session);
         } else {

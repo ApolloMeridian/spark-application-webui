@@ -97,7 +97,7 @@ func (s *Server) openEngineSession(ctx context.Context, job work) (Profile, stri
 		closeSession()
 		return p, "", nil, err
 	}
-	if err := s.verifySQLValue(ctx, p, sessionPath, "SELECT spark_console_guard_version()", "spark-console-driver-v3", 0); err != nil {
+	if err := s.verifySQLValue(ctx, p, sessionPath, "SELECT spark_console_guard_version()", "spark-console-driver-v4", 0); err != nil {
 		closeSession()
 		return p, "", nil, errors.New("Spark Driver Guard is unavailable")
 	}
@@ -111,6 +111,9 @@ func (s *Server) openEngineSession(ctx context.Context, job work) (Profile, stri
 func (s *Server) executeStatement(ctx context.Context, job work, p Profile, sessionPath, sessionID, bindings string) (query, error) {
 	q := job.q
 	plan := q.statementPlan()
+	if plan.Operation != "" || len(plan.References) != 0 {
+		q.AuditObjects = auditedObjectUUIDs(bindings)
+	}
 	if _, err := s.actualUser(ctx, job.x.actor); err != nil {
 		return q, errors.New("SQL access was revoked")
 	}
@@ -160,6 +163,7 @@ func (s *Server) executeStatement(ctx context.Context, job work, p Profile, sess
 		return q, err
 	}
 	finished = true
+	q.EngineSucceeded = len(q.AuditObjects) != 0
 	if plan.Kind != "query" && plan.Kind != "metadata" {
 		return q, nil
 	}
@@ -244,6 +248,22 @@ func (s *Server) bindQuery(ctx context.Context, job work) (string, error) {
 		binding := strings.TrimPrefix(name, "polaris.") + "=" + uuid + version
 		if !slices.Contains(bindings, binding) {
 			bindings = append(bindings, binding)
+		}
+		if target.Scope == "table" && target.Action == "snapshotRead" {
+			historical := "@history:" + strings.TrimPrefix(name, "polaris.") + "=" + uuid
+			if !slices.Contains(bindings, historical) {
+				bindings = append(bindings, historical)
+			}
+		}
+		if target.BranchTable != "" {
+			base, ok := branchBase(target.BranchTable)
+			if !ok || base != name || target.Scope != "table" {
+				return "", errors.New("invalid Iceberg branch binding")
+			}
+			branch := "@branch:" + strings.TrimPrefix(target.BranchTable, "polaris.") + "=" + uuid
+			if !slices.Contains(bindings, branch) {
+				bindings = append(bindings, branch)
+			}
 		}
 		if plan.Kind == "metadata" && len(plan.Access) == 1 && target.Scope == "table" && slices.Contains(maintenanceActions, target.Action) {
 			marker := "@maintenance"
@@ -430,6 +450,9 @@ func (s *Server) savePages(ctx context.Context, p Profile, path string, q query)
 					f.Value, _ = json.Marshal(string(f.Value))
 				}
 				values[i] = f.Value
+			}
+			if q.Rows == 0 && q.Plan != nil && q.Plan.Operation != "" {
+				q.AuditOutcome = snapshotOutcome(q.Plan.Operation, q.Columns, values)
 			}
 			data, err := json.Marshal(values)
 			if err != nil || len(data) > 128<<10 {

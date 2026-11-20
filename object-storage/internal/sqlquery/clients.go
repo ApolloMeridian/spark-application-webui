@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -74,6 +75,7 @@ type objectAccess struct {
 	Scope, Action, Resource string
 	ViewVersion             int    `json:"viewVersion,omitempty"`
 	MetadataTable           string `json:"metadataTable,omitempty"`
+	BranchTable             string `json:"branchTable,omitempty"`
 }
 
 type statementPlan struct {
@@ -82,6 +84,24 @@ type statementPlan struct {
 	Access        []objectAccess
 	StatementType string            `json:"statementType,omitempty"`
 	Targets       []statementTarget `json:"targets,omitempty"`
+	Operation     string            `json:"operation,omitempty"`
+	References    []auditReference  `json:"references,omitempty"`
+}
+
+type auditReference struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
+var auditReferenceValue = regexp.MustCompile("^[a-zA-Z0-9_.:+ -]{1,128}$")
+var branchAlias = regexp.MustCompile("^branch_[a-z_][a-z0-9_-]{0,120}$")
+
+func branchBase(alias string) (string, bool) {
+	at := strings.LastIndexByte(alias, '.')
+	if at < 1 || !branchAlias.MatchString(alias[at+1:]) || !validTable(alias[:at]) {
+		return "", false
+	}
+	return alias[:at], true
 }
 
 type statementTarget struct {
@@ -128,7 +148,7 @@ func (c *clients) parse(ctx context.Context, sql string, scope planningContext) 
 	kind, value, _ := strings.Cut(lines[0], "\t")
 	out := statementPlan{Kind: kind, Value: value, Access: []objectAccess{}}
 	if (kind != "query" && kind != "metadata" && kind != "command" && kind != "use" && kind != "temp") ||
-		(kind == "use" && value != "polaris" && !validNamespace(value)) || (kind == "temp" && !catalogName.MatchString(value)) || len(lines) > 70 {
+		(kind == "use" && value != "polaris" && !validNamespace(value)) || (kind == "temp" && !catalogName.MatchString(value)) || len(lines) > 105 {
 		return statementPlan{}, errors.New("invalid parser response")
 	}
 	for _, line := range lines[1:] {
@@ -137,8 +157,16 @@ func (c *clients) parse(ctx context.Context, sql string, scope planningContext) 
 			out.StatementType = fields[1]
 			continue
 		}
+		if len(fields) == 2 && fields[0] == "operation" && catalogName.MatchString(fields[1]) && out.Operation == "" {
+			out.Operation = fields[1]
+			continue
+		}
 		if len(fields) != 3 {
 			return statementPlan{}, errors.New("invalid parser response")
+		}
+		if fields[0] == "reference" && userName.MatchString(fields[1]) && auditReferenceValue.MatchString(fields[2]) && len(out.References) < 32 {
+			out.References = append(out.References, auditReference{Kind: fields[1], Value: fields[2]})
+			continue
 		}
 		if fields[0] == "target" {
 			switch fields[1] {
@@ -163,6 +191,23 @@ func (c *clients) parse(ctx context.Context, sql string, scope planningContext) 
 			}
 			for _, action := range []string{"read", "metadataRead"} {
 				out.Access = append(out.Access, objectAccess{Scope: "table", Action: action, Resource: base, MetadataTable: fields[2]})
+			}
+			continue
+		}
+		if fields[0] == "branchTable" {
+			base, ok := branchBase(fields[2])
+			if !ok {
+				return statementPlan{}, errors.New("invalid Iceberg branch target")
+			}
+			if !validBranchAction(fields[1]) {
+				return statementPlan{}, errors.New("invalid Iceberg branch action")
+			}
+			action := "branchWrite"
+			if fields[1] == "read" {
+				action = "snapshotRead"
+			}
+			for _, required := range []string{fields[1], action} {
+				out.Access = append(out.Access, objectAccess{Scope: "table", Action: required, Resource: base, BranchTable: fields[2]})
 			}
 			continue
 		}

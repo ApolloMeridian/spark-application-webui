@@ -23,19 +23,18 @@ Each day is 24 hours. Expired SQL links stop serving pages and CSV immediately. 
 The release includes an Apache Kyuubi 1.11.1 chart with the container `args` template fixed. Use [the dedicated values example](../../charts/kyuubi/examples/values-spark-console.yaml), change its image, catalog and bucket endpoints, and create its referenced Secrets in `kyuubi-scc`. The chart creates the `kyuubi` service account and namespaced RBAC when enabled. Restrict Kyuubi REST ingress to the console gateway. Keep the engine namespace outside generic SparkApplication submission scope.
 
 ```bash
-docker load -i spark-control-center-sql-1.6.1-patch-v2.tar
-guard_container=$(docker create spark-control-center-sql:1.6.1-patch-v2)
-docker cp "${guard_container}:/app/sql-guard.jar" ./spark-console-sql-guard-1.6.1-patch-v2.jar
+guard_container=$(docker create spark-control-center-sql:1.6.1-patch-v3)
+docker cp "${guard_container}:/app/sql-guard.jar" ./spark-console-sql-guard-1.6.1-patch-v3.jar
 docker rm "${guard_container}"
 
-mc cp ./spark-console-sql-guard-1.6.1-patch-v2.jar \
+mc cp ./spark-console-sql-guard-1.6.1-patch-v3.jar \
   minio/example-bucket/spark-console-sql/artifacts/
 ```
 
 Bake the same JAR into `/opt/kyuubi/jars/` in your Kyuubi image for `ConsoleKyuubiAuth`. Set `spark.jars` to the uploaded JAR's S3A URI. The Driver must have access to the JAR, the scoped Polaris Secret, and the engine signing Secret. Use the corresponding Hadoop GCS connector and workload identity for GCS staging.
 
 ```bash
-helm upgrade --install kyuubi-scc ./kyuubi-0.1.0-scc.1.6.1-patch-v2.tgz \
+helm upgrade --install kyuubi-scc ./kyuubi-0.1.0-scc.1.6.1-patch-v3.tgz \
   --namespace kyuubi-scc --create-namespace \
   -f kyuubi-values.yaml
 ```
@@ -75,21 +74,28 @@ The following actions are Spark Control Center grants. Polaris independently aut
 | `ALTER VIEW ... AS` and `SET/UNSET TBLPROPERTIES` | View `metadataWrite` and source `read` | The editable view property is `comment`. |
 | Rename table or view | Source `metadataWrite` and destination namespace `create` | The destination name must be unoccupied. |
 | Drop table, purge, drop view or empty namespace | Object `delete` or table `purge` | Polaris must support the purge operation. |
-| `CALL polaris.system.rewrite_data_files('db.tbl')` | Table `rewriteDataFiles` | Default compaction can consume substantial compute and temporary storage. |
+| `rewrite_data_files`, `rewrite_position_delete_files` | Table `rewriteDataFiles` | Literal `options` can set `rewrite-all` or `min-input-files`. |
 | `CALL polaris.system.rewrite_manifests('db.tbl')` | Table `rewriteManifests` | Optional nonnegative named `spec_id`. |
 | `CALL polaris.system.expire_snapshots(table => 'db.tbl', stream_results => true)` | Table `expireSnapshots` | Physically removes files reachable only from expired snapshots. Optional positive `retain_last`. |
-| `CALL polaris.system.remove_orphan_files(table => 'db.tbl', dry_run => true, prefix_listing => true)` | Table `previewOrphanFiles` | Reports candidates through Iceberg FileIO. Platform operators handle deletion. |
+| `remove_orphan_files(table => 'db.tbl', dry_run => true, prefix_listing => true)` | Table `previewOrphanFiles` | Reports candidates through Iceberg FileIO. |
+| `remove_orphan_files(table => 'db.tbl', dry_run => false, prefix_listing => true)` | Table `deleteOrphanFiles` | Uses the Iceberg default age threshold and the managed table's location. |
+| `VERSION AS OF`, `TIMESTAMP AS OF`, read `table.branch_name` | Table `read` and `snapshotRead` | Accepts a snapshot ID, branch or tag, or literal timestamp. |
+| `ancestors_of` | Table `snapshotRead` | Lists ancestors of the specified or current snapshot. |
+| `CREATE/REPLACE/DROP BRANCH` or `TAG` | Table `referenceManage` | Changes to `main` also require `snapshotManage`. |
+| Write to `table.branch_name` | Table `branchWrite` and the respective write action | The Driver checks that the branch exists on the authorized table. |
+| `fast_forward`, `rollback_to_snapshot`, `rollback_to_timestamp`, `set_current_snapshot`, `cherrypick_snapshot`, `publish_changes` | Table `snapshotManage` | Iceberg still enforces ancestry, operation type and WAP rules. |
 
-Procedure arguments use literals and a table qualified with its namespace. Location overrides, free-form predicates and external inputs are outside this interface. Delegate expiration to a dedicated maintenance role. Orphan previews list the managed table location with Iceberg FileIO and can use Polaris-vended credentials. Snapshot retention settings have a floor of one day or one snapshot. Commit retries, Parquet layout and write properties are individually allowlisted. Direct table grants bind to the table UUID. On upgrade, Helm bootstrap administrators who still have the full original grant receive the new actions once.
+Procedure arguments use validated literals and a table qualified with its namespace. Orphan cleanup lists the managed table location through Iceberg FileIO and can use Polaris-vended credentials. The scope is bound to the table UUID, location and storage permissions. Delegate actions at the catalog, namespace or table level. On upgrade, Helm bootstrap administrators who still have the full original grant receive the new actions once.
+
+Audit records include the Iceberg operation, requested references or snapshots, target table UUID, actor, outcome and duration. `engineSucceeded` distinguishes completed operations from result-page storage failures. When snapshot control procedures return the previous and updated snapshot IDs, the console preserves those IDs in `sqlDetails.outcome` after the result pages expire.
 
 Submission errors distinguish syntax (400), platform capability (422), authorization (403) and parser failure or unavailability (503). Queued scripts record failure phases in history and audit. These responses omit SQL text and upstream stack traces.
 
 ### Platform-managed operations
 
-- Explicit time travel and branch or tag reads, writes and management are disabled. Authorized metadata tables can still expose historical metadata. Account for snapshots, references and storage retention when planning history removal.
 - Implicit schema evolution is disabled. Use `ALTER TABLE` under `metadataWrite` before a regular MERGE under `merge`.
 - `CREATE OR REPLACE TABLE` and `REPLACE TABLE` are disabled. Atomic replacement changes table data and schema and needs separate authorization and identity checks. Use `CREATE TABLE IF NOT EXISTS` or `INSERT OVERWRITE` as appropriate.
 - For `CREATE TABLE LIKE`, review `SHOW CREATE TABLE` output and edit the target. `ANALYZE TABLE` is unavailable for managed Iceberg V2 tables. Query `.files` or `.partitions` for operational statistics. These queries leave Spark optimizer statistics unchanged.
-- Explicit `INSERT ... PARTITION`, `REPLACE WHERE`, format upgrades, arbitrary locations, external UDFs and unlisted settings are denied. Other maintenance capabilities include position-delete file rewrites, snapshot rollback or switching, physical orphan deletion, and external table registration.
+- Explicit `INSERT ... PARTITION`, `REPLACE WHERE`, format upgrades, arbitrary locations, external UDFs and unlisted settings are denied. The platform handles external import, registration and migration, clones that share source files, and CDC views separately.
 
 See the upstream [Iceberg 1.10.2 DDL](https://iceberg.apache.org/docs/1.10.2/spark-ddl/), [writes](https://iceberg.apache.org/docs/1.10.2/spark-writes/), [maintenance procedures](https://iceberg.apache.org/docs/1.10.2/spark-procedures/) and [Polaris 1.6.0](https://polaris.apache.org/releases/1.6.0/) documentation.

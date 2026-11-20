@@ -14,8 +14,13 @@ import (
 )
 
 var catalogActions = []string{"read", "write", "overwrite", "update", "deleteRows", "merge", "create", "delete", "purge", "metadataRead", "metadataWrite"}
-var maintenanceActions = []string{"rewriteDataFiles", "rewriteManifests", "expireSnapshots", "previewOrphanFiles"}
-var sqlActions = append(slices.Clone(catalogActions), maintenanceActions...)
+var maintenanceActions = []string{"rewriteDataFiles", "rewriteManifests", "expireSnapshots", "previewOrphanFiles", "deleteOrphanFiles"}
+var previousActions = append(slices.Clone(catalogActions), maintenanceActions[:4]...)
+var sqlActions = append(slices.Clone(previousActions), "deleteOrphanFiles", "snapshotRead", "referenceManage", "snapshotManage", "branchWrite")
+
+func validBranchAction(action string) bool {
+	return slices.Contains([]string{"read", "write", "overwrite", "update", "deleteRows", "merge"}, action)
+}
 
 const permissionSchema = `
 CREATE TABLE IF NOT EXISTS console_sql_permissions (
@@ -30,6 +35,7 @@ CREATE TABLE IF NOT EXISTS console_sql_bootstrap_claims (
  PRIMARY KEY(tenant,user_id,catalog)
 );
 ALTER TABLE console_sql_bootstrap_claims ADD COLUMN IF NOT EXISTS maintenance_defaults_applied boolean NOT NULL DEFAULT false;
+ALTER TABLE console_sql_bootstrap_claims ADD COLUMN IF NOT EXISTS recovery_defaults_applied boolean NOT NULL DEFAULT false;
 ALTER TABLE console_sql_queries ADD COLUMN IF NOT EXISTS catalog text NOT NULL DEFAULT '';
 ALTER TABLE console_sql_queries ADD COLUMN IF NOT EXISTS write_table text NOT NULL DEFAULT '';
 ALTER TABLE console_sql_queries ADD COLUMN IF NOT EXISTS statement_plan jsonb;
@@ -61,8 +67,8 @@ func engineProfile(x user) Profile {
 func (s *Server) bootstrap(ctx context.Context) error {
 	for _, bootstrap := range s.cfg.Bootstrap {
 		_, err := s.db.Exec(ctx, `WITH claim AS (
-			INSERT INTO console_sql_bootstrap_claims(tenant,user_id,catalog,maintenance_defaults_applied)
-			SELECT tenant_id,id,$3,true FROM local_users
+			INSERT INTO console_sql_bootstrap_claims(tenant,user_id,catalog,maintenance_defaults_applied,recovery_defaults_applied)
+			SELECT tenant_id,id,$3,true,true FROM local_users
 			WHERE tenant_id=$1 AND username_normalized=lower($2) AND role='admin' AND NOT disabled
 			ON CONFLICT DO NOTHING RETURNING tenant,user_id,catalog
 		), permission AS (
@@ -87,7 +93,22 @@ func (s *Server) bootstrap(ctx context.Context) error {
 		FROM upgraded b
 		WHERE p.tenant=b.tenant AND p.user_id=b.user_id AND p.catalog=b.catalog AND p.scope='catalog'
 			AND p.resource='polaris' AND p.actions @> $5::text[] AND p.actions <@ $5::text[]`,
-			bootstrap.Tenant, bootstrap.Username, s.cfg.catalogID(), sqlActions, catalogActions)
+			bootstrap.Tenant, bootstrap.Username, s.cfg.catalogID(), previousActions, catalogActions)
+		if err != nil {
+			return err
+		}
+		_, err = s.db.Exec(ctx, `WITH upgraded AS (
+			UPDATE console_sql_bootstrap_claims b SET recovery_defaults_applied=true
+			FROM local_users u WHERE b.tenant=$1 AND b.catalog=$3 AND b.tenant=u.tenant_id AND b.user_id=u.id
+				AND u.username_normalized=lower($2) AND u.role='admin' AND NOT u.disabled
+				AND NOT b.recovery_defaults_applied
+			RETURNING b.tenant,b.user_id,b.catalog
+		)
+		UPDATE console_sql_permissions p SET actions=$4,grant_id=gen_random_uuid()
+		FROM upgraded b
+		WHERE p.tenant=b.tenant AND p.user_id=b.user_id AND p.catalog=b.catalog AND p.scope='catalog'
+			AND p.resource='polaris' AND p.actions @> $5::text[] AND p.actions <@ $5::text[]`,
+			bootstrap.Tenant, bootstrap.Username, s.cfg.catalogID(), sqlActions, previousActions)
 		if err != nil {
 			return err
 		}

@@ -185,6 +185,12 @@ func (plan statementPlan) description() string {
 	if plan.StatementType != "" {
 		items = append(items, "statement="+plan.StatementType)
 	}
+	if plan.Operation != "" {
+		items = append(items, "icebergOperation="+plan.Operation)
+	}
+	for _, ref := range plan.References {
+		items = append(items, "reference."+ref.Kind+"="+ref.Value)
+	}
 	for _, target := range plan.Targets {
 		items = append(items, "target."+target.Type+"="+target.Resource)
 	}
@@ -503,6 +509,8 @@ func (s *Server) finishInTx(ctx context.Context, tx pgx.Tx, job work, q query, f
 		event.Script = &counts
 	} else {
 		event.Step, event.StatementFingerprint, event.OperationID = 1, fingerprint(job.SQL), q.Operation
+		event.Outcome = q.AuditOutcome
+		event.ObjectUUIDs, event.EngineSucceeded = q.AuditObjects, q.EngineSucceeded
 	}
 	return auditSQL(ctx, tx, job.x, job.q.ID, "SQL_FINISH", result, event, failure)
 }

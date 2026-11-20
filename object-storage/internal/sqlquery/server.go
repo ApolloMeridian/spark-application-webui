@@ -60,24 +60,27 @@ type column struct {
 	Type string `json:"dataType"`
 }
 type query struct {
-	ID              string         `json:"id"`
-	State           string         `json:"state"`
-	Tables          []string       `json:"tables"`
-	Columns         []column       `json:"columns"`
-	Rows            int            `json:"rowCount"`
-	Pages           int            `json:"pages"`
-	Truncated       bool           `json:"truncated"`
-	Message         string         `json:"message,omitempty"`
-	Operation       string         `json:"operationId,omitempty"`
-	Created         time.Time      `json:"createdAt"`
-	Expires         *time.Time     `json:"expiresAt,omitempty"`
-	ResultState     string         `json:"resultState"`
-	Catalog         string         `json:"-"`
-	Write           string         `json:"writeTable,omitempty"`
-	Plan            *statementPlan `json:"-"`
-	Ordinal         int            `json:"ordinal"`
-	Steps           []query        `json:"steps,omitempty"`
-	RefreshBranches []string       `json:"refreshBranches,omitempty"`
+	ID              string            `json:"id"`
+	State           string            `json:"state"`
+	Tables          []string          `json:"tables"`
+	Columns         []column          `json:"columns"`
+	Rows            int               `json:"rowCount"`
+	Pages           int               `json:"pages"`
+	Truncated       bool              `json:"truncated"`
+	Message         string            `json:"message,omitempty"`
+	Operation       string            `json:"operationId,omitempty"`
+	Created         time.Time         `json:"createdAt"`
+	Expires         *time.Time        `json:"expiresAt,omitempty"`
+	ResultState     string            `json:"resultState"`
+	Catalog         string            `json:"-"`
+	Write           string            `json:"writeTable,omitempty"`
+	Plan            *statementPlan    `json:"-"`
+	Ordinal         int               `json:"ordinal"`
+	Steps           []query           `json:"steps,omitempty"`
+	RefreshBranches []string          `json:"refreshBranches,omitempty"`
+	AuditOutcome    map[string]string `json:"-"`
+	AuditObjects    map[string]string `json:"-"`
+	EngineSucceeded bool              `json:"-"`
 }
 
 const schema = `

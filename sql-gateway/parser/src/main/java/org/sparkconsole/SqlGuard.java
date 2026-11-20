@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.Executors;
@@ -36,6 +37,8 @@ import org.apache.spark.sql.execution.command.CreateViewCommand;
 import org.apache.spark.sql.execution.command.CreateTableLikeCommand;
 import org.apache.spark.sql.execution.command.DescribeQueryCommand;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.unsafe.types.UTF8String;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
 import scala.collection.Seq;
 import scala.collection.Iterator;
@@ -43,6 +46,9 @@ import scala.collection.Iterator;
 public final class SqlGuard {
     private final String namespace;
     private final Set<String> tempViews;
+    private final Set<String> historyTables = new TreeSet<>();
+    private final Set<String> auditReferences = new TreeSet<>();
+    private String operation = "";
 
     private SqlGuard(String namespace, Set<String> tempViews) {
         this.namespace = namespace;
@@ -102,7 +108,33 @@ public final class SqlGuard {
 
     private void plan(LogicalPlan plan, Set<String> ctes, Set<String> tables) {
         if (plan instanceof RelationTimeTravel) {
-            throw new UnsupportedOperationException("Historical snapshot reads are managed by the platform");
+            var travel = (RelationTimeTravel)plan;
+            if (!(travel.relation() instanceof UnresolvedRelation)) {
+                throw new UnsupportedOperationException("Time travel requires a managed Iceberg table");
+            }
+            var relation = (UnresolvedRelation)travel.relation();
+            var parts = relation.multipartIdentifier();
+            if (!relation.options().isEmpty() ||
+                    (parts.size() == 1 && (ctes.contains(alias(parts.head())) || tempViews.contains(alias(parts.head()))))) {
+                throw new UnsupportedOperationException("Time travel requires a managed Iceberg table");
+            }
+            String table = resource(parts, false);
+            if (travel.version().isDefined()) {
+                var version = travel.version().get();
+                if (!validReference(version)) {
+                    throw new UnsupportedOperationException("Unsupported snapshot selector");
+                }
+                auditReference("version", version);
+            } else if (travel.timestamp().isDefined() && travel.timestamp().get() instanceof Literal) {
+                var cutoff = ((Literal)travel.timestamp().get()).value();
+                if (cutoff == null) throw new UnsupportedOperationException("Use a literal time travel timestamp");
+                auditReference("time", cutoff);
+            } else {
+                throw new UnsupportedOperationException("Use a literal time travel timestamp");
+            }
+            historyTables.add(table);
+            tables.add(table);
+            return;
         }
         if (!PLANS.contains(plan.getClass())) {
             throw new UnsupportedOperationException("Unsupported SQL operation");
@@ -127,7 +159,7 @@ public final class SqlGuard {
                 throw new UnsupportedOperationException("Unsupported relation options");
             }
             tables.add(parts.size() == 1 && tempViews.contains(alias(parts.head()))
-                    ? alias(parts.head()) : resource(parts, false, true));
+                    ? alias(parts.head()) : resource(parts, false, true, true));
         }
         if (plan instanceof UnresolvedTableValuedFunction) {
             var function = (UnresolvedTableValuedFunction) plan;
@@ -146,11 +178,11 @@ public final class SqlGuard {
     }
 
     private String resource(Seq<String> parts, boolean isNamespace) {
-        return resource(parts, isNamespace, false);
+        return resource(parts, isNamespace, false, false);
     }
 
-    private String resource(Seq<String> parts, boolean isNamespace, boolean allowMetadata) {
-        if (parts.size() < (isNamespace ? 0 : 1) || parts.size() > (isNamespace ? 7 : allowMetadata ? 9 : 8)) {
+    private String resource(Seq<String> parts, boolean isNamespace, boolean allowMetadata, boolean allowBranch) {
+        if (parts.size() < (isNamespace ? 0 : 1) || parts.size() > (isNamespace ? 7 : allowMetadata || allowBranch ? 9 : 8)) {
             throw new UnsupportedOperationException("Qualify the Polaris resource");
         }
         if (parts.nonEmpty() && (parts.head().equalsIgnoreCase("spark_catalog") || parts.head().equalsIgnoreCase("global_temp"))) {
@@ -162,12 +194,14 @@ public final class SqlGuard {
         while (values.hasNext()) name.append('.').append(identifier(values.next()));
         if (!isNamespace) {
             String[] segments = name.toString().split("\\.");
-            if (segments.length > 3 && segments[segments.length - 1].matches("(branch|tag|snapshot_id|at_timestamp)_.+")) {
-                throw new UnsupportedOperationException("Historical snapshot reads and branch writes are managed by the platform");
+            String last = segments[segments.length - 1];
+            boolean branch = branchTable(segments);
+            if (segments.length > 3 && ((!allowBranch || !branch) && last.matches("(branch|tag|snapshot_id|at_timestamp)_.+"))) {
+                throw new UnsupportedOperationException("Use VERSION AS OF for explicit historical reads");
             }
             boolean metadata = metadataTable(segments);
             if (segments.length < 3 || (metadata && !allowMetadata) ||
-                    segments.length > (metadata ? 9 : 8)) {
+                    segments.length > (metadata || branch ? 9 : 8)) {
                 throw new UnsupportedOperationException("Unsupported Iceberg table identifier");
             }
         }
@@ -178,16 +212,33 @@ public final class SqlGuard {
         return segments.length > 3 && ICEBERG_METADATA_TABLES.contains(segments[segments.length - 1]);
     }
 
+    private static boolean branchTable(String[] segments) {
+        return segments.length > 3 && segments[segments.length - 1].matches("branch_[a-z_][a-z0-9_-]{0,120}");
+    }
+
+    private String tableWrite(String action, LogicalPlan plan) {
+        String name = object(plan, true);
+        if (branchTable(name.split("\\."))) {
+            auditReference("branch", name.substring(name.lastIndexOf('.') + 8));
+            return access("branchTable", action, name);
+        }
+        return access("table", action, name);
+    }
+
     private String object(LogicalPlan plan) {
-        if (plan instanceof SubqueryAlias) return object(((SubqueryAlias)plan).child());
+        return object(plan, false);
+    }
+
+    private String object(LogicalPlan plan, boolean allowBranch) {
+        if (plan instanceof SubqueryAlias) return object(((SubqueryAlias)plan).child(), allowBranch);
         if (plan instanceof UnresolvedRelation) {
             var relation = (UnresolvedRelation)plan;
             if (!writeOptionsOnly(relation.options())) throw new UnsupportedOperationException("Unsupported relation options");
-            return resource(relation.multipartIdentifier(), false);
+            return resource(relation.multipartIdentifier(), false, false, allowBranch);
         }
-        if (plan instanceof UnresolvedIdentifier) return resource(((UnresolvedIdentifier)plan).nameParts(), false);
-        if (plan instanceof UnresolvedTableOrView) return resource(((UnresolvedTableOrView)plan).multipartIdentifier(), false);
-        if (plan instanceof UnresolvedTable) return resource(((UnresolvedTable)plan).multipartIdentifier(), false);
+        if (plan instanceof UnresolvedIdentifier) return resource(((UnresolvedIdentifier)plan).nameParts(), false, false, allowBranch);
+        if (plan instanceof UnresolvedTableOrView) return resource(((UnresolvedTableOrView)plan).multipartIdentifier(), false, false, allowBranch);
+        if (plan instanceof UnresolvedTable) return resource(((UnresolvedTable)plan).multipartIdentifier(), false, false, allowBranch);
         if (plan instanceof UnresolvedView) return resource(((UnresolvedView)plan).multipartIdentifier(), false);
         throw new UnsupportedOperationException("Unsupported catalog object");
     }
@@ -281,62 +332,185 @@ public final class SqlGuard {
         if (name.size() != 3 || !name.apply(0).equalsIgnoreCase("polaris") || !name.apply(1).equalsIgnoreCase("system")) {
             throw new UnsupportedOperationException("Use a managed Polaris system procedure");
         }
-        var action = maintenanceAction(name.apply(2));
-        var values = new HashMap<String, Object>();
+        operation = name.apply(2).toLowerCase(Locale.ROOT);
+        var positional = maintenanceParameters(operation);
+        var values = new HashMap<String, Literal>();
         var args = call.args().iterator();
+        boolean named = call.args().nonEmpty() && call.args().head() instanceof NamedArgument;
+        boolean rewriteOptionsSeen = false;
+        int index = 0;
         while (args.hasNext()) {
             var arg = args.next();
-            if (!(arg instanceof NamedArgument) && (call.args().size() != 1 || !(arg instanceof PositionalArgument))) {
-                throw new UnsupportedOperationException("Use named maintenance arguments");
+            if ((named && !(arg instanceof NamedArgument)) ||
+                    (!named && (!(arg instanceof PositionalArgument) || index >= positional.size()))) {
+                throw new UnsupportedOperationException("Unsupported maintenance argument list");
             }
-            var key = arg instanceof NamedArgument ? ((NamedArgument)arg).name().toLowerCase(Locale.ROOT) : "table";
-            var expression = arg instanceof NamedArgument ? ((NamedArgument)arg).expr() : ((PositionalArgument)arg).expr();
+            var key = named ? ((NamedArgument)arg).name().toLowerCase(Locale.ROOT) : positional.get(index++);
+            var expression = named ? ((NamedArgument)arg).expr() : ((PositionalArgument)arg).expr();
+            if (key.equals("options") && (operation.equals("rewrite_data_files") || operation.equals("rewrite_position_delete_files"))) {
+                if (rewriteOptionsSeen) throw invalidMaintenanceArguments();
+                inspectRewriteOptions(expression);
+                rewriteOptionsSeen = true;
+                continue;
+            }
             if (!(expression instanceof Literal) || ((Literal)expression).value() == null ||
-                    values.putIfAbsent(key, ((Literal)expression).value()) != null) {
+                    values.putIfAbsent(key, (Literal)expression) != null) {
                 throw new UnsupportedOperationException("Maintenance arguments must be unique and literal");
             }
         }
-        Object table = values.remove("table");
-        if (!(table instanceof org.apache.spark.unsafe.types.UTF8String) ||
-                !maintenanceOptions(action, values)) {
-            throw new UnsupportedOperationException("Unsupported maintenance arguments");
+        var table = values.remove("table");
+        if (table == null || !(table.value() instanceof UTF8String)) throw invalidMaintenanceArguments();
+        var action = maintenanceAction(operation, values);
+        for (String key : List.of("branch", "to", "ref", "snapshot_id", "timestamp", "older_than", "wap_id")) {
+            if (values.containsKey(key)) auditReference(key, values.get(key).value());
         }
-        var parts = new SparkSqlParser().parseMultipartIdentifier(table.toString());
+        var parts = new SparkSqlParser().parseMultipartIdentifier(table.value().toString());
         if (parts.size() < 2) throw new UnsupportedOperationException("Qualify the maintenance table with its namespace");
         return access("table", action, resource(parts, false));
     }
 
-    private static String maintenanceAction(String name) {
-        switch (name.toLowerCase(Locale.ROOT)) {
-            case "rewrite_data_files": return "rewriteDataFiles";
-            case "rewrite_manifests": return "rewriteManifests";
-            case "expire_snapshots": return "expireSnapshots";
-            case "remove_orphan_files": return "previewOrphanFiles";
+    private void inspectRewriteOptions(Expression expression) {
+        if (!(expression instanceof UnresolvedFunction)) throw invalidMaintenanceArguments();
+        var map = (UnresolvedFunction)expression;
+        if (map.nameParts().size() != 1 || !map.nameParts().head().equalsIgnoreCase("map") ||
+                map.arguments().size() % 2 != 0 || map.arguments().size() > 4) throw invalidMaintenanceArguments();
+        var fields = map.arguments().iterator();
+        var seen = new HashSet<String>();
+        while (fields.hasNext()) {
+            var key = stringLiteral(fields.next());
+            var value = stringLiteral(fields.next());
+            if (!seen.add(key) ||
+                    !(key.equals("rewrite-all") && Set.of("true", "false").contains(value) ||
+                            key.equals("min-input-files") && value.matches("[1-9][0-9]{0,8}"))) {
+                throw invalidMaintenanceArguments();
+            }
+            auditReference(key.replace('-', '_'), value);
+        }
+    }
+
+    private static String stringLiteral(Expression expression) {
+        if (!(expression instanceof Literal) || !(((Literal)expression).value() instanceof UTF8String)) {
+            throw invalidMaintenanceArguments();
+        }
+        return ((Literal)expression).value().toString();
+    }
+
+    private static List<String> maintenanceParameters(String name) {
+        switch (name) {
+            case "rewrite_data_files":
+            case "rewrite_position_delete_files":
+            case "rewrite_manifests":
+            case "expire_snapshots":
+            case "remove_orphan_files": return List.of("table");
+            case "fast_forward": return List.of("table", "branch", "to");
+            case "rollback_to_snapshot":
+            case "cherrypick_snapshot":
+            case "set_current_snapshot":
+            case "ancestors_of": return List.of("table", "snapshot_id");
+            case "rollback_to_timestamp": return List.of("table", "timestamp");
+            case "publish_changes": return List.of("table", "wap_id");
             default: throw new UnsupportedOperationException("Unsupported Iceberg maintenance procedure");
         }
     }
 
-    private static boolean maintenanceOptions(String action, java.util.Map<String, Object> values) {
-        switch (action) {
-            case "rewriteDataFiles":
-                return values.isEmpty();
-            case "rewriteManifests":
-                Object id = values.getOrDefault("spec_id", 0);
-                return Set.of("spec_id").containsAll(values.keySet()) && id instanceof Integer && (Integer)id >= 0;
-            case "expireSnapshots":
-                Object retain = values.getOrDefault("retain_last", 1);
-                return Set.of("retain_last", "stream_results").containsAll(values.keySet()) &&
-                        Boolean.TRUE.equals(values.get("stream_results")) && retain instanceof Integer && (Integer)retain >= 1;
-            case "previewOrphanFiles":
-                return values.size() == 2 && Boolean.TRUE.equals(values.get("dry_run")) &&
-                        Boolean.TRUE.equals(values.get("prefix_listing"));
+    private static String maintenanceAction(String name, Map<String, Literal> values) {
+        switch (name) {
+            case "rewrite_data_files":
+            case "rewrite_position_delete_files":
+                if (values.isEmpty()) return "rewriteDataFiles";
+                break;
+            case "rewrite_manifests":
+                if (values.isEmpty() || (values.size() == 1 && boundedInteger(values.get("spec_id"), 0))) return "rewriteManifests";
+                break;
+            case "expire_snapshots":
+                if (Set.of("retain_last", "older_than", "stream_results").containsAll(values.keySet()) &&
+                        literalBoolean(values.get("stream_results"), true) &&
+                        (!values.containsKey("retain_last") || boundedInteger(values.get("retain_last"), 1)) &&
+                        (!values.containsKey("older_than") || timestamp(values.get("older_than")))) return "expireSnapshots";
+                break;
+            case "remove_orphan_files":
+                if (values.size() == 2 && literalBoolean(values.get("prefix_listing"), true)) {
+                    if (literalBoolean(values.get("dry_run"), true)) return "previewOrphanFiles";
+                    if (literalBoolean(values.get("dry_run"), false)) return "deleteOrphanFiles";
+                }
+                break;
+            case "fast_forward":
+                if (values.size() == 2 && reference(values.get("branch")) && reference(values.get("to"))) return "snapshotManage";
+                break;
+            case "rollback_to_snapshot":
+            case "cherrypick_snapshot":
+                if (values.size() == 1 && snapshotId(values.get("snapshot_id"))) return "snapshotManage";
+                break;
+            case "set_current_snapshot":
+                if (values.size() == 1 && (snapshotId(values.get("snapshot_id")) || reference(values.get("ref")))) return "snapshotManage";
+                break;
+            case "ancestors_of":
+                if (values.isEmpty() || (values.size() == 1 && snapshotId(values.get("snapshot_id")))) return "snapshotRead";
+                break;
+            case "rollback_to_timestamp":
+                if (values.size() == 1 && timestamp(values.get("timestamp"))) return "snapshotManage";
+                break;
+            case "publish_changes":
+                if (values.size() == 1 && reference(values.get("wap_id"))) return "snapshotManage";
+                break;
             default:
-                return false;
+                break;
         }
+        throw invalidMaintenanceArguments();
+    }
+
+    private static UnsupportedOperationException invalidMaintenanceArguments() {
+        return new UnsupportedOperationException("Unsupported maintenance arguments");
+    }
+
+    private static boolean reference(Literal literal) {
+        return literal != null && literal.value() instanceof UTF8String && validReference(literal.value().toString());
+    }
+
+    private static boolean snapshotId(Literal literal) {
+        return literal != null && (literal.value() instanceof Integer || literal.value() instanceof Long) &&
+                ((Number)literal.value()).longValue() > 0;
+    }
+
+    private static boolean timestamp(Literal literal) {
+        return literal != null && literal.dataType().equals(DataTypes.TimestampType);
+    }
+
+    private static boolean literalBoolean(Literal literal, boolean value) {
+        return literal != null && Boolean.valueOf(value).equals(literal.value());
+    }
+
+    private static boolean boundedInteger(Literal literal, int min) {
+        return literal != null && literal.value() instanceof Integer && (Integer)literal.value() >= min;
     }
 
     private static String access(String scope, String action, String resource) {
         return scope + "\t" + action + "\t" + resource;
+    }
+
+    private static boolean validReference(String value) {
+        return value.matches("[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}");
+    }
+
+    private void auditReference(String kind, Object value) {
+        // Only typed reference names, IDs and dates. User expressions do not enter audit fields.
+        if (value != null && auditReferences.size() < 32) {
+            var selector = value.toString();
+            if (selector.matches("[A-Za-z0-9_.:+ -]{1,128}")) {
+                auditReferences.add("reference\t" + kind + "\t" + selector);
+            }
+        }
+    }
+
+    private void referenceChange(List<String> permissions, Seq<String> parts, String ref,
+            String operation, scala.Option<Object> snapshot) {
+        if (!validReference(ref)) throw new UnsupportedOperationException("Unsupported branch or tag name");
+        this.operation = operation;
+        var table = resource(parts, false);
+        auditReference("ref", ref);
+        if (snapshot.isDefined()) auditReference("snapshotId", snapshot.get());
+        permissions.add(access("table", "referenceManage", table));
+        if (ref.equalsIgnoreCase("main")) permissions.add(access("table", "snapshotManage", table));
     }
 
     private static String qualify(String resource) {
@@ -377,19 +551,19 @@ public final class SqlGuard {
             if (insert.ifPartitionNotExists() || !insert.partitionSpec().isEmpty()) {
                 throw new UnsupportedOperationException("Use Iceberg hidden partitioning with INSERT without PARTITION");
             }
-            permissions.add(access("table", insert.overwrite() ? "overwrite" : "write", object(insert.table())));
+            permissions.add(tableWrite(insert.overwrite() ? "overwrite" : "write", insert.table()));
             plan(insert.query(), Set.of(), tables);
         } else if (parsed instanceof UpdateTable) {
             var update = (UpdateTable)parsed;
-            permissions.add(access("table", "update", object(update.table())));
+            permissions.add(tableWrite("update", update.table()));
         } else if (parsed instanceof DeleteFromTable) {
             var delete = (DeleteFromTable)parsed;
-            permissions.add(access("table", "deleteRows", object(delete.table())));
+            permissions.add(tableWrite("deleteRows", delete.table()));
         } else if (parsed instanceof TruncateTable) {
             permissions.add(access("table", "deleteRows", object(((TruncateTable)parsed).table())));
         } else if (parsed instanceof MergeIntoTable) {
             var merge = (MergeIntoTable)parsed;
-            permissions.add(access("table", "merge", object(merge.targetTable())));
+            permissions.add(tableWrite("merge", merge.targetTable()));
             plan(merge.sourceTable(), Set.of(), tables);
         } else if (parsed instanceof CreateTable) {
             var create = (CreateTable)parsed;
@@ -454,27 +628,55 @@ public final class SqlGuard {
                 parsed instanceof AlterColumn || parsed instanceof SetTableProperties || parsed instanceof UnsetTableProperties) {
             var name = object(parsed.children().head());
             var settings = parsed instanceof SetTableProperties ? ((SetTableProperties)parsed).properties() : null;
-            var keys = settings != null ? settings.keysIterator() : parsed instanceof UnsetTableProperties
-                    ? ((UnsetTableProperties)parsed).propertyKeys().iterator() : null;
-            if (keys != null && tablePropertiesAreRetentionManaged(keys, settings)) {
-                permissions.add(access("table", "expireSnapshots", name));
-            }
-            if (parsed instanceof AlterColumn && ((AlterColumn)parsed).setDefaultExpression().nonEmpty()) {
-                throw new UnsupportedOperationException("Column defaults are managed by the platform");
-            }
-            if (parsed instanceof AddColumns) {
-                var columns = ((AddColumns)parsed).columnsToAdd().iterator();
-                while (columns.hasNext()) {
-                    if (hasColumnDefault(columns.next())) {
-                        throw new UnsupportedOperationException("Column defaults are managed by the platform");
+            if (settings != null && (settings.contains("current-snapshot-id") || settings.contains("cherry-pick-snapshot-id"))) {
+                if (settings.size() != 1) throw invalidMaintenanceArguments();
+                var key = settings.keysIterator().next();
+                var value = settings.apply(key);
+                if (!value.matches("[1-9][0-9]{0,18}")) throw invalidMaintenanceArguments();
+                auditReference("snapshot_id", value);
+                operation = key.equals("current-snapshot-id") ? "set_current_snapshot_property" : "cherrypick_snapshot_property";
+                permissions.add(access("table", "snapshotManage", name));
+            } else {
+                var keys = settings != null ? settings.keysIterator() : parsed instanceof UnsetTableProperties
+                        ? ((UnsetTableProperties)parsed).propertyKeys().iterator() : null;
+                if (keys != null && tablePropertiesAreRetentionManaged(keys, settings)) {
+                    permissions.add(access("table", "expireSnapshots", name));
+                }
+                if (parsed instanceof AlterColumn && ((AlterColumn)parsed).setDefaultExpression().nonEmpty()) {
+                    throw new UnsupportedOperationException("Column defaults are managed by the platform");
+                }
+                if (parsed instanceof AddColumns) {
+                    var columns = ((AddColumns)parsed).columnsToAdd().iterator();
+                    while (columns.hasNext()) {
+                        if (hasColumnDefault(columns.next())) {
+                            throw new UnsupportedOperationException("Column defaults are managed by the platform");
+                        }
                     }
                 }
+                permissions.add(access("table", "metadataWrite", name));
             }
-            permissions.add(access("table", "metadataWrite", name));
         } else if (parsed instanceof AddPartitionField || parsed instanceof DropPartitionField ||
                 parsed instanceof ReplacePartitionField || parsed instanceof SetWriteDistributionAndOrdering ||
                 parsed instanceof SetIdentifierFields || parsed instanceof DropIdentifierFields) {
             permissions.add(access("table", "metadataWrite", resource(extensionTable(parsed), false)));
+        } else if (parsed instanceof CreateOrReplaceBranch) {
+            var change = (CreateOrReplaceBranch)parsed;
+            referenceChange(permissions, change.table(), change.branch(),
+                    referenceOperation(change.create(), change.replace(), "branch"), change.branchOptions().snapshotId());
+            auditOption("retentionMs", change.branchOptions().snapshotRefRetain());
+            auditOption("minSnapshots", change.branchOptions().numSnapshots());
+            auditOption("snapshotRetentionMs", change.branchOptions().snapshotRetain());
+        } else if (parsed instanceof CreateOrReplaceTag) {
+            var change = (CreateOrReplaceTag)parsed;
+            referenceChange(permissions, change.table(), change.tag(),
+                    referenceOperation(change.create(), change.replace(), "tag"), change.tagOptions().snapshotId());
+            auditOption("retentionMs", change.tagOptions().snapshotRefRetain());
+        } else if (parsed instanceof DropBranch) {
+            var change = (DropBranch)parsed;
+            referenceChange(permissions, change.table(), change.branch(), "drop_branch", scala.Option.empty());
+        } else if (parsed instanceof DropTag) {
+            var change = (DropTag)parsed;
+            referenceChange(permissions, change.table(), change.tag(), "drop_tag", scala.Option.empty());
         } else if (parsed instanceof CreateNamespace) {
             var create = (CreateNamespace)parsed;
             properties(create.properties().keysIterator(), Set.of("comment"));
@@ -534,13 +736,27 @@ public final class SqlGuard {
         }
         if (tables.size() > 32) throw new UnsupportedOperationException("Too many input tables");
         for (String name : tables) {
-            String scope = metadataTable(name.split("\\.")) ? "metadataTable" : name.contains(".") ? "table" : "temp";
+            var segments = name.split("\\.");
+            String scope = metadataTable(segments) ? "metadataTable" : branchTable(segments) ? "branchTable" : name.contains(".") ? "table" : "temp";
+            if (scope.equals("branchTable")) auditReference("branch", segments[segments.length - 1].substring(7));
             permissions.add(access(scope, "read", name));
         }
+        for (String table : historyTables) permissions.add(access("table", "snapshotRead", table));
+        if (operation.isEmpty() && !historyTables.isEmpty()) operation = "time_travel";
         String statement = result.equals("query") ? "Select" : parsed.getClass().getSimpleName();
         permissions.add("statement\t" + statement);
+        if (!operation.isEmpty()) permissions.add("operation\t" + operation);
+        permissions.addAll(auditReferences);
         permissions.addAll(targets);
         return result + "\n" + String.join("\n", permissions);
+    }
+
+    private static String referenceOperation(boolean create, boolean replace, String refType) {
+        return (replace ? create ? "create_or_replace_" : "replace_" : "create_") + refType;
+    }
+
+    private void auditOption(String kind, scala.Option<Object> value) {
+        if (value.isDefined()) auditReference(kind, value.get());
     }
 
     public static void main(String[] args) throws Exception {

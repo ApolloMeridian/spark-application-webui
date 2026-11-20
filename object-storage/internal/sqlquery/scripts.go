@@ -218,6 +218,7 @@ func (s *Server) finishStep(parent work, step work, output query, failure error,
 		err = auditSQL(ctx, tx, parent.x, parent.q.ID, "SQL_STATEMENT", result, sqlAuditDetails{
 			Step: step.q.Ordinal, State: state, DurationMS: duration, StatementFingerprint: fingerprint(step.SQL),
 			RequestFingerprint: fingerprint(parent.SQL), OperationID: output.Operation, Plan: step.q.statementPlan(),
+			Outcome: output.AuditOutcome, ObjectUUIDs: output.AuditObjects, EngineSucceeded: output.EngineSucceeded,
 		}, failure)
 	}
 	terminal := failure != nil || last
@@ -283,7 +284,7 @@ func (s *Server) planStatement(ctx context.Context, sql string, scope planningCo
 
 func (s *Server) resolveViews(ctx context.Context, requested []objectAccess) ([]objectAccess, error) {
 	if !slices.ContainsFunc(requested, func(a objectAccess) bool {
-		return a.Scope == "table" && a.MetadataTable == "" && (a.Action == "read" || a.Action == "metadataRead")
+		return a.Scope == "table" && a.MetadataTable == "" && a.BranchTable == "" && (a.Action == "read" || a.Action == "metadataRead")
 	}) {
 		return requested, nil
 	}
@@ -304,7 +305,8 @@ func (s *Server) resolveViews(ctx context.Context, requested []objectAccess) ([]
 			return errors.New("view dependency limit exceeded")
 		}
 		checked[target] = true
-		if target.Scope != "table" || target.MetadataTable != "" || (target.Action != "read" && target.Action != "metadataRead") {
+		if target.Scope != "table" || target.MetadataTable != "" || target.BranchTable != "" ||
+			(target.Action != "read" && target.Action != "metadataRead") {
 			targets = append(targets, target)
 			return nil
 		}

@@ -52,6 +52,11 @@ const privilegeLabels = {
   rewriteManifests: ["Rewrite manifests", "重写清单"],
   expireSnapshots: ["Expire snapshots", "清理过期快照"],
   previewOrphanFiles: ["Preview orphan files", "预览孤儿文件"],
+  deleteOrphanFiles: ["Delete orphan files", "删除孤儿文件"],
+  snapshotRead: ["Read historical snapshots", "读取历史快照"],
+  referenceManage: ["Manage branches and tags", "管理分支和标签"],
+  snapshotManage: ["Restore or advance snapshots", "恢复或推进快照"],
+  branchWrite: ["Write to branches", "写入分支"],
 } as const;
 const levels = Object.keys(privilegeLabels) as (keyof typeof privilegeLabels)[];
 const availablePrivilege = (scope: Grant["scope"], action: string) =>
